@@ -491,7 +491,7 @@ function renderShell(route, url) {
           </section>
         </section>
       `,
-      rightRail: staticRightRail(url.searchParams.get("q") || ""),
+      rightRail: staticRightRail(url.searchParams.get("q") || "", { trending: false }),
     }));
     return;
   }
@@ -514,7 +514,7 @@ function renderShell(route, url) {
           </section>
         </section>
       `,
-      rightRail: staticRightRail(url.searchParams.get("q") || ""),
+      rightRail: staticRightRail(url.searchParams.get("q") || "", { trending: false }),
     }));
     return;
   }
@@ -567,6 +567,8 @@ function renderShell(route, url) {
     return;
   }
   if (route === "stub") {
+    const path = url.pathname;
+    const hideTrendingRail = path === "/about" || path === "/settings";
     setMainHTMLPreservingRailUser(renderRouteOutletLayout({
       active: url.pathname,
       mainContent: `
@@ -577,7 +579,7 @@ function renderShell(route, url) {
           </section>
         </section>
       `,
-      rightRail: staticRightRail(url.searchParams.get("q") || ""),
+      rightRail: staticRightRail(url.searchParams.get("q") || "", { trending: !hideTrendingRail }),
     }));
     return;
   }

@@ -257,10 +257,16 @@ export function readsRightRail(timeframe, searchQuery = "") {
   `;
 }
 
-export function staticRightRail(searchQuery = "") {
-  return `
-    <aside class="right-rail">
-      ${railSearch("Search", searchQuery)}
+/**
+ * Static right rail for non-feed routes. Set `trending: false` to match server
+ * pages that set HideTrendingRail (SPA shell keeps the rail until main-only
+ * fragment fetch runs).
+ * @param {string} searchQuery
+ * @param {{ trending?: boolean }} [opts]
+ */
+export function staticRightRail(searchQuery = "", { trending = true } = {}) {
+  const trendingPanel = trending
+    ? `
       <section class="trending-panel">
         <h2>Trending</h2>
         <label class="trending-filter">Timeframe
@@ -270,7 +276,12 @@ export function staticRightRail(searchQuery = "") {
           </select>
         </label>
         <p class="muted">Trending placeholders appear here outside the feed page.</p>
-      </section>
+      </section>`
+    : "";
+  return `
+    <aside class="right-rail">
+      ${railSearch("Search", searchQuery)}
+      ${trendingPanel}
     </aside>
   `;
 }

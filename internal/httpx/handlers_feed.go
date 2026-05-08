@@ -226,6 +226,7 @@ func (s *Server) handleBookmarks(w http.ResponseWriter, r *http.Request) {
 	pubkey := r.URL.Query().Get("pubkey")
 	data := s.bookmarksData(r.Context(), pubkey, s.requestRelays(r))
 	data.BasePageData = s.basePageData(r, "Bookmarks", "bookmarks", "feed-shell")
+	data.HideTrendingRail = true
 	switch r.URL.Query().Get("fragment") {
 	case "main":
 		s.render(w, "bookmarks_main", data)
@@ -245,6 +246,7 @@ func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 	refreshFromRelays := cursor == 0 && cursorID == ""
 	data := s.notificationsData(r.Context(), pubkey, strings.TrimSpace(r.URL.Query().Get("seed_pubkey")), s.requestRelays(r), cursor, cursorID, refreshFromRelays, webOfTrustOptionsFromRequest(r))
 	data.BasePageData = s.basePageData(r, "Notifications", "notifications", "feed-shell")
+	data.HideTrendingRail = true
 	switch r.URL.Query().Get("fragment") {
 	case "main":
 		s.render(w, "notifications_main", data)
@@ -261,6 +263,7 @@ func (s *Server) handleAbout(w http.ResponseWriter, r *http.Request) {
 	data := AboutPageData{
 		BasePageData: s.basePageData(r, "About", "about", "feed-shell"),
 	}
+	data.HideTrendingRail = true
 	if r.URL.Query().Get("fragment") == "main" {
 		s.render(w, "about_main", data)
 		return
@@ -275,6 +278,7 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		UserPubKey:         userPub,
 		WebOfTrustMaxDepth: store.MaxDepth,
 	}
+	data.HideTrendingRail = true
 	if r.URL.Query().Get("fragment") == "main" {
 		s.render(w, "settings_main", data)
 		return

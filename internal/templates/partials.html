@@ -232,6 +232,7 @@
   <form action="/search" method="get" class="rail-search">
     <input type="search" name="q" placeholder="Search" value="{{.SearchQuery}}">
   </form>
+  {{if not .HideTrendingRail}}
   <section class="trending-panel">
     <h2>Trending</h2>
     <label class="trending-filter">Timeframe
@@ -242,6 +243,7 @@
     </label>
     <p class="muted">Trending placeholders appear here outside the feed page.</p>
   </section>
+  {{end}}
 </aside>
 {{end}}
 

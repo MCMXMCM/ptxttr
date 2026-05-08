@@ -48,6 +48,8 @@ type BasePageData struct {
 	AsciiWidth  int
 	SearchQuery string
 	OG          OpenGraphMeta
+	// HideTrendingRail strips the static right-rail trending placeholder (About, etc.).
+	HideTrendingRail bool
 }
 
 // OpenGraphMeta carries the Open Graph + Twitter Card fields rendered into
