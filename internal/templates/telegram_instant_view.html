@@ -1,0 +1,24 @@
+{{define "telegram_instant_view"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{.Title}}</title>
+  {{if .OG.Image}}<link rel="image_src" href="{{.OG.Image}}">{{end}}
+</head>
+<body>
+  <article>
+    <h1>{{.Title}}</h1>
+    {{if .AuthorName}}<address><a rel="author" href="{{.AuthorURL}}">{{.AuthorName}}</a></address>{{end}}
+    {{if .PublishedAt}}<time datetime="{{.PublishedAt}}">{{.PublishedAt}}</time>{{end}}
+    {{if .OG.Image}}<figure><img src="{{.OG.Image}}" alt="{{.Title}}"></figure>{{end}}
+    <section>
+      {{.ContentHTML}}
+    </section>
+    <footer>
+      <p>via <a href="{{.OG.URL}}">{{.SiteName}}</a></p>
+    </footer>
+  </article>
+</body>
+</html>
+{{end}}

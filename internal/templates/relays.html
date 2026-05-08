@@ -1,0 +1,98 @@
+{{define "relays"}}
+{{template "document_start" .}}
+<div class="app-shell">
+  {{template "left_rail" .}}
+  <section class="feed-column shell-center">
+    <section class="page-heading">
+      <h1>Relays</h1>
+      <p class="muted">Default relays are bounded. Add more relays when you need a wider view.</p>
+    </section>
+
+    <section class="toolbar">
+      <form data-relay-form>
+        <label>
+          Relay URL
+          <input name="relay" placeholder="wss://relay.example.com">
+        </label>
+        <button type="submit">Add relay</button>
+      </form>
+    </section>
+
+    <section>
+      <h2>Configured relays</h2>
+      <ul class="relay-list" data-relay-list>
+        {{range .Relays}}
+          <li data-relay="{{.}}">
+            <code class="relay-url-popover" data-check-relay="{{.}}" tabindex="0" role="button">{{.}}</code>
+            {{with index $.RelayStatuses .}}
+              <span class="muted">status: {{if .OK}}ok{{else}}error{{end}}{{if .LastError}} - {{.LastError}}{{end}}</span>
+            {{end}}
+          </li>
+        {{end}}
+      </ul>
+    </section>
+
+    <section data-relay-suggestions>
+      {{template "relay_suggestions" .}}
+    </section>
+  </section>
+  {{template "right_rail_static" .}}
+</div>
+<script type="module" src="/static/js/layout.js"></script>
+<script type="module" src="/static/js/relays.js"></script>
+{{template "document_end" .}}
+{{end}}
+
+{{define "relays_main"}}
+<section class="feed-column shell-center" data-shell-main>
+  <section class="page-heading">
+    <h1>Relays</h1>
+    <p class="muted">Default relays are bounded. Add more relays when you need a wider view.</p>
+  </section>
+
+  <section class="toolbar">
+    <form data-relay-form>
+      <label>
+        Relay URL
+        <input name="relay" placeholder="wss://relay.example.com">
+      </label>
+      <button type="submit">Add relay</button>
+    </form>
+  </section>
+
+  <section>
+    <h2>Configured relays</h2>
+    <ul class="relay-list" data-relay-list>
+      {{range .Relays}}
+        <li data-relay="{{.}}">
+          <code class="relay-url-popover" data-check-relay="{{.}}" tabindex="0" role="button">{{.}}</code>
+          {{with index $.RelayStatuses .}}
+            <span class="muted">status: {{if .OK}}ok{{else}}error{{end}}{{if .LastError}} - {{.LastError}}{{end}}</span>
+          {{end}}
+        </li>
+      {{end}}
+    </ul>
+  </section>
+
+  <section data-relay-suggestions>
+    {{template "relay_suggestions" .}}
+  </section>
+</section>
+{{end}}
+
+{{define "relay_suggestions"}}
+<h2>NIP-65 suggestions</h2>
+<p class="muted">Log in or pass a pubkey to show relay hints from the active user's latest kind 10002 event.</p>
+<ul class="relay-list">
+  {{range .SuggestedRelays}}
+    <li data-relay-suggestion="{{.}}">
+      <code class="relay-url-popover" data-check-relay="{{.}}" tabindex="0" role="button">{{.}}</code>
+      {{with index $.RelayStatuses .}}
+        <span class="muted">status: {{if .OK}}ok{{else}}error{{end}}{{if .LastError}} - {{.LastError}}{{end}}</span>
+      {{end}}
+    </li>
+  {{else}}
+    <li class="muted">No cached NIP-65 relay hints for this user yet.</li>
+  {{end}}
+</ul>
+{{end}}

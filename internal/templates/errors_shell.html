@@ -1,0 +1,18 @@
+{{define "error_shell"}}
+{{template "document_start" .}}
+<div class="{{if .AppShellClass}}{{.AppShellClass}}{{else}}app-shell{{end}}">
+  {{template "left_rail" .}}
+  <section class="{{if .MainSectionClass}}{{.MainSectionClass}}{{else}}feed-column route-error-column{{end}}">
+    {{if .ShowReadsBack}}
+    <section class="page-heading">
+      <p><a href="/reads" data-relay-aware data-session-reads-link>&lt;-- back to reads</a></p>
+    </section>
+    {{end}}
+    {{template "error_panel" .}}
+  </section>
+  {{if .ThreadRail}}{{template "thread_right_rail" .}}{{else}}{{template "right_rail_static" .}}{{end}}
+</div>
+<script type="module" src="/static/js/layout.js"></script>
+{{if .ExtraScript}}<script type="module" src="{{.ExtraScript}}"></script>{{end}}
+{{template "document_end" .}}
+{{end}}

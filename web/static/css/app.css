@@ -1,0 +1,4464 @@
+html {
+  font-size: 9pt;
+}
+
+:root {
+  color-scheme: light dark;
+  --bg: #fff;
+  --fg: #151515;
+  --text: var(--fg);
+  --muted: #67645d;
+  --border: #b8b0a0;
+  --panel: #fffdf7;
+  --link: #003f8c;
+  --danger: #8f1d1d;
+  --page-max: 1180px;
+  --body-max: 1280px;
+  /* Extra scroll room below the last note/reply so the feed does not end flush with the viewport. */
+  --feed-scroll-pad: max(3rem, 22vh);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101010;
+    --fg: #efeee8;
+    --muted: #aaa69a;
+    --border: #47433c;
+    --panel: #171717;
+    --link: #8ab4ff;
+    --danger: #ff8c8c;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0 auto;
+  max-width: min(var(--body-max), 100vw);
+  padding: 0 1rem;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: inherit;
+  line-height: 1.25;
+}
+
+main {
+  margin: 0 auto;
+  max-width: min(var(--page-max), 100%);
+}
+
+/* Route outlet wraps `.app-shell` for SPA swaps; `contents` keeps the same layout
+   as when `.app-shell` was a direct child of `main` (mobile bar + shell siblings). */
+[data-route-outlet] {
+  display: contents;
+}
+
+body.feed-shell {
+  max-width: min(1500px, 100vw);
+  padding: 0 0.75rem;
+}
+
+body.feed-shell main {
+  max-width: 100%;
+}
+
+.mobile-bar {
+  display: none;
+}
+
+.app-shell {
+  align-items: start;
+  display: grid;
+  grid-template-columns: 240px minmax(0, 640px) 340px;
+  justify-content: center;
+  gap: 0;
+  min-height: 100vh;
+}
+
+.left-rail,
+.feed-column,
+.right-rail {
+  min-height: 100vh;
+  padding: 0.75rem 1rem;
+}
+
+.left-rail {
+  border-right: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  height: 100dvh;
+  min-height: 100dvh;
+  overflow-y: auto;
+  position: sticky;
+  top: 0;
+}
+
+.rail-brand {
+  font-weight: 700;
+}
+
+.rail-nav {
+  align-items: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.rail-nav a {
+  align-items: center;
+  border: 0;
+  display: inline-flex;
+  gap: 0.55rem;
+  min-height: 2rem;
+  padding: 0.2rem 0.4rem;
+}
+
+.rail-nav a[aria-current="page"] {
+  text-decoration: underline;
+}
+
+.rail-icon {
+  display: inline-flex;
+  justify-content: center;
+  width: 1.4rem;
+}
+
+.rail-post {
+  margin: 0.6rem 0;
+  text-align: left;
+  width: 100%;
+}
+
+.rail-user {
+  align-items: center;
+  border-top: 0;
+  display: flex;
+  gap: 0.6rem;
+  margin-top: auto;
+  padding-top: 0.6rem;
+}
+
+.rail-user[data-logged-in="1"],
+.mobile-menu-header[data-logged-in="1"] {
+  cursor: pointer;
+}
+
+.rail-user img,
+.mobile-menu-header [data-session-avatar],
+.mobile-menu-trigger img {
+  border: 0;
+  border-radius: 50%;
+  height: 2rem;
+  object-fit: cover;
+  width: 2rem;
+}
+
+.rail-avatar-fallback,
+.mobile-trigger-fallback {
+  align-items: center;
+  border: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  height: 2rem;
+  justify-content: center;
+  width: 2rem;
+}
+
+.rail-user-copy {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.feed-column {
+  border-right: 0;
+  margin: 0 auto;
+  min-width: 0;
+  width: 100%;
+  padding-bottom: var(--feed-scroll-pad);
+}
+
+.shell-center {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+/* Center column shell pages that should start at the top (not vertically centered). */
+.shell-main-top {
+  align-items: stretch;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  width: 100%;
+}
+
+.route-error-column {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: min(70vh, 28rem);
+  text-align: center;
+}
+
+.route-error-panel {
+  padding: 1rem 0.5rem;
+  width: 100%;
+}
+
+.route-error-inner {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.route-error-icon {
+  height: auto;
+  max-width: 72px;
+}
+
+.route-error-panel .about-page-logo .about-logo {
+  max-width: 72px;
+  width: 72px;
+}
+
+.route-error-heading {
+  font-size: clamp(1.1rem, 2.6vw, 1.35rem);
+  font-weight: 700;
+  line-height: 1.25;
+  margin: 0;
+}
+
+.route-error-message {
+  line-height: 1.45;
+  margin: 0;
+  max-width: 32rem;
+}
+
+.route-error-detail {
+  line-height: 1.35;
+  margin: 0;
+  max-width: 100%;
+  word-break: break-word;
+}
+
+.read-detail-column.route-error-column .page-heading {
+  align-self: stretch;
+  text-align: left;
+}
+
+.feed-column .page-heading {
+  margin-top: 0;
+}
+
+.feed-heading-top {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  width: 100%;
+}
+
+.feed-heading-title-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.5rem 0.75rem;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.feed-heading-title-row h1 {
+  flex: 1 1 auto;
+  line-height: 1.2;
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.feed-heading-controls {
+  align-items: center;
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 0.45rem;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.feed-heading-summary {
+  margin: 0;
+  padding-bottom: 0.5rem;
+}
+
+.feed-heading-sort-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  width: 100%;
+}
+
+.feed-heading-post {
+  flex-shrink: 0;
+  font-size: inherit;
+  line-height: inherit;
+  margin: 0;
+  padding: 0;
+  width: auto;
+}
+
+.feed-heading-sort-row .feed-sort-label {
+  margin-left: auto;
+}
+
+@media (min-width: 701px) {
+  .feed-heading-post {
+    display: none;
+  }
+}
+
+.feed-sort-label {
+  align-items: center;
+  display: inline-flex;
+  flex-shrink: 0;
+  font-size: 0;
+  gap: 0.35rem;
+  margin-top: 0;
+}
+
+.feed-sort-label select {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--link);
+  cursor: pointer;
+  font-family: inherit;
+  /* Parent uses font-size: 0 to hide the "Sort" copy; keep the control readable. */
+  font-size: 1rem;
+  line-height: 1.2;
+  margin: 0;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0 1.1em 0 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1.25L5 4.75L9 1.25' stroke='%2367645d' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: right 0.05em center;
+  background-repeat: no-repeat;
+  background-size: 0.55em auto;
+}
+
+.feed-wot-quick {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.35rem;
+}
+
+.feed-wot-quick-label {
+  color: var(--muted);
+  display: none;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.feed-wot-depth-select {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--link);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 1rem;
+  line-height: 1.2;
+  margin: 0;
+  min-width: 0;
+  padding: 0 1.1em 0 0;
+  width: auto;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1.25L5 4.75L9 1.25' stroke='%2367645d' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: right 0.05em center;
+  background-repeat: no-repeat;
+  background-size: 0.55em auto;
+}
+
+.feed-new-notes {
+  margin: 0 0 0.5rem;
+  position: sticky;
+  top: 0.25rem;
+  z-index: 2;
+}
+
+.feed-new-notes,
+.load-more {
+  cursor: pointer;
+  position: relative;
+  transition: transform 0.08s ease-out, filter 0.08s ease-out;
+}
+
+.feed-new-notes:not(:disabled):active,
+.feed-new-notes.is-pressed,
+.load-more:not(:disabled):active,
+.load-more.is-pressed {
+  filter: brightness(0.95);
+  transform: translateY(1px);
+}
+
+.feed-new-notes[data-loading="1"],
+.load-more[data-loading="1"] {
+  color: transparent;
+}
+
+.feed-new-notes[data-loading="1"]::after,
+.load-more[data-loading="1"]::after {
+  animation: button-spinner 0.7s linear infinite;
+  border: 2px solid var(--muted);
+  border-radius: 50%;
+  border-top-color: var(--fg);
+  content: "";
+  height: 0.9rem;
+  left: 50%;
+  margin-left: -0.45rem;
+  margin-top: -0.45rem;
+  position: absolute;
+  top: 50%;
+  width: 0.9rem;
+}
+
+.right-rail {
+  align-content: start;
+  display: grid;
+  gap: 0.9rem;
+  height: 100dvh;
+  min-height: 100dvh;
+  overflow-y: auto;
+  position: sticky;
+  top: 0;
+}
+
+@media (min-width: 701px) {
+  .app-shell {
+    --app-shell-pad-block: 16px;
+    padding-block: var(--app-shell-pad-block);
+  }
+
+  .left-rail,
+  .feed-column,
+  .right-rail {
+    min-height: calc(100vh - 2 * var(--app-shell-pad-block));
+  }
+
+  .left-rail {
+    height: calc(100dvh - 2 * var(--app-shell-pad-block));
+    min-height: calc(100dvh - 2 * var(--app-shell-pad-block));
+  }
+
+  .right-rail {
+    height: calc(100dvh - 2 * var(--app-shell-pad-block));
+    min-height: calc(100dvh - 2 * var(--app-shell-pad-block));
+  }
+}
+
+.rail-search input {
+  width: 100%;
+  min-width: 0;
+}
+
+.search-heading {
+  gap: 0.4rem;
+}
+
+.search-scope-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin: 0;
+}
+
+.search-cache-window {
+  margin: 0;
+}
+
+.search-results {
+  padding-top: 0.4rem;
+}
+
+.trending-panel {
+  border: 0;
+  padding: 0.7rem;
+}
+
+.trending-panel h2 {
+  margin-top: 0;
+}
+
+.trending-filter {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.65rem;
+  width: 100%;
+  min-width: 0;
+}
+
+.trending-filter select {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  color: var(--link);
+  cursor: pointer;
+  flex: 0 0 auto;
+  font: inherit;
+  margin: 0;
+  max-width: 9rem;
+  padding: 0 1.1em 0 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1.25L5 4.75L9 1.25' stroke='%2367645d' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-position: right 0.05em center;
+  background-repeat: no-repeat;
+  background-size: 0.55em auto;
+}
+
+@media (prefers-color-scheme: dark) {
+  .feed-sort-label select,
+  .feed-wot-depth-select,
+  .trending-filter select {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6' fill='none'%3E%3Cpath d='M1 1.25L5 4.75L9 1.25' stroke='%23aaa69a' stroke-width='1.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  }
+}
+
+.trending-list {
+  display: grid;
+  gap: 0.55rem;
+  list-style: decimal;
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.trending-list a {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.trending-list span {
+  color: var(--muted);
+  display: -webkit-box;
+  line-clamp: 2;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.trending-list em {
+  color: var(--muted);
+  font-style: normal;
+}
+
+.thread-people-panel {
+  border: 0;
+  padding: 0.7rem;
+}
+
+.thread-people-panel h2 {
+  margin-top: 0;
+}
+
+.thread-people {
+  display: grid;
+  gap: 0.75rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.thread-person {
+  align-items: flex-start;
+  display: flex;
+  gap: 0.55rem;
+}
+
+.thread-person img,
+.thread-person-avatar-fallback {
+  border: 0;
+  border-radius: 0;
+  flex-shrink: 0;
+  height: 2.25rem;
+  object-fit: cover;
+  width: 2.25rem;
+}
+
+.thread-person-avatar-fallback {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-sizing: border-box;
+  display: inline-flex;
+  font-weight: 700;
+  justify-content: center;
+  line-height: 1;
+}
+
+.thread-person-meta {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.thread-person-about {
+  display: -webkit-box;
+  line-clamp: 2;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.composer-dialog {
+  border: 0;
+  max-height: 90vh;
+  max-width: min(96vw, 46rem);
+  padding: 1rem;
+  width: min(96vw, 46rem);
+}
+
+.composer-dialog::backdrop {
+  background: rgb(0 0 0 / 35%);
+}
+
+.reactions-dialog {
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  box-sizing: border-box;
+  max-height: min(85vh, 32rem);
+  max-width: min(96vw, 28rem);
+  padding: 0.75rem 1rem 1rem;
+  width: min(96vw, 28rem);
+}
+
+.reactions-dialog::backdrop {
+  background: rgb(0 0 0 / 35%);
+}
+
+.reactions-dialog-close-row {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 0.35rem;
+}
+
+.reactions-dialog-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 0 0 0.5rem;
+}
+
+.reactions-dialog-status {
+  margin: 0 0 0.5rem;
+  min-height: 1.25rem;
+}
+
+.reactions-dialog-list {
+  list-style: none;
+  margin: 0;
+  max-height: min(60vh, 22rem);
+  overflow: auto;
+  padding: 0;
+}
+
+.reactions-dialog-row {
+  align-items: center;
+  border-top: 1px solid var(--border);
+  display: flex;
+  gap: 0.5rem;
+  justify-content: space-between;
+  padding: 0.4rem 0;
+}
+
+.reactions-dialog-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.reactions-dialog-vote {
+  flex-shrink: 0;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.reactions-dialog-truncated {
+  font-size: 0.9rem;
+  margin: 0.5rem 0 0;
+}
+
+.composer-close-row {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 0.5rem;
+}
+
+.composer-close-button {
+  min-width: 2.1rem;
+  padding: 0.25rem 0.45rem;
+}
+
+.composer-form {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.composer-form .toolbar {
+  justify-content: flex-end;
+}
+
+.composer-label {
+  font-size: 0.95rem;
+}
+
+.composer-form textarea {
+  font: inherit;
+  line-height: 1.25;
+  min-height: 12rem;
+  resize: vertical;
+  width: 100%;
+}
+
+.composer-input-wrap {
+  position: relative;
+}
+
+.composer-input-wrap textarea {
+  background: transparent;
+  border: 1px solid transparent;
+  caret-color: var(--text);
+  color: transparent;
+  margin: 0;
+  padding: 0.55rem 0.6rem;
+  position: relative;
+  z-index: 2;
+}
+
+.composer-input-wrap textarea:focus,
+.composer-input-wrap textarea:focus-visible {
+  outline: none;
+}
+
+.composer-input-wrap:focus-within .composer-overlay {
+  border-color: var(--muted);
+}
+
+.composer-overlay {
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
+  font: inherit;
+  inset: 0;
+  line-height: 1.25;
+  margin: 0;
+  overflow: auto;
+  padding: 0.55rem 0.6rem;
+  pointer-events: none;
+  position: absolute;
+  white-space: pre-wrap;
+  word-break: break-word;
+  z-index: 1;
+}
+
+.composer-overlay-mention {
+  color: var(--link);
+  text-decoration: none;
+}
+
+.composer-mention-menu {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0.45rem;
+  box-shadow: 0 10px 24px rgb(0 0 0 / 18%);
+  left: 0;
+  max-height: 14rem;
+  max-width: min(24rem, calc(100% - 0.35rem));
+  min-width: 14rem;
+  overflow: auto;
+  position: absolute;
+  top: 0;
+  z-index: 8;
+}
+
+.composer-mention-list {
+  display: grid;
+  gap: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0.2rem;
+}
+
+.composer-mention-option {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0.35rem;
+  color: var(--fg);
+  cursor: pointer;
+  display: grid;
+  gap: 0.05rem;
+  grid-template-columns: 1fr;
+  padding: 0.35rem 0.45rem;
+  text-align: left;
+  width: 100%;
+}
+
+.composer-mention-option.is-active {
+  background: rgb(54 113 225 / 15%);
+}
+
+.composer-mention-option-meta {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.78rem;
+}
+
+.composer-caret-mirror {
+  height: auto;
+  left: -9999px;
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  visibility: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+  z-index: -1;
+}
+
+.composer-repost-preview {
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  display: grid;
+  gap: 0.4rem;
+  margin-top: 0.2rem;
+  padding: 0.55rem;
+}
+
+.composer-repost-preview > p {
+  margin: 0;
+}
+
+.composer-repost-preview-content {
+  margin: 0;
+  max-height: 16rem;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+@media (min-width: 1100px) {
+  .composer-dialog {
+    max-width: min(92vw, 58rem);
+    width: min(92vw, 58rem);
+  }
+
+  .composer-form textarea {
+    min-height: 16rem;
+  }
+}
+
+.settings-profile-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.settings-card {
+  border: 0;
+  padding: 0.25rem 0;
+}
+
+.settings-form {
+  display: grid;
+  gap: 0.75rem;
+  max-width: 42rem;
+}
+
+.settings-grid {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+}
+
+.settings-form label {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.settings-form textarea,
+.settings-form input:not([type="radio"]):not([type="checkbox"]) {
+  width: 100%;
+}
+
+.settings-preferences h2 {
+  font-size: 1rem;
+  margin: 0;
+}
+
+.settings-mode-tree-group {
+  position: relative;
+}
+
+.settings-mode-tree-group-main {
+  --settings-tree-gap: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: var(--settings-tree-gap);
+  min-width: 0;
+}
+
+.settings-mode-tree-group-main-stacked {
+  --settings-tree-elbow-offset: 1.1rem;
+}
+
+.settings-mode-tree {
+  align-items: center;
+  column-gap: 0.75rem;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.settings-slider-tree {
+  align-items: start;
+  column-gap: 0.75rem;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.settings-mode-tree-stacked {
+  align-items: start;
+  column-gap: 0.75rem;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  row-gap: 0.4rem;
+}
+
+.settings-mode-tree-stacked > .settings-mode-branch {
+  grid-row: 1 / span 2;
+  height: 100%;
+}
+
+.settings-mode-row-head {
+  align-items: center;
+  column-gap: 0.75rem;
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.settings-mode-row-head > strong {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.settings-mode-row-body {
+  display: grid;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.settings-mode-row-body small {
+  display: block;
+}
+
+.settings-mode-branch {
+  height: 2.8rem;
+  margin-left: 0.4rem;
+  position: relative;
+  width: 1.6rem;
+}
+
+.settings-mode-branch::before {
+  border-left: 1px solid var(--border);
+  bottom: calc(-1 * var(--settings-tree-gap));
+  content: "";
+  left: 0;
+  position: absolute;
+  top: calc(-1 * var(--settings-tree-gap));
+}
+
+.settings-mode-tree-group-main > :first-child .settings-mode-branch::before {
+  bottom: 50%;
+}
+
+.settings-mode-branch::after {
+  border-top: 1px solid var(--border);
+  content: "";
+  left: 0;
+  position: absolute;
+  top: 50%;
+  width: 1rem;
+}
+
+.settings-mode-tree-group-main-stacked > .settings-mode-tree-stacked > .settings-mode-branch::after {
+  top: var(--settings-tree-elbow-offset);
+}
+
+.settings-mode-copy strong {
+  display: block;
+}
+
+.settings-mode-copy small {
+  display: block;
+}
+
+.settings-mode-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-width: 12rem;
+}
+
+.settings-mode-switch input[type="checkbox"] {
+  display: none;
+}
+
+.settings-mode-option {
+  background: transparent;
+  border: 1px dotted var(--border);
+  color: var(--muted);
+  cursor: pointer;
+  font-weight: 700;
+  min-width: 3.6rem;
+  padding: 0.5rem 1.1rem;
+  text-align: center;
+}
+
+.settings-mode-option:first-of-type {
+  border-right: 0;
+}
+
+.settings-mode-option.is-active[data-image-mode-set="off"] {
+  background: rgb(153 27 27 / 70%);
+  color: #fff;
+}
+
+.settings-mode-option.is-active[data-image-mode-set="on"] {
+  background: rgb(22 101 52 / 70%);
+  color: #fff;
+}
+
+.settings-mode-option.is-active[data-wot-set="off"] {
+  background: rgb(153 27 27 / 70%);
+  color: #fff;
+}
+
+.settings-mode-option.is-active[data-wot-set="on"] {
+  background: rgb(22 101 52 / 70%);
+  color: #fff;
+}
+
+.settings-mode-option:focus-visible {
+  outline: 1px solid var(--link);
+  outline-offset: 1px;
+}
+
+.settings-mode-switch.is-disabled .settings-mode-option {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.settings-wot-depth-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.settings-mode-tree-group-main > :first-child:not(:last-child) .settings-mode-branch::before {
+  bottom: calc(-1 * var(--settings-tree-gap));
+}
+
+.settings-mode-tree-group-main > :last-child .settings-mode-branch::before {
+  bottom: 50%;
+}
+
+/* Hidden seed row remains :last-child in the DOM, so the generic last-child connector targets the wrong row; style the depth row instead. */
+.settings-mode-tree-group-main:has(> [data-wot-seed-row][hidden]) > [data-settings-slider-row] .settings-mode-branch::before {
+  bottom: 50%;
+}
+
+.settings-mode-tree-group-main-stacked > .settings-mode-tree-stacked:first-child .settings-mode-branch::before {
+  bottom: calc(-1 * var(--settings-tree-gap));
+  top: var(--settings-tree-elbow-offset);
+}
+
+.settings-mode-tree-group-main-stacked > .settings-mode-tree-stacked:last-child .settings-mode-branch::before {
+  bottom: calc(100% - var(--settings-tree-elbow-offset));
+  top: calc(-1 * var(--settings-tree-gap));
+}
+
+.settings-mode-tree-group-main-stacked > .settings-mode-tree-stacked:first-child:last-child .settings-mode-branch::before {
+  bottom: calc(100% - var(--settings-tree-elbow-offset));
+  top: var(--settings-tree-elbow-offset);
+}
+
+.settings-depth-control {
+  display: flex;
+  justify-content: flex-end;
+  min-width: 0;
+  width: 25%;
+}
+
+.settings-wot-depth-select {
+  width: auto;
+}
+
+.settings-seed-control {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.settings-wot-seed-group {
+  border: 0;
+  display: grid;
+  gap: 0.55rem;
+  margin: 0;
+  max-width: 34rem;
+  padding: 0;
+  width: 100%;
+}
+
+.settings-wot-seed-card {
+  align-items: center;
+  cursor: pointer;
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  padding: 0.6rem 0.75rem;
+}
+
+.settings-wot-seed-card:has(input:checked) {
+  border-color: var(--link);
+}
+
+.settings-wot-seed-card input[type="radio"] {
+  -webkit-appearance: radio;
+  appearance: auto;
+  accent-color: var(--fg);
+  background: transparent;
+  border: 0;
+  block-size: 1rem;
+  inline-size: 1rem;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.settings-wot-seed-avatar-wrap {
+  align-items: start;
+  display: inline-flex;
+  height: 3rem;
+  justify-content: start;
+  width: 3rem;
+}
+
+.settings-wot-seed-avatar {
+  display: block;
+  height: 3rem;
+  object-fit: cover;
+  width: 3rem;
+}
+
+.settings-wot-seed-meta {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.settings-wot-seed-card:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.mobile-menu {
+  display: none;
+  inset: 0;
+  position: fixed;
+  z-index: 20;
+}
+
+.mobile-menu.is-open {
+  display: block;
+}
+
+.mobile-menu-backdrop {
+  background: rgb(0 0 0 / 35%);
+  inset: 0;
+  position: absolute;
+}
+
+.mobile-menu-panel {
+  background: var(--bg);
+  border: 0;
+  box-sizing: border-box;
+  height: 100vh;
+  margin: 0;
+  max-width: none;
+  padding: 1rem;
+  position: relative;
+  width: min(100vw, 26rem);
+}
+
+body.mobile-menu-open {
+  overflow: hidden;
+}
+
+.mobile-menu-header {
+  border-bottom: 0;
+  display: flex;
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.75rem;
+}
+
+.mobile-menu-title {
+  align-items: center;
+  display: flex;
+  gap: 0.55rem;
+}
+
+.mobile-menu-title strong {
+  font-size: 1.15rem;
+}
+
+.mobile-menu-intro {
+  margin-bottom: 0.55rem;
+}
+
+.mobile-menu-intro-copy {
+  line-height: 1.3;
+  margin: 0;
+}
+
+.mobile-menu-search {
+  margin-bottom: 0.55rem;
+}
+
+.mobile-menu-nav {
+  align-items: stretch;
+  display: grid;
+  gap: 0.3rem;
+  margin-bottom: 0.9rem;
+}
+
+.mobile-menu-close {
+  margin-top: 0.6rem;
+  width: 100%;
+}
+
+.mobile-menu-trigger {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  display: inline-flex;
+  justify-content: center;
+  -webkit-tap-highlight-color: transparent;
+  padding: 0;
+}
+
+.mobile-menu-trigger:focus,
+.mobile-menu-nav a:focus,
+.mobile-menu-close:focus,
+.mobile-menu-search input:focus {
+  outline: none;
+}
+
+.mobile-menu-trigger:focus-visible,
+.mobile-menu-nav a:focus-visible,
+.mobile-menu-close:focus-visible,
+.mobile-menu-search input:focus-visible {
+  outline: 1px dashed var(--border);
+  outline-offset: 2px;
+}
+
+a {
+  color: var(--link);
+  text-decoration: none;
+}
+
+a:hover {
+  text-decoration: underline;
+}
+
+h1,
+h2 {
+  font-size: 1rem;
+  margin: 1rem 0 0.5rem;
+}
+
+button {
+  background: transparent;
+  border: 0;
+  color: var(--link);
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: inherit;
+}
+
+button:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.72;
+}
+
+button:focus {
+  outline: none;
+}
+
+button:focus-visible {
+  outline: 1px dashed var(--border);
+  outline-offset: 2px;
+}
+
+input {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font: inherit;
+  padding: 0.35rem 0.5rem;
+  min-width: min(100%, 28rem);
+}
+
+/* Drop the UA blue focus ring; fields already use a visible border. */
+input:focus,
+input:focus-visible,
+textarea:focus,
+textarea:focus-visible,
+select:focus,
+select:focus-visible {
+  box-shadow: none;
+  outline: none;
+}
+
+pre,
+code,
+.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+#ptxt-relay-info-popover.relay-detail-popover {
+  box-sizing: border-box;
+  max-width: min(22.5rem, 90vw);
+  max-height: min(50vh, 22rem);
+  overflow: auto;
+  margin: 0;
+  padding: 0.65rem 0.8rem;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--fg);
+  font: inherit;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  box-shadow: 0 0.4rem 1.2rem rgba(0, 0, 0, 0.22);
+}
+
+.relay-list li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem 0.5rem;
+}
+
+code.relay-url-popover {
+  cursor: pointer;
+}
+code.relay-url-popover:hover,
+code.relay-url-popover:focus-visible {
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 0.12em;
+  outline: none;
+}
+
+.site-header,
+.site-footer,
+nav,
+.note-meta,
+.toolbar,
+.stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.site-header,
+.site-footer {
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  margin: 1rem 0;
+  margin-left: auto;
+  margin-right: auto;
+  max-width: min(var(--page-max), 100%);
+  padding: 0.5rem 0;
+}
+
+.site-header {
+  justify-content: space-between;
+  width: 100%;
+}
+
+.site-header .brand {
+  flex-shrink: 0;
+}
+
+.brand {
+  font-weight: 700;
+}
+
+[aria-current="page"] {
+  font-weight: 700;
+}
+
+.page-heading,
+.note,
+.profile,
+.cards article,
+.session-panel {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  margin: 0.75rem 0;
+  outline: 0 !important;
+  padding: 0;
+}
+
+.note[data-ascii-select-href],
+.comment[data-ascii-select-href] {
+  cursor: pointer;
+}
+
+.feed,
+.feed > .note,
+article.note {
+  background: transparent !important;
+  border: 0 !important;
+  box-shadow: none !important;
+  outline: 0 !important;
+}
+
+.feed {
+  min-width: 0;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.about-page-logo {
+  display: inline-flex;
+  flex-shrink: 0;
+  line-height: 0;
+  position: relative;
+}
+
+.about-page-logo .about-logo {
+  width: 80px;
+}
+
+.about-logo {
+  display: block;
+  height: auto;
+  max-width: 100%;
+}
+
+.about-logo-dark-scheme {
+  display: none;
+}
+
+@media (prefers-color-scheme: dark) {
+  .about-logo-light-scheme {
+    display: none;
+  }
+
+  .about-logo-dark-scheme {
+    display: block;
+  }
+}
+
+.about-page-brand {
+  align-items: center;
+  display: flex;
+  gap: 0.65rem;
+  margin-bottom: 0.45rem;
+}
+
+.about-page-app-name {
+  font-size: clamp(1.65rem, 3.2vw, 2.1rem);
+  font-weight: 700;
+}
+
+.about-page h1 {
+  margin: 0 0 0.5rem;
+}
+
+.about-page-lead {
+  line-height: 1.35;
+  margin: 0 0 1rem;
+  max-width: 52rem;
+}
+
+.about-page-sub {
+  font-size: 1em;
+  font-weight: 700;
+  margin: 0 0 0.35rem;
+}
+
+.about-page-links {
+  margin-top: 0.15rem;
+}
+
+.text-skeleton {
+  color: var(--muted);
+  display: inline-block;
+  opacity: 0.72;
+  animation: text-skeleton-live 1.5s ease-in-out infinite;
+  white-space: pre;
+}
+
+.text-skeleton-block {
+  display: block;
+  line-height: 1.25;
+  margin: 0;
+}
+
+.text-skeleton-stack {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.text-skeleton-stack > :nth-child(2) {
+  animation-delay: 0.14s;
+}
+
+.text-skeleton-stack > :nth-child(3) {
+  animation-delay: 0.28s;
+}
+
+.text-skeleton-stack > :nth-child(4) {
+  animation-delay: 0.42s;
+}
+
+.text-skeleton-stack > :nth-child(5) {
+  animation-delay: 0.56s;
+}
+
+.text-skeleton-stack > :nth-child(6) {
+  animation-delay: 0.7s;
+}
+
+.text-skeleton-stack > :nth-child(7) {
+  animation-delay: 0.84s;
+}
+
+.text-skeleton-stack > :nth-child(8) {
+  animation-delay: 0.98s;
+}
+
+.text-skeleton-note {
+  color: var(--muted);
+  margin: 0;
+  opacity: 0.78;
+  pointer-events: none;
+  user-select: none;
+  animation: text-skeleton-live 1.45s ease-in-out infinite;
+}
+
+.profile-ident > .text-skeleton-block:nth-child(2) {
+  animation-delay: 0.12s;
+}
+
+.profile-ident > .text-skeleton-block:nth-child(3) {
+  animation-delay: 0.24s;
+}
+
+.profile-feed-skeleton .feed-loader-stack > pre:nth-child(2) {
+  animation-delay: 0.22s;
+}
+
+.page-heading > :nth-child(2).text-skeleton {
+  animation-delay: 0.1s;
+}
+
+.page-heading > :nth-child(3).text-skeleton {
+  animation-delay: 0.2s;
+}
+
+#thread-summary .thread-summary .text-skeleton {
+  animation-delay: 0.12s;
+}
+
+.feed-loader {
+  display: grid;
+  gap: 0.55rem;
+  min-height: 12rem;
+  min-width: 0;
+}
+
+.feed-loader-status {
+  letter-spacing: 0.02em;
+  margin: 0;
+  min-height: 1.25rem;
+  animation: text-skeleton-live 2s ease-in-out infinite;
+  animation-delay: 0.06s;
+}
+
+.feed-loader-stack {
+  gap: 0.65rem;
+}
+
+/* Empty until ascii.js measures column width; keeps first paint height stable. */
+.feed-loader-stack > pre.feed-loader-card:empty {
+  min-height: 7lh;
+  min-height: 8.75rem;
+}
+
+@keyframes text-skeleton-live {
+  0%,
+  100% {
+    opacity: 0.58;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 0.92;
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes skeleton-bob {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .text-skeleton,
+  .text-skeleton-note,
+  .feed-loader-status,
+  .profile-skeleton-avatar,
+  .thread-person-avatar-skeleton,
+  .thread-tree-skeleton-wave,
+  .thread-tree-skeleton .hn-tree-avatar-skel {
+    animation: none;
+  }
+}
+
+.profile-skeleton-avatar {
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  color: var(--muted);
+  animation: skeleton-bob 1.45s ease-in-out infinite;
+}
+
+.profile-skeleton-display-name {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-feed-skeleton {
+  display: grid;
+  gap: 0.75rem;
+  min-height: 17rem;
+}
+
+.profile-right-panel-skeleton {
+  min-height: 10rem;
+}
+
+.thread-focus-skeleton {
+  min-height: 14rem;
+}
+
+.thread-replies-skeleton {
+  min-height: 14rem;
+}
+
+.thread-tree-skeleton {
+  min-height: 11rem;
+  pointer-events: none;
+  user-select: none;
+}
+
+.thread-tree-skeleton .thread-tree-root-note,
+.thread-tree-skeleton .thread-tree-item,
+.thread-tree-skeleton .hn-comtr {
+  cursor: default;
+}
+
+.thread-tree-skeleton-item:nth-child(2) .thread-tree-skeleton-wave {
+  animation-delay: 0.18s;
+}
+
+.thread-tree-skeleton-wave {
+  margin: 0.35rem 0 0;
+  min-height: 3.5lh;
+  min-height: 4.5rem;
+}
+
+.thread-tree-load-error {
+  margin: 0.75rem 0 0;
+  padding: 0 0.2rem;
+}
+
+.thread-replies-page-skeleton {
+  margin-top: 0.65rem;
+  min-height: 6rem;
+  min-width: 0;
+}
+
+.thread-person-avatar-skeleton {
+  align-items: center;
+  animation: skeleton-bob 1.45s ease-in-out infinite;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  display: inline-flex;
+  flex-shrink: 0;
+  font-weight: 700;
+  height: 2.25rem;
+  justify-content: center;
+  line-height: 1;
+  width: 2.25rem;
+}
+
+.thread-people > li:nth-child(2) .thread-person-avatar-skeleton {
+  animation-delay: 0.18s;
+}
+
+.error,
+.danger h2 {
+  color: var(--danger);
+}
+
+.note-meta {
+  color: var(--muted);
+  font-size: 8pt;
+}
+
+/* X-style feed context above the ascii card (repost banner, reply targets). */
+.note-feed-context {
+  color: var(--muted);
+  font-size: 0.88em;
+  line-height: 1.35;
+  margin: 0 0 0 0;
+  min-width: 0;
+}
+
+.note-feed-context a {
+  color: var(--link);
+  text-decoration: none;
+}
+
+.note-feed-context a:hover,
+.note-feed-context a:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 0.12em;
+}
+
+.note-feed-context--repost {
+  padding-left: 1.35em;
+ 
+  position: relative;
+}
+
+.note-feed-context--repost::before {
+  color: var(--muted);
+  content: "\21bb";
+  font-size: 0.95em;
+  left: 0;
+  line-height: 1;
+  position: absolute;
+  top: 0.08em;
+}
+
+/* Repost line sits above the card; ↻ at gutter, name aligns with "Replying to" inset below. */
+article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--repost {
+  padding-left: var(--feed-repost-text-start);
+}
+
+article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--repost::before {
+  left: var(--feed-avatar-gutter);
+}
+
+/* Reply context row inside the ascii card (below header, above body).
+   Body is inline HTML + trailing spaces in the same <pre> line as other boxed rows. */
+.ascii-line-reply-context {
+  color: var(--muted);
+  /* Keep reply + padding + closing pipe on one monospace row (same as other boxed lines). */
+  white-space: nowrap;
+}
+
+.ascii-line-reply-context .ascii-note-reply-context-body {
+  display: inline;
+}
+
+.ascii-line-reply-context .ascii-note-reply-context-body a {
+  color: var(--link);
+  text-decoration: none;
+}
+
+.ascii-line-reply-context .ascii-note-reply-context-body a:hover,
+.ascii-line-reply-context .ascii-note-reply-context-body a:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 0.12em;
+}
+
+.ascii-line-reply-context .note-feed-context-lead,
+.ascii-line-reply-context .note-feed-context-tail {
+  color: var(--muted);
+}
+
+/* Narrow-screen collapsed notes: "view more" sits in-body with the same inset as `.ascii-line-reply-context`. */
+.ascii-line-note-view-more .link-button {
+  margin: 0;
+  vertical-align: baseline;
+}
+
+.thread-toolbar-slot {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+}
+
+.thread-header {
+  margin: 1rem 0;
+}
+
+/* One row: back | OP / depth | tree view — 1fr | auto | 1fr keeps [OP] at true center when
+   the toggle label width changes; outer columns absorb asymmetry. */
+.thread-header-top {
+  align-items: baseline;
+  column-gap: 0.5rem;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+}
+
+.thread-header-top .thread-back {
+  justify-self: start;
+  margin: 0.35rem 0;
+  min-width: 0;
+}
+
+.thread-header-actions {
+  justify-self: end;
+  margin: 0.35rem 0;
+}
+
+.thread-summary {
+  margin: 0.5rem 0 1rem;
+}
+
+.thread-header-op {
+  font-size: 0.95em;
+  justify-self: center;
+  margin: 0.35rem 0;
+  min-width: 0;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.thread-op-label {
+  color: var(--text);
+}
+
+.thread-header-op-trail {
+  white-space: nowrap;
+}
+
+.thread-focus {
+  margin: 0.5rem 0 1rem;
+}
+
+.thread-focus-parent {
+  margin: 0 0 0.25rem;
+}
+
+.thread-focus-selected {
+  /* Top margin reserves room for the avatar's top half which overflows
+     above the first text line of the selected note. */
+  margin: 1.4rem 0 0.5rem 0;
+}
+
+.thread-hidden-toggle {
+  margin: 0.5rem 0;
+}
+
+/* Pseudo-elements sometimes use negative top; clip so tree chrome cannot paint outside this column. */
+#thread-tree-view:not([hidden]) {
+  overflow: clip;
+}
+
+.thread-tree-mode {
+  /* Single source for row geometry — spine + branches use this, not unrelated rem values. */
+  --thread-tree-avatar-size: 2.35rem;
+  --thread-tree-branch-margin: 0.35rem;
+  --thread-tree-column-gap: 0.55rem;
+  --thread-tree-gutter-width: 1.8rem;
+  /* Where the spine meets the horizontal arm: avatar midline on the header row. */
+  --thread-tree-join-y: calc(var(--thread-tree-avatar-size) / 2 - 0.5px);
+  /* Upper spine default: one row gap + join (siblings under the same list). */
+  --thread-tree-parent-rise: calc(var(--thread-tree-row-gap) + var(--thread-tree-join-y));
+  --thread-tree-row-gap: 0.55rem;
+  --thread-tree-spine-x: 0.95rem;
+  /* Space between OP card and first reply list — must match `.thread-tree-mode > .thread-tree` margin-top. */
+  --thread-tree-trunk-gap: 0.85rem;
+  /* Inset of the reply list (and OP row) from the mode edge — spines share this x. */
+  --thread-tree-trunk-margin: 0.1rem;
+  /* Padding avoids margin-collapsing with `#thread-summary` that could confuse layout bleed. */
+  margin: 0 0 1rem;
+  padding-block-start: 0.65rem;
+  position: relative;
+  /* HN tree: small avatars in thread mode (must match .hn-tree-avatar rules). */
+  --hn-tree-avatar-size: 1.35rem;
+  --hn-tree-avatar-margin-top: 0.06rem;
+  --hn-tree-rail-join: calc(var(--hn-tree-avatar-margin-top) + var(--hn-tree-avatar-size) / 2 - 0.5px);
+  --hn-tree-rail-color: color-mix(in srgb, var(--fg) 26%, var(--bg));
+  /* Gutter for branch + rail (::before horizontal spans this minus 1px). */
+  --hn-tree-li-pad-left: 0.9375rem;
+  /* Nested parent `hn-li-body` trunk: reach first child’s join row under nested ul. */
+  --hn-tree-trunk-into-ul: calc(0.28rem + var(--hn-tree-rail-join) + 0.12rem);
+}
+
+.thread-tree-root-note {
+  align-items: start;
+  cursor: pointer;
+  display: grid;
+  gap: var(--thread-tree-column-gap);
+  grid-template-columns: var(--thread-tree-gutter-width) minmax(0, 1fr);
+  /* Same inset as `.thread-tree-mode > .thread-tree` so the OP gutter spine lines up with the first reply. */
+  margin: 0 0 0.35rem var(--thread-tree-trunk-margin);
+  min-width: 0;
+  position: relative;
+}
+
+/* With replies: no empty gutter column beside the root — note sits left like `tree` root text; `|` begins under it via first reply gutter + bridge. */
+.thread-tree-mode:has(> .thread-tree) .thread-tree-root-note {
+  background-color: var(--bg);
+  gap: 0;
+  grid-template-columns: minmax(0, 1fr);
+  /* First reply gutter ::before is painted after this node in DOM — sit above the reply list so the bridge never draws over the root avatar. */
+  z-index: 2;
+}
+
+.thread-tree-mode:has(> .thread-tree) .thread-tree-root-gutter {
+  display: none;
+}
+
+/* Root gutter is structural only (`tree`-style `.` has no downward trunk beside the label — trunk is bridged via first reply gutter + JS-measured rise). */
+.thread-tree-mode:not(:has(> .thread-tree)) .thread-tree-root-gutter {
+  align-self: start;
+  min-height: var(--thread-tree-avatar-size);
+  position: relative;
+}
+
+.thread-tree-root-stack {
+  min-width: 0;
+}
+
+/*
+ * OP → replies spine: first-reply gutter ::before is under this subtree (tree z-index < root).
+ * Draw the missing segment on the root stack so it shows from below the OP avatar through the
+ * long OP body and the inter-block margin to the first gutter spine (same x as --thread-tree-spine-x).
+ */
+.thread-tree-mode:has(> .thread-tree) .thread-tree-root-stack {
+  position: relative;
+}
+
+.thread-tree-mode:has(> .thread-tree) .thread-tree-root-stack::after {
+  border-left: 1px solid var(--fg);
+  bottom: calc(-1 * max(0.35rem, var(--thread-tree-trunk-gap)));
+  content: "";
+  left: var(--thread-tree-spine-x);
+  pointer-events: none;
+  position: absolute;
+  top: var(--thread-tree-avatar-size);
+  width: 0;
+  z-index: 3;
+}
+
+.thread-tree-root-note.is-selected .thread-tree-meta strong {
+  text-decoration: underline;
+}
+
+.thread-tree-mode > .thread-tree {
+  margin: var(--thread-tree-trunk-gap) 0 0 var(--thread-tree-trunk-margin);
+  position: relative;
+  z-index: 1;
+}
+
+.thread-tree {
+  display: grid;
+  gap: 0;
+}
+
+.thread-tree.thread-tree-branch {
+  margin: var(--thread-tree-branch-margin) 0 0;
+}
+
+.thread-tree-item {
+  cursor: pointer;
+  isolation: isolate;
+  /* Margin (not padding): keeps tail-rail from eating into the sibling gap. */
+  margin-bottom: var(--thread-tree-row-gap);
+  min-width: 0;
+  position: relative;
+}
+
+/* Two-column header row only — prevents full-subtree gutter stretching from breaking join-y math. */
+.thread-tree-row-cols {
+  align-items: start;
+  display: grid;
+  gap: var(--thread-tree-column-gap);
+  grid-template-columns: var(--thread-tree-gutter-width) minmax(0, 1fr);
+  min-width: 0;
+  position: relative;
+  z-index: 1;
+}
+
+/* Downward continuation (replaces in-gutter .thread-tree-tail spanning the whole subtree height). */
+.thread-tree-tail-rail {
+  bottom: 0;
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  top: var(--thread-tree-join-y);
+  width: var(--thread-tree-gutter-width);
+  z-index: 0;
+}
+
+.thread-tree-tail-rail::before {
+  border-left: 1px solid var(--fg);
+  bottom: 0;
+  content: "";
+  left: var(--thread-tree-spine-x);
+  position: absolute;
+  top: 0;
+  width: 0;
+}
+
+/*
+ * Single-loaded-child L (`└`): `--thread-tree-tail-stub-height` reaches only to the child's join row.
+ * If this item is not the last sibling (`--continuation-below`), `::after` draws the ancestry column below the subtree.
+ */
+.thread-tree-tail-rail--stub::before {
+  bottom: auto;
+  height: var(--thread-tree-tail-stub-height, 0px);
+}
+
+.thread-tree-tail-rail--stub.thread-tree-tail-rail--continuation-below::after {
+  border-left: 1px solid var(--fg);
+  bottom: 0;
+  content: "";
+  left: var(--thread-tree-spine-x);
+  position: absolute;
+  top: var(--thread-tree-tail-continuation-top, 0px);
+  width: 0;
+}
+
+.thread-tree-item:last-child {
+  margin-bottom: 0;
+}
+
+.thread-tree-item.is-selected .thread-tree-meta strong {
+  text-decoration: underline;
+}
+
+.thread-tree-gutter {
+  align-self: start;
+  min-height: var(--thread-tree-avatar-size);
+  position: relative;
+  width: 100%;
+  z-index: 1;
+}
+
+/* Nested connectors paint under the parent's header card so upward ::before stubs don't streak over avatars. */
+.thread-tree-card-stack > .thread-tree-card:first-child {
+  position: relative;
+  z-index: 2;
+}
+
+/* Upper spine: from (row top − parent-rise) down to the join line at avatar midline. */
+.thread-tree-gutter.has-parent::before {
+  border-left: 1px solid var(--fg);
+  content: "";
+  height: calc(var(--thread-tree-parent-rise) + var(--thread-tree-join-y));
+  left: var(--thread-tree-spine-x);
+  position: absolute;
+  top: calc(-1 * var(--thread-tree-parent-rise));
+}
+
+/* First reply: upward connector rise is set inline via layout (fallback when JS has not measured yet). */
+.thread-tree-mode > .thread-tree > .thread-tree-item:first-child .thread-tree-gutter.has-parent {
+  --thread-tree-parent-rise: calc(var(--thread-tree-trunk-gap) + var(--thread-tree-join-y) + 4rem);
+}
+
+/* Nested branch first child: same — inline overrides this fallback unless layout has not run. */
+.thread-tree-branch > .thread-tree-item:first-child .thread-tree-gutter.has-parent {
+  --thread-tree-parent-rise: calc(var(--thread-tree-branch-margin) + var(--thread-tree-join-y));
+}
+
+/* Deeper siblings: same geometry as top-level non-first. */
+.thread-tree-branch > .thread-tree-item:not(:first-child) .thread-tree-gutter.has-parent {
+  --thread-tree-parent-rise: calc(var(--thread-tree-row-gap) + var(--thread-tree-join-y));
+}
+
+.thread-tree-mode > .thread-tree > .thread-tree-item:not(:first-child) .thread-tree-gutter.has-parent {
+  --thread-tree-parent-rise: calc(var(--thread-tree-row-gap) + var(--thread-tree-join-y));
+}
+
+/* Horizontal branch only; vertical through join comes from `::before` + `.thread-tree-tail-rail`. */
+.thread-tree-elbow {
+  background-color: var(--fg);
+  height: 1px;
+  left: var(--thread-tree-spine-x);
+  position: absolute;
+  top: calc(var(--thread-tree-join-y) - 0.5px);
+  width: calc(var(--thread-tree-gutter-width) - var(--thread-tree-spine-x));
+}
+
+.thread-tree-card-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+
+.thread-tree-card {
+  min-width: 0;
+  padding-left: 0.35rem;
+}
+
+.thread-tree-row {
+  align-items: start;
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: var(--thread-tree-avatar-size) minmax(0, 1fr);
+}
+
+.thread-tree-avatar,
+.thread-tree-avatar-fallback {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+  height: var(--thread-tree-avatar-size);
+  object-fit: cover;
+  width: var(--thread-tree-avatar-size);
+}
+
+.thread-tree-avatar {
+  display: block;
+}
+
+.thread-tree-avatar-fallback {
+  align-items: center;
+  display: flex;
+  font-weight: 700;
+  justify-content: center;
+}
+
+.thread-tree-main {
+  min-width: 0;
+}
+
+.thread-tree-meta {
+  margin: 0;
+}
+
+.thread-tree-text {
+  display: grid;
+  gap: 0.1rem;
+  margin-top: 0.18rem;
+  min-width: 0;
+}
+
+.thread-tree-text-line {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.continue-thread-tree {
+  margin: 0.25rem 0 0;
+}
+
+.thread-tree-media {
+  margin: 0.3rem 0 0;
+}
+
+.thread-tree-media-toggle {
+  padding: 0;
+}
+
+.thread-tree-media-preview {
+  margin-top: 0.35rem;
+}
+
+.thread-tree-media-preview .note-media-preview {
+  margin: 0.15rem 0;
+  width: min(100%, 28rem);
+}
+
+@media (max-width: 700px) {
+  .thread-tree-mode {
+    --thread-tree-avatar-size: 1.9rem;
+    --thread-tree-gutter-width: 1.55rem;
+    --thread-tree-spine-x: 0.82rem;
+    --thread-tree-trunk-margin: 0;
+  }
+
+  .thread-tree-mode > .thread-tree {
+    margin-left: 0;
+  }
+
+  .thread-tree-row-cols {
+    grid-template-columns: var(--thread-tree-gutter-width) minmax(0, 1fr);
+  }
+
+  .thread-tree-row {
+    gap: 0.5rem;
+  }
+}
+
+/* HN-style flat thread tree (indent column + comhead / commtext / reply). */
+.hn-thread-tree-mode.thread-tree-mode:has(> .thread-tree) > .thread-tree-root-note.hn-story {
+  align-items: flex-start;
+  background-color: var(--bg);
+  display: flex;
+  flex-direction: row;
+  gap: 0;
+  grid-template-columns: unset;
+  margin: 0 0 0.35rem var(--thread-tree-trunk-margin);
+  min-width: 0;
+  padding: 0 0 0.2rem;
+  z-index: auto;
+}
+
+.hn-root-stack {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.hn-thread-tree-mode .hn-tree-avatar {
+  align-self: start;
+  display: inline-flex;
+  flex-shrink: 0;
+  margin-right: 0.45rem;
+  margin-top: var(--hn-tree-avatar-margin-top);
+  text-decoration: none;
+}
+
+.hn-thread-tree-mode .hn-tree-avatar .thread-tree-avatar,
+.hn-thread-tree-mode .hn-tree-avatar .thread-tree-avatar-fallback {
+  border-radius: 0.22rem;
+  font-size: 0.62rem;
+  height: var(--hn-tree-avatar-size);
+  width: var(--hn-tree-avatar-size);
+}
+
+.thread-tree-skeleton .hn-tree-avatar-skel {
+  animation: skeleton-bob 1.45s ease-in-out infinite;
+  background: var(--border);
+  border-radius: 0.22rem;
+  display: block;
+  height: 1.35rem;
+  width: 1.35rem;
+}
+
+.hn-thread-tree-mode > .hn-story.thread-tree-root-note .hn-comhead {
+  margin-top: 0;
+}
+
+.hn-comment-tree.thread-tree {
+  display: block;
+}
+
+.hn-comtr {
+  font-family: Verdana, Geneva, ui-sans-serif, system-ui, sans-serif;
+  margin: 0 0 0.35rem;
+  min-width: 0;
+}
+
+.hn-comtr-inner {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: row;
+  position: relative;
+}
+
+.hn-ind {
+  flex-shrink: 0;
+}
+
+/* HN tree: nested ul/li tree lines (CodePen-style ::before / ::after, avatar-aligned join). */
+.hn-comment-tree.thread-tree > .hn-tree-ul {
+  list-style: none;
+  margin: 0;
+  padding-left: 0.2rem;
+}
+
+.hn-tree-ul {
+  list-style: none;
+  margin: 0;
+  padding: 0.5rem 0 0 0.2rem;
+}
+
+.hn-thread-tree-mode .hn-tree-ul > li.hn-comtr {
+  box-sizing: border-box;
+  list-style: none;
+  margin: 0rem 0 0rem 0.45rem;
+  padding: 0.28rem 0 0.28rem var(--hn-tree-li-pad-left);
+  position: relative;
+}
+
+.hn-thread-tree-mode .hn-tree-ul > li.hn-comtr::before {
+  background-color: var(--hn-tree-rail-color);
+  content: "";
+  height: 1px;
+  left: 0;
+  position: absolute;
+  top: var(--hn-tree-rail-join);
+  /* Span gutter to the avatar column (same x as CodePen: branch to icon). */
+  width: calc(var(--hn-tree-li-pad-left) - 1px);
+}
+
+.hn-thread-tree-mode .hn-tree-ul > li.hn-comtr::after {
+  background-color: var(--hn-tree-rail-color);
+  bottom: 0;
+  content: "";
+  left: 0;
+  position: absolute;
+  top: 0;
+  width: 1px;
+}
+
+.hn-thread-tree-mode .hn-tree-ul > li.hn-comtr:last-child::after {
+  bottom: auto;
+  height: var(--hn-tree-rail-join);
+}
+
+.hn-li-body {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: row;
+  min-width: 0;
+}
+
+/* Vertical trunk from bottom-center of avatar down into nested replies (meets child branch lines). */
+.hn-li-body:has(+ .hn-tree-ul) {
+  position: relative;
+}
+
+.hn-li-body:has(+ .hn-tree-ul)::before {
+  background-color: var(--hn-tree-rail-color);
+  bottom: calc(-1 * var(--hn-tree-trunk-into-ul));
+  content: "";
+  left: calc(var(--hn-tree-avatar-size) / 2 - 0.5px);
+  pointer-events: none;
+  position: absolute;
+  top: calc(var(--hn-tree-avatar-margin-top) + var(--hn-tree-avatar-size));
+  width: 1px;
+  z-index: 0;
+}
+
+/*
+ * OP → first reply: trunk follows full OP height (any wrap / mobile), then bridges margin + gap
+ * into the first reply join (same tail as nested `hn-li-body` uses). Implemented on `.hn-story`
+ * so `top` + negative `bottom` stretch with content instead of a fixed `height` on the avatar.
+ */
+.hn-thread-tree-mode > .hn-story.thread-tree-root-note.hn-story:has(+ .hn-comment-tree) {
+  position: relative;
+  z-index: 0;
+}
+
+.hn-thread-tree-mode > .hn-story.thread-tree-root-note.hn-story:has(+ .hn-comment-tree) > .hn-tree-avatar {
+  position: relative;
+  z-index: 1;
+}
+
+.hn-thread-tree-mode > .hn-story.thread-tree-root-note.hn-story:has(+ .hn-comment-tree)::after {
+  background-color: var(--hn-tree-rail-color);
+  bottom: calc(-1 * (var(--thread-tree-trunk-gap) + var(--hn-tree-trunk-into-ul)));
+  content: "";
+  left: calc(var(--hn-tree-avatar-size) / 2 - 0.5px);
+  pointer-events: none;
+  position: absolute;
+  top: calc(var(--hn-tree-avatar-margin-top) + var(--hn-tree-avatar-size));
+  width: 1px;
+  z-index: 0;
+}
+
+.hn-default {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.hn-comhead {
+  font-size: 0.85rem;
+  line-height: 1.35;
+  margin: 0 0 0.12rem;
+}
+
+.hn-story-comhead {
+  font-size: 0.9rem;
+}
+
+.hn-comhead a {
+  color: var(--fg);
+}
+
+.hn-navs,
+.hn-navs a,
+.hn-age a {
+  color: var(--muted);
+}
+
+.hn-commtext.thread-tree-text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 1rem;
+  line-height: 1.45;
+  margin-top: 0.08rem;
+}
+
+.hn-reply {
+  margin: 0.3rem 0 0;
+}
+
+.hn-reply-font {
+  font-size: 0.85rem;
+}
+
+.hn-continue {
+  margin: 0.1rem 0 0.2rem;
+}
+
+.hn-continue-font {
+  font-size: 0.85rem;
+}
+
+.hn-comtr-continue .hn-default {
+  color: var(--muted);
+}
+
+.hn-collapse-nav .link-button {
+  font-size: inherit;
+  padding: 0;
+}
+
+.hn-tree-collapsible[hidden] {
+  display: none !important;
+}
+
+.hn-comtr.is-selected .hn-comhead > a:first-of-type,
+.hn-story.thread-tree-root-note.is-selected .hn-story-comhead > a:first-of-type {
+  text-decoration: underline;
+}
+
+.thread-tree-summary-chain .hn-comtr {
+  margin-bottom: 0.28rem;
+}
+
+.note-content p,
+.note-body p {
+  margin: 0.45rem 0;
+  overflow-wrap: anywhere;
+}
+
+.note-content,
+.reply-content {
+  display: inline;
+}
+
+.ascii-note-content {
+  display: block;
+  width: 100%;
+}
+
+.note-content.is-collapsed,
+.thread-tree-text.is-collapsed {
+  max-height: 8.7rem;
+  overflow: hidden;
+  position: relative;
+}
+
+.note-content.is-collapsed::after,
+.thread-tree-text.is-collapsed::after {
+  background: linear-gradient(transparent, var(--bg));
+  bottom: 0;
+  content: "";
+  height: 2.6rem;
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+}
+
+.view-more {
+  margin: 0.25rem 0 0.45rem;
+}
+
+.ascii-border {
+  display: none;
+}
+
+.ascii-card,
+.ascii-reply {
+  background: transparent;
+  border: 0;
+  color: var(--fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: inherit;
+  line-height: inherit;
+  margin: 0;
+  /* Allow shrinking inside grid/flex columns so long monospace lines do not force page-wide overflow. */
+  min-width: 0;
+  max-width: 100%;
+  /* clip (not hidden): hidden+x forces overflow-y:auto and clips abspos avatars */
+  overflow-x: clip;
+  padding: 0;
+  white-space: pre;
+}
+
+.ascii-source {
+  display: none;
+}
+
+.ascii-card a,
+.ascii-reply a,
+.ascii-card button,
+.ascii-reply button {
+  color: var(--link);
+}
+
+.note-image-toggle {
+  color: var(--link);
+  display: inline-block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: 0.9rem;
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-style: dashed;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+
+button.note-image-toggle {
+  background: none;
+  border: 0;
+  cursor: pointer;
+  max-width: 100%;
+  padding: 0;
+  text-align: inherit;
+}
+
+.note-media-preview,
+.note-image-preview {
+  margin: 0;
+  width: 100%;
+}
+
+.note-media-drawer {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.45rem 0 0;
+}
+
+.ascii-card > .note-media-drawer,
+.ascii-reply > .note-media-drawer {
+  margin: 0.4rem 0 0.35rem;
+}
+
+/* When the parent comment displays a thread rail in its pre (it has
+   children, or it isn't the last sibling), continue the rail down the
+   left side of an expanded media drawer using the same `|` glyphs as
+   the surrounding monospace text so the column visually flows into the
+   next reply. */
+.comment[data-ascii-has-children="true"] .ascii-reply > .note-media-drawer:not([hidden]),
+.comment[data-ascii-is-last="false"] .ascii-reply > .note-media-drawer:not([hidden]) {
+  padding-left: 1ch;
+  position: relative;
+}
+
+.comment[data-ascii-has-children="true"] .ascii-reply > .note-media-drawer:not([hidden])::before,
+.comment[data-ascii-is-last="false"] .ascii-reply > .note-media-drawer:not([hidden])::before {
+  bottom: 0;
+  color: var(--fg);
+  content: "|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|";
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-size: inherit;
+  left: 0;
+  line-height: 1.25em;
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  white-space: pre;
+  width: 1ch;
+}
+
+.ascii-inline-media {
+  display: block;
+  margin: 0.2rem 0;
+  width: 100%;
+}
+
+.ascii-line.note-image-boxed-row {
+  align-items: start;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  white-space: normal;
+  width: var(--ascii-box-row-width, 100%);
+  max-width: 100%;
+}
+
+.ascii-line.note-image-boxed-row,
+.ascii-line.note-image-boxed-row  {
+  white-space: pre;
+}
+
+.ascii-line.note-image-boxed-row > .ascii-inline-media,
+.ascii-line.note-image-boxed-row > .note-image-toggle {
+  min-width: 0;
+}
+
+.ascii-line.note-image-boxed-row > .note-image-toggle {
+  display: block;
+  padding-right: 0.4rem;
+}
+
+.note-footer-media-link {
+  padding: 0;
+}
+
+.note-media-preview img,
+.note-media-preview video,
+.note-image-preview img {
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  display: block;
+  max-height: min(60vh, 28rem);
+  max-width: min(100%, 36rem);
+}
+
+.note-media-preview video {
+  width: min(100%, 36rem);
+}
+
+.note-video-fallback {
+  margin: 0.35rem 0 0;
+  font-size: 0.9rem;
+}
+
+.note-image-preview img.is-clickable {
+  cursor: zoom-in;
+}
+
+.note-image-preview img.is-collapsible {
+  cursor: pointer;
+}
+
+.image-viewer-dialog {
+  background: transparent;
+  border: 0;
+  max-height: 100vh;
+  max-width: 100vw;
+  padding: 0;
+  width: 100vw;
+}
+
+.image-viewer-dialog::backdrop {
+  background: rgb(0 0 0 / 82%);
+}
+
+.image-viewer-close-row {
+  display: flex;
+  justify-content: flex-end;
+  left: 0;
+  margin: 0;
+  padding: 1rem;
+  position: fixed;
+  right: 0;
+  top: 0;
+  z-index: 1;
+}
+
+.image-viewer-close-button {
+  color: #fff;
+  min-width: 2.25rem;
+  padding: 0.25rem 0.5rem;
+  text-shadow: 0 0 2px rgb(0 0 0 / 80%);
+}
+
+.image-viewer-body {
+  align-items: center;
+  box-sizing: border-box;
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 3.5rem 1rem 1rem;
+  position: relative;
+  width: 100vw;
+}
+
+.image-viewer-body img {
+  display: block;
+  max-height: calc(100vh - 4.5rem);
+  max-width: min(96vw, 96rem);
+  object-fit: contain;
+}
+
+.image-viewer-nav {
+  align-items: center;
+  background: rgb(0 0 0 / 55%);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 1.4rem;
+  height: 2.5rem;
+  justify-content: center;
+  line-height: 1;
+  padding: 0;
+  position: fixed;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2.5rem;
+  z-index: 2;
+}
+
+.image-viewer-nav:hover,
+.image-viewer-nav:focus-visible {
+  background: rgb(0 0 0 / 75%);
+}
+
+.image-viewer-nav-prev {
+  left: 1rem;
+}
+
+.image-viewer-nav-next {
+  right: 1rem;
+}
+
+.ascii-line {
+  display: inline;
+  margin: 0;
+}
+
+.ascii-row {
+  display: grid;
+  gap: 0;
+  grid-template-columns: 1ch minmax(0, calc(100% - 2ch)) 1ch;
+  margin-left: auto;
+  margin-right: auto;
+  width: min(var(--page-max), 100%);
+}
+
+.ascii-edge {
+  color: var(--border);
+  user-select: none;
+}
+
+.ascii-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.cards {
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.login-intro {
+  margin: 0.55rem 0;
+}
+
+.login-intro p {
+  margin: 0;
+}
+
+.login-tabs {
+  margin-top: 0.35rem;
+}
+
+.login-tabs .user-tab-nav {
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.75rem;
+  padding-bottom: 0.45rem;
+}
+
+.login-tab-panel {
+  border: 1px solid var(--border);
+  padding: 0.75rem;
+}
+
+.login-tab-panel h2 {
+  margin-top: 0;
+}
+
+.login-tab-panel p {
+  margin-top: 0;
+}
+
+.login-tab-panel form {
+  display: grid;
+  gap: 0.45rem;
+  justify-items: start;
+  margin-top: 0.5rem;
+}
+
+.login-tab-panel input {
+  width: min(100%, 34rem);
+}
+
+.login-tab-actions {
+  margin: 0.55rem 0 0;
+}
+
+.login-tab-actions button + button {
+  margin-left: 0.2rem;
+}
+
+.login-tab-panel-danger {
+  border-color: var(--danger);
+}
+
+.login-tab-panel-danger h2 {
+  color: var(--danger);
+}
+
+.login-help-panel {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.login-help-panel p {
+  margin: 0;
+}
+
+.login-help-list {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.login-help-list li {
+  line-height: 1.3;
+}
+
+.profile-content {
+  display: flex;
+  gap: 1rem;
+}
+
+.user-profile-column {
+  max-width: 640px;
+  min-width: 0;
+}
+
+.user-profile-column .feed {
+  min-width: 0;
+}
+
+.user-profile-column .profile-tabs,
+.user-profile-column .user-tab-panel,
+.user-profile-column .feed,
+.user-profile-column .note,
+.user-profile-column .ascii-card,
+.user-profile-column .note-media-drawer {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.profile-modern {
+  margin-top: 0;
+}
+
+.profile-back {
+  white-space: nowrap;
+}
+
+.profile-main {
+  margin-top: 0;
+  padding: 0 0.75rem;
+}
+
+.profile-hero {
+  column-gap: 1rem;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto;
+  padding: 0 0.75rem;
+  row-gap: 0.35rem;
+}
+
+.profile-hero .profile-back {
+  grid-column: 1 / -1;
+  grid-row: 1;
+  justify-self: start;
+}
+
+.profile-avatar-wrap {
+  align-self: center;
+  grid-column: 1;
+  grid-row: 2 / span 2;
+}
+
+.profile-hero .profile-display-name {
+  align-self: end;
+  grid-column: 2;
+  grid-row: 2;
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-display-name {
+  font-size: 1.25rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.profile-hero .profile-actions {
+  align-self: start;
+  grid-column: 2;
+  grid-row: 3;
+  justify-self: start;
+}
+
+.profile-avatar {
+  background: var(--panel);
+  border: 3px solid var(--bg);
+  border-radius: 50%;
+  height: 96px;
+  object-fit: cover;
+  width: 96px;
+}
+
+.profile-modern .profile-avatar,
+.profile-modern .profile-avatar-fallback {
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  height: 96px;
+  width: 96px;
+}
+
+.profile-avatar-fallback {
+  align-items: center;
+  display: inline-flex;
+  font-weight: 700;
+  justify-content: center;
+}
+
+.profile-action-link {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: inherit;
+  cursor: pointer;
+  display: inline-block;
+  font: inherit;
+  padding: 0.25rem 0.85rem;
+  white-space: nowrap;
+}
+
+.profile-action-link[aria-pressed="true"] {
+  background: var(--panel);
+}
+
+.profile-ident {
+  margin-top: 0.65rem;
+  min-width: 0;
+  overflow-wrap: break-word;
+  overflow-wrap: anywhere;
+}
+
+.profile-ident p {
+  margin: 0.2rem 0;
+  max-width: 100%;
+}
+
+.profile img,
+.profile-content img {
+  width: 72px;
+  height: 72px;
+  object-fit: cover;
+}
+
+.profile-ascii-avatar-fallback {
+  align-items: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-sizing: border-box;
+  display: inline-flex;
+  flex-shrink: 0;
+  font-weight: 700;
+  height: 72px;
+  justify-content: center;
+  width: 72px;
+}
+
+.columns {
+  columns: 2;
+}
+
+.thread-replies {
+  min-width: 0;
+}
+
+.comments {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/* Comment layout for threaded replies. The pre itself is full-width with a
+   `|` rail at column 0; the avatar is absolutely positioned over the rail
+   column so the rail glyphs above and below visually flow into and out of
+   it like a single vertical thread. Each depth level adds 1ch of left
+   margin so a child's rail column lines up under its parent's rail
+   column. */
+.comment {
+  --avatar-left: -0.4ch;
+  --avatar-size: 2.4em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  margin-left: calc((var(--depth) - 1) * 1ch);
+  /* Top margin keeps the absolutely-positioned avatar (which overflows
+     above the first text row by ~half its height) from colliding with
+     the parent's last reply line above. */
+  margin-top: 0.9em;
+  padding-left: 1ch;
+  position: relative;
+}
+
+.comments > .comment:first-child {
+  margin-top: 0.4em;
+}
+
+/* Linear thread: wrapper span must not create a layout box so reply lines
+   align with the monospace grid (see `display: contents` caveats vs hidden). */
+.thread-reply-collapse:not([hidden]) {
+  display: contents;
+}
+
+/* Tree view: collapsing a card hides its nested reply list and connector ul. */
+.hn-comtr.thread-tree-item:has(.hn-tree-collapsible[hidden]) > .hn-tree-ul {
+  display: none;
+}
+
+.comment-avatar {
+  /* Sit just to the right of the rail column so the rail `|` glyph at
+     pre col 0 (centered at 0.5ch from the padding edge) remains visible
+     to the left of the avatar, with the avatar starting at ~1.2ch from
+     the padding edge. Centered vertically on the first text line
+     (line-height 1.25em → center at 0.625em from pre top). */
+  position: absolute;
+  left: var(--avatar-left);
+  top: calc(0.625em - var(--avatar-size) / 2);
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  border-radius: 0;
+  overflow: hidden;
+  z-index: 2;
+  text-decoration: none;
+  background: var(--panel);
+}
+
+.comment-avatar img {
+  display: block;
+  height: 100%;
+  object-fit: cover;
+  width: 100%;
+}
+
+.comment-avatar:not(:has(img)) {
+  align-items: center;
+  border: 1px solid var(--border);
+  display: flex;
+  font-weight: 700;
+  justify-content: center;
+}
+
+.comment-avatar:not(:has(img))::before {
+  content: "@";
+  line-height: 1;
+}
+
+/* Header line of the reply pre: indent past the avatar so the username
+   text starts to the right of the avatar's right edge with a small gap.
+   Avatar left edge is at 1.2ch from the padding edge; right edge is at
+   1.2ch + avatar-size. Add 0.6ch gap before the username starts. */
+.ascii-reply > .ascii-line:first-child {
+  padding-left: calc(1ch + var(--avatar-size));
+}
+
+.note.thread-focus-selected {
+  --avatar-size: 2.4em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  /* No padding-left: the selected note's content (and reply link) sits
+     flush with the comment's outer-left edge so it visually flows in the
+     column directly under the avatar. The header line is still pushed
+     past the avatar via padding-left on its first :ascii-line. */
+  position: relative;
+}
+
+.note-avatar {
+  /* Sit flush with the left edge of the selected note. The header line
+     is pushed past the avatar's right edge via padding-left on the
+     first :ascii-line; subsequent content lines wrap under the avatar. */
+  position: absolute;
+  left: 0;
+  top: calc(0.625em - var(--avatar-size) / 2);
+  width: var(--avatar-size);
+  height: var(--avatar-size);
+  border-radius: 0;
+  overflow: hidden;
+  z-index: 2;
+  text-decoration: none;
+  background: var(--panel);
+}
+
+.note-avatar img {
+  display: block;
+  height: 100%;
+  object-fit: cover;
+  width: 100%;
+}
+
+.note-avatar:not(:has(img)) {
+  align-items: center;
+  border: 1px solid var(--border);
+  display: flex;
+  font-weight: 700;
+  justify-content: center;
+}
+
+.note-avatar:not(:has(img))::before {
+  content: "@";
+  line-height: 1;
+}
+
+.note.thread-focus-selected .ascii-reply > .ascii-line:first-child {
+  /* Push the header (username + age + actions) past the avatar's right
+     edge with a small gap. Avatar is at left: 0, width var(--avatar-size). */
+  padding-left: calc(var(--avatar-size) + 0.8ch);
+}
+
+.note.thread-focus-selected .note-content {
+  /* Push the first content line below the avatar's bottom edge. The
+     avatar is centered on the header row (line-height 1.25em → center at
+     0.625em from pre top), so its bottom edge is at
+     0.625em + avatar-size / 2. Subtract the natural top of the next line
+     (1.25em) and add a little gap. */
+  display: block;
+  margin-top: calc(var(--avatar-size) / 2);
+}
+
+/* Feed ascii-card notes: avatar on first header row, positioned vs `pre` so `ch` matches glyphs. */
+article.note[data-ascii-kind="note"] {
+  --avatar-size: 2.4em;
+  position: relative;
+}
+
+/* Extra top gap so the tile (centered on row, half above pre) clears the prior note's footer.
+   Shared horizontal inset for repost banner + "Replying to" row (see feedReplyContextInsetRunes in ascii.js). */
+article.note[data-ascii-kind="note"]:has(.note-feed-avatar) {
+  --feed-avatar-gutter: calc(3ch + var(--avatar-size) + 3.65ch);
+  --feed-repost-text-start: calc(var(--feed-avatar-gutter) + 0.55em);
+  margin: calc(0.75rem + var(--avatar-size) * 0.5 - 0.45em) 0 0.75rem;
+}
+
+article.note[data-ascii-kind="note"] .ascii-card {
+  position: relative;
+}
+
+article.note[data-ascii-kind="note"] .ascii-card > .note-feed-avatar {
+  align-items: center;
+  background: var(--panel);
+  border-radius: 0;
+  box-shadow:
+    0 0 0 1px var(--panel),
+    0 0 0 2px color-mix(in oklab, var(--fg) 88%, transparent),
+    0 0 0 3px var(--fg);
+  display: flex;
+  height: var(--avatar-size);
+  justify-content: center;
+  /* Same column as the `+--` chrome (first three cells of the pre). */
+  left: 3ch;
+  overflow: hidden;
+  pointer-events: auto;
+  position: absolute;
+  text-decoration: none;
+  top: calc(0.625em - var(--avatar-size) / 2);
+  width: var(--avatar-size);
+  z-index: 2;
+}
+
+article.note[data-ascii-kind="note"] .note-feed-avatar img {
+  display: block;
+  height: 100%;
+  object-fit: cover;
+  width: 100%;
+}
+
+article.note[data-ascii-kind="note"] .note-feed-avatar:not(:has(img)) {
+  border: 1px solid var(--border);
+  font-weight: 700;
+}
+
+article.note[data-ascii-kind="note"] .note-feed-avatar:not(:has(img))::before {
+  content: "@";
+  line-height: 1;
+}
+
+/* Header is `+--` (chrome) + `.ascii-line-feed-header-tail` (name, age, dashes); reserve tile + ring + gap. */
+article.note[data-ascii-kind="note"] .ascii-line-feed-header-tail {
+  padding-left: calc(var(--avatar-size) + 0.85ch + 4px);
+}
+
+article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-line-reply-context:first-child) {
+  /* No spacer box row when reply context exists; drop content so it clears the
+     header-centered avatar's lower half (same geometry as focused thread). */
+  display: block;
+  /* margin-top: calc(var(--avatar-size) / 2 - 0.35em); */
+}
+
+/* Reserve a full connector row above the first visible reply and center a
+   double `|` connector over that reply's avatar. This gives focused thread
+   replies a clearer visual bridge back to the selected parent reply. */
+#thread-replies > .comment:first-child {
+  margin-top: 2.5em;
+}
+
+#thread-replies > .comment:first-child::before {
+  color: var(--fg);
+  content: "|\A|";
+  left: calc(var(--avatar-left) + var(--avatar-size) / 2 - 0.5ch);
+  line-height: 1.25em;
+  pointer-events: none;
+  position: absolute;
+  top: -2.5em;
+  white-space: pre;
+}
+
+.thread-back,
+.continue-thread {
+  margin: 0.5rem 0;
+}
+
+.thread-back-secondary {
+  color: var(--muted);
+}
+
+.continue-thread {
+  white-space: pre;
+}
+
+.continue-thread {
+  display: none;
+}
+
+.comment[data-depth="5"] > .continue-thread-desktop {
+  display: block;
+}
+
+.comment[data-depth="5"] > .comments {
+  display: none;
+}
+
+.link-button {
+  border: 0;
+  background: transparent;
+  color: var(--link);
+  padding: 0;
+  cursor: pointer;
+}
+
+.ascii-reaction-vote {
+  font-size: 1.2em;
+}
+
+.ascii-action-menu {
+  display: inline;
+  position: relative;
+}
+
+.ascii-action-menu-list {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  display: none;
+  left: auto;
+  min-width: 24ch;
+  padding: 0.35rem 0.5rem;
+  position: absolute;
+  right: 0;
+  top: 1.4em;
+  z-index: 10;
+}
+
+.ascii-action-menu.is-open .ascii-action-menu-list {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.ascii-action-menu-list a,
+.ascii-action-menu-list button {
+  text-align: left;
+  white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+  .ascii-action-menu-list {
+    font-size: clamp(1rem, 3.2vw, 1.15rem);
+    line-height: 1.35;
+    min-width: 26ch;
+    padding: 0.5rem 0.6rem;
+  }
+
+  .ascii-action-menu.is-open .ascii-action-menu-list {
+    gap: 0.35rem;
+  }
+
+  .ascii-action-menu-list a,
+  .ascii-action-menu-list button {
+    border-radius: 4px;
+    box-sizing: border-box;
+    display: block;
+    margin: 0;
+    min-height: 2.75rem;
+    padding: 0.55rem 0.5rem;
+    width: 100%;
+  }
+}
+
+.ascii-line[data-ascii-ref-hit="1"] {
+  cursor: pointer;
+}
+
+.load-more {
+  display: block;
+  margin: 1rem auto;
+}
+
+@keyframes button-spinner {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* User profile: tab strip + one visible panel (radio inputs use clip-only hiding). */
+.user-tabs {
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 0.75rem;
+  width: min(var(--page-max), 100%);
+}
+
+.profile-tabs {
+  border-top: 1px solid var(--border);
+  padding-top: 0.5rem;
+}
+
+.user-tab-nav {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem 0.35rem;
+  margin-bottom: 0.65rem;
+}
+
+.user-tab-sep {
+  color: var(--muted);
+  user-select: none;
+}
+
+.user-tab-label {
+  color: var(--link);
+  cursor: pointer;
+}
+
+.user-tab-label:hover {
+  text-decoration: underline;
+}
+
+.user-tab-state {
+  border: 0;
+  clip: rect(0, 0, 0, 0);
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  padding: 0;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+.user-tab-panel {
+  display: none;
+}
+
+.user-tab-state:checked + .user-tab-panel {
+  display: block;
+}
+
+.user-tab-panel-heading {
+  margin-top: 0;
+}
+
+.user-tabs:has(#user-tab-posts:checked) .user-tab-nav label[for="user-tab-posts"],
+.user-tabs:has(#user-tab-replies:checked) .user-tab-nav label[for="user-tab-replies"],
+.user-tabs:has(#user-tab-media:checked) .user-tab-nav label[for="user-tab-media"],
+.user-tabs:has(#user-tab-identifiers:checked) .user-tab-nav label[for="user-tab-identifiers"],
+.user-tabs:has(#user-tab-relays:checked) .user-tab-nav label[for="user-tab-relays"],
+.login-tabs:has(#login-tab-readonly:checked) .user-tab-nav label[for="login-tab-readonly"],
+.login-tabs:has(#login-tab-nip07:checked) .user-tab-nav label[for="login-tab-nip07"],
+.login-tabs:has(#login-tab-yolo:checked) .user-tab-nav label[for="login-tab-yolo"],
+.login-tabs:has(#login-tab-ephemeral:checked) .user-tab-nav label[for="login-tab-ephemeral"] {
+  color: var(--fg);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.profile-stats-row {
+  border-bottom: 1px solid var(--border);
+  margin: 0.4rem 0;
+  padding-bottom: 0.5rem;
+}
+
+.profile-stat-link {
+  color: var(--link);
+}
+
+.profile-search-form {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  margin: 0.6rem 0 0.35rem;
+}
+
+.profile-search-form input[type="search"] {
+  flex: 1;
+  max-width: 24rem;
+}
+
+.profile-follow-pager {
+  margin-top: 0.6rem;
+}
+
+.profile-card {
+  border: none;
+  border-radius: 0;
+  padding: 0.75rem;
+}
+
+#user-right-identifiers {
+  border-bottom: 1px dashed var(--border);
+}
+
+.profile-card .ascii-row {
+  width: 100%;
+}
+
+.profile-card .ascii-content {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.profile-card .ascii-edge {
+  display: none;
+}
+
+.profile-right-rail {
+  align-content: start;
+  gap: 0.8rem;
+}
+
+.profile-right-panel {
+  margin-top: 0;
+  min-width: 0;
+  width: 100%;
+}
+
+.profile-right-panel .ascii-row {
+  display: block;
+  width: 100%;
+}
+
+.profile-right-panel .ascii-content {
+  max-width: 100%;
+  overflow-wrap: break-word;
+  padding: 0;
+  white-space: normal;
+  word-break: normal;
+}
+
+.profile-right-panel .ascii-content p,
+.profile-right-panel .ascii-content h2,
+.profile-right-panel .ascii-content span {
+  overflow-wrap: break-word;
+  white-space: normal;
+}
+
+.profile-right-panel .mono {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.profile-right-panel .ascii-edge,
+.profile-right-panel .ascii-border {
+  display: none;
+}
+
+.profile-mobile-only-tab {
+  display: none;
+}
+
+.profile-mobile-only-panel {
+  display: none;
+}
+
+@media (min-width: 701px) {
+  .user-tab-state#user-tab-identifiers:checked + .profile-mobile-only-panel,
+  .user-tab-state#user-tab-relays:checked + .profile-mobile-only-panel {
+    display: none;
+  }
+}
+
+@media (max-width: 1199px) {
+  .app-shell {
+    grid-template-columns: 74px minmax(0, 640px) 320px;
+  }
+
+  .left-rail {
+    align-items: center;
+    padding-left: 0.4rem;
+    padding-right: 0.4rem;
+  }
+
+  .left-rail .rail-brand,
+  .left-rail .rail-label,
+  .left-rail .rail-user-copy {
+    display: none;
+  }
+
+  .left-rail .rail-nav a {
+    justify-content: center;
+    padding: 0.3rem;
+  }
+
+  .left-rail .rail-user {
+    justify-content: center;
+  }
+}
+
+@media (max-width: 1023px) {
+  .app-shell {
+    grid-template-columns: 74px minmax(0, 700px);
+  }
+
+  .right-rail {
+    display: none;
+  }
+
+  .feed-column {
+    border-right: 0;
+  }
+
+}
+
+/* Thread (desktop): five-column shell — `1fr` gutters + fixed rail widths — keeps the
+   left rail aligned when toggling tree view (participants column collapses to 0) while
+   preserving the same centered slack as the default three-column feed shell. */
+@media (min-width: 1024px) and (max-width: 1199px) {
+  body.feed-shell main:has(#thread-summary) .app-shell {
+    grid-template-columns: 1fr 74px minmax(0, 640px) 320px 1fr;
+  }
+
+  body.feed-shell main:has(#thread-summary) .app-shell .left-rail {
+    grid-column: 2;
+  }
+
+  body.feed-shell main:has(#thread-summary) .app-shell .feed-column {
+    grid-column: 3;
+  }
+
+  body.feed-shell main:has(#thread-summary) .app-shell .right-rail {
+    grid-column: 4;
+  }
+}
+
+@media (min-width: 1200px) {
+  body.feed-shell main:has(#thread-summary) .app-shell {
+    grid-template-columns: 1fr 240px minmax(0, 640px) 340px 1fr;
+  }
+
+  body.feed-shell main:has(#thread-summary) .app-shell .left-rail {
+    grid-column: 2;
+  }
+
+  body.feed-shell main:has(#thread-summary) .app-shell .feed-column {
+    grid-column: 3;
+  }
+
+  body.feed-shell main:has(#thread-summary) .app-shell .right-rail {
+    grid-column: 4;
+  }
+}
+
+/* Thread tree view (desktop): hide participants rail; feed column width matches
+   `640px + 340px` (or 640 + 320) whenever the shell has the same centered slack as
+   the non-wide layout, so outer `1fr` gutters do not shrink. */
+@media (min-width: 1024px) {
+  body.thread-tree-wide-layout.feed-shell .app-shell .right-rail[data-thread-fragment="participants"] {
+    display: none;
+  }
+}
+
+@media (min-width: 1024px) and (max-width: 1199px) {
+  body.thread-tree-wide-layout.feed-shell main:has(#thread-summary) .app-shell {
+    grid-template-columns: 1fr 74px minmax(0, calc(100% - 74px - max(0px, 100% - 1034px))) 0 1fr;
+  }
+}
+
+@media (min-width: 1200px) {
+  body.thread-tree-wide-layout.feed-shell main:has(#thread-summary) .app-shell {
+    grid-template-columns: 1fr 240px minmax(0, calc(100% - 240px - max(0px, 100% - 1220px))) 0 1fr;
+  }
+}
+
+/* Thread tree mode widens the feed column on desktop; keep the toolbar row at the usual
+   feed width so [OP] / view toggle stay put while thread content uses the extra space. */
+@media (min-width: 1024px) {
+  body.thread-tree-wide-layout.feed-shell #thread-summary > .thread-header {
+    box-sizing: border-box;
+    max-width: 640px;
+    width: 100%;
+  }
+}
+
+[hidden] {
+  display: none !important;
+}
+
+@media (max-width: 700px) {
+  body.feed-shell {
+    padding: 0;
+    /* Native document scroll (not the outlet). Fixes iOS status-bar tap-to-top and
+       Safari bottom toolbar clipping vs a nested overflow scroller. */
+    min-height: 100dvh;
+  }
+
+  body.feed-shell main {
+    margin: 0;
+    max-width: 100%;
+    display: block;
+    min-height: 0;
+  }
+
+  /* `[data-route-outlet]` keeps global `display: contents` — no nested scroll box. */
+
+  .mobile-bar {
+    align-items: center;
+    background: var(--bg);
+    border-bottom: 0;
+    display: flex;
+    flex-shrink: 0;
+    gap: 0.75rem;
+    min-height: 3.4rem;
+    padding: 0.75rem 0.8rem;
+    position: sticky;
+    top: 0;
+    z-index: 5;
+  }
+
+  /* Keep the bar (and the ≡ / × control) above the full-screen menu overlay. */
+  body.mobile-menu-open .mobile-bar {
+    z-index: 25;
+  }
+
+  .mobile-bar .mobile-brand {
+    flex: 1 1 auto;
+    min-width: 0;
+    text-align: center;
+  }
+
+  .mobile-bar .mobile-menu-trigger {
+    border-radius: 0.45rem;
+    min-height: 2.75rem;
+    min-width: 2.75rem;
+  }
+
+  .mobile-bar .mobile-menu-trigger img,
+  .mobile-bar .mobile-trigger-fallback {
+    height: 2.15rem;
+    width: 2.15rem;
+  }
+
+  .mobile-menu-bar-glyph {
+    flex-shrink: 0;
+  }
+
+  .mobile-menu-bar-icon {
+    align-items: center;
+    display: inline-flex;
+    font-size: 1.45rem;
+    font-weight: 500;
+    height: 2.15rem;
+    justify-content: center;
+    line-height: 1;
+    width: 2.15rem;
+  }
+
+  /* Same tap target as ≡: show × when the overlay is open. */
+  body.mobile-menu-open .mobile-menu-bar-glyph .mobile-menu-bar-icon {
+    color: transparent;
+    font-size: 0;
+    line-height: 0;
+    position: relative;
+  }
+
+  body.mobile-menu-open .mobile-menu-bar-glyph .mobile-menu-bar-icon::after {
+    align-items: center;
+    color: var(--fg);
+    content: "×";
+    display: flex;
+    font-size: 1.45rem;
+    font-weight: 500;
+    height: 2rem;
+    justify-content: center;
+    left: 0;
+    line-height: 1;
+    position: absolute;
+    top: 0;
+    width: 2rem;
+  }
+
+  .mobile-brand {
+    font-weight: 700;
+  }
+
+  .app-shell {
+    display: block;
+    min-height: 0;
+  }
+
+  .left-rail,
+  .right-rail {
+    display: none;
+  }
+
+  .feed-column {
+    border: 0;
+    min-height: 0;
+    padding: 0.55rem 0.75rem;
+    padding-bottom: var(--feed-scroll-pad);
+  }
+
+  /* Thread toolbar: `position: sticky` is unreliable here (iOS); pin below `.mobile-bar` and reserve flow with `.thread-toolbar-slot`. */
+  body.feed-shell #thread-summary > .thread-toolbar-slot {
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  body.feed-shell #thread-summary > .thread-header {
+    background-color: var(--bg);
+    box-sizing: border-box;
+    left: 0;
+    margin: 0;
+    max-width: 100vw;
+    padding-block: 0.35rem 0.5rem;
+    padding-inline: max(0.75rem, env(safe-area-inset-left, 0px)) max(0.75rem, env(safe-area-inset-right, 0px));
+    position: fixed;
+    right: 0;
+    top: var(--mobile-app-nav-height, max(3.4rem, calc(0.75rem + 2.75rem + 0.75rem)));
+    width: 100%;
+    z-index: 4;
+  }
+
+  body.feed-shell #thread-summary > .thread-header .thread-header-top .thread-back,
+  body.feed-shell #thread-summary > .thread-header .thread-header-top .thread-header-actions {
+    margin-block: 0.2rem;
+  }
+
+  body.feed-shell #thread-summary > .thread-header > .thread-back-primary {
+    margin-block: 0.2rem;
+  }
+
+  /* Use clip (not hidden) so overflow-y stays visible: feed avatars sit half
+     above the ascii header row; hidden+x forces y=auto and clips them on /u/. */
+  .user-profile-column,
+  .user-profile-column .profile-main,
+  .user-profile-column .profile-tabs,
+  .user-profile-column .user-tab-panel,
+  .user-profile-column .feed,
+  .user-profile-column .note,
+  .user-profile-column .ascii-card,
+  .user-profile-column .note-media-drawer {
+    overflow-x: clip;
+    overflow-y: visible;
+  }
+
+  .profile-main {
+    margin-top: 0;
+    padding: 0 0.3rem;
+  }
+
+  .profile-hero {
+    column-gap: 0.65rem;
+    padding: 0 0.3rem;
+  }
+
+  .profile-modern .profile-avatar,
+  .profile-modern .profile-avatar-fallback {
+    height: 72px;
+    width: 72px;
+  }
+
+  .profile-display-name {
+    font-size: 1.1rem;
+  }
+
+  .profile-ident {
+    margin-top: 0.5rem;
+  }
+
+  .profile-mobile-only-tab {
+    display: inline-flex;
+  }
+
+  .user-tab-state#user-tab-identifiers:checked + .profile-mobile-only-panel,
+  .user-tab-state#user-tab-relays:checked + .profile-mobile-only-panel {
+    display: block;
+  }
+
+  .mobile-menu-panel {
+    border: 0;
+    border-radius: 0;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    margin: 0;
+    max-height: 100dvh;
+    max-width: 100vw;
+    min-height: 100dvh;
+    padding: max(0.75rem, env(safe-area-inset-top, 0px))
+      max(0.75rem, env(safe-area-inset-right, 0px))
+      max(0.75rem, env(safe-area-inset-bottom, 0px))
+      max(0.75rem, env(safe-area-inset-left, 0px));
+    width: 100vw;
+  }
+
+  /* .mobile-bar sits above the panel (z-index 25 vs 20); pad so header/title is not clipped. */
+  body.mobile-menu-open .mobile-menu-panel {
+    padding-top: calc(
+      max(0.75rem, env(safe-area-inset-top, 0px)) + max(3.4rem, calc(0.75rem + 2.75rem + 0.75rem)) + 0.35rem
+    );
+  }
+
+  .mobile-menu-header {
+    flex-shrink: 0;
+    margin-bottom: 0.5rem;
+    padding-bottom: 0.5rem;
+  }
+
+  .mobile-menu-intro {
+    flex-shrink: 0;
+    margin-bottom: 0.45rem;
+  }
+
+  .mobile-menu-title strong {
+    font-size: clamp(1.1rem, 4vw, 1.25rem);
+  }
+
+  .mobile-menu-intro-copy {
+    font-size: clamp(0.85rem, 2.8vw, 1rem);
+  }
+
+  .mobile-menu-nav {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin-bottom: 0.5rem;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .mobile-menu-nav a {
+    align-items: center;
+    border: 0;
+    border-bottom: 1px dashed var(--border);
+    border-radius: 0;
+    box-sizing: border-box;
+    display: flex;
+    flex: 1 1 0;
+    font-size: clamp(1.4rem, 4.5vw, 1.85rem);
+    font-weight: 600;
+    justify-content: center;
+    min-height: 3.5rem;
+    padding: 0.7rem 1rem;
+    text-align: center;
+    text-decoration: none;
+    width: 100%;
+  }
+
+  .mobile-menu-nav a:last-child {
+    border-bottom: 0;
+  }
+
+  .mobile-menu-nav a:hover {
+    text-decoration: none;
+  }
+
+  .mobile-menu-close {
+    flex-shrink: 0;
+    font-size: clamp(1.15rem, 3.5vw, 1.45rem);
+    margin-top: 0.35rem;
+    min-height: 3.25rem;
+    padding: 0.7rem 1rem;
+  }
+
+  .mobile-menu-backdrop {
+    background: var(--bg);
+  }
+
+  body {
+    padding: 0 0.65rem;
+  }
+
+  .comment {
+    margin-left: calc(var(--depth) * 0.25rem);
+    padding-left: 0.95rem;
+  }
+
+  .ascii-enhanced .comment {
+    margin-left: calc((var(--depth) - 1) * 1ch);
+    padding-left: 1ch;
+  }
+
+  .comment[data-depth="3"] > .continue-thread-mobile {
+    display: block;
+  }
+
+  .comment[data-depth="3"] > .continue-thread-desktop,
+  .comment[data-depth="5"] > .continue-thread-desktop {
+    display: none;
+  }
+
+  .comment[data-depth="3"] > .comments {
+    display: none;
+  }
+
+  .columns {
+    columns: 1;
+  }
+
+  .feed-heading-title-row .feed-sort-label select {
+    max-width: min(100%, 12rem);
+    min-width: 7.5rem;
+    width: auto;
+  }
+
+  .feed-column:not(.reads-column) .feed-heading-title-row {
+    align-items: center;
+    display: grid;
+    gap: 0.45rem 0.75rem;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto;
+  }
+
+  .feed-column:not(.reads-column) .feed-heading-title-row h1 {
+    align-self: center;
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .feed-column:not(.reads-column) .feed-heading-controls {
+    align-items: center;
+    display: grid;
+    gap: 0.45rem 0.75rem;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-rows: auto;
+    width: 100%;
+  }
+
+  .feed-column:not(.reads-column) .feed-heading-controls .feed-sort-label {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: center;
+    margin: 0;
+    max-width: 100%;
+    min-width: 0;
+  }
+
+  /* No WoT block (e.g. default/trending feed or WoT off): park sort where WoT sits */
+  .feed-column:not(.reads-column)
+    .feed-heading-controls:not(:has(.feed-wot-quick))
+    .feed-sort-label {
+    grid-column: 3;
+    justify-self: end;
+  }
+
+  .feed-column:not(.reads-column) .feed-heading-controls .feed-heading-post {
+    grid-column: 1;
+    grid-row: 1;
+    justify-self: start;
+    margin: 0;
+    width: auto;
+  }
+
+  .feed-column:not(.reads-column) .feed-heading-controls .feed-wot-quick {
+    grid-column: 3;
+    grid-row: 1;
+    justify-self: end;
+    margin-left: 0;
+    min-width: 0;
+    width: auto;
+  }
+
+  .feed-column:not(.reads-column) .feed-wot-quick {
+    align-items: center;
+    display: flex;
+    gap: 0.35rem;
+    min-width: 0;
+  }
+
+  .feed-column:not(.reads-column) .feed-wot-quick-label {
+    align-self: center;
+    flex-shrink: 0;
+  }
+
+  .reads-column .feed-heading-title-row {
+    align-items: flex-start;
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+  }
+
+  .feed-heading-controls {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .feed-wot-quick {
+    margin-left: auto;
+  }
+
+  .feed-column:not(.reads-column) .feed-wot-depth-select {
+    flex: 0 0 auto;
+  }
+}
+
+.reads-column {
+  max-width: 640px;
+}
+
+.app-shell.reads-shell {
+  grid-template-columns: 240px minmax(0, 640px) 340px;
+}
+
+.reads-list {
+  display: grid;
+  gap: 1.25rem;
+}
+
+.read-article {
+  border: 0;
+  border-radius: 0;
+  padding: 0.8rem 0;
+  background: var(--bg);
+  position: relative;
+}
+
+.read-article h2 {
+  margin: 0 0 0.25rem;
+  font-size: 1.8rem;
+  line-height: 1.35;
+}
+
+.read-meta {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.read-ascii-row {
+  align-items: stretch;
+}
+
+.read-article .ascii-border {
+  color: var(--fg);
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  margin: 0 auto;
+  user-select: none;
+  white-space: pre;
+  width: min(100%, 80ch);
+}
+
+.read-ascii-row .ascii-edge {
+  color: transparent;
+  display: block;
+  position: relative;
+  user-select: none;
+}
+
+.read-ascii-row .ascii-edge::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 50%;
+  width: 1px;
+  transform: translateX(-50%);
+  background: repeating-linear-gradient(
+    to bottom,
+    var(--fg) 0 8px,
+    transparent 8px 14px
+  );
+}
+
+.read-ascii-row {
+  width: min(100%, 80ch);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.read-ascii-content {
+  width: 100%;
+  min-width: 0;
+  padding: 0.75rem 0.9rem;
+}
+
+.read-meta-copy {
+  min-width: 0;
+}
+
+.read-meta p {
+  margin: 0.1rem 0 0.5rem;
+}
+
+.read-summary {
+  color: var(--muted);
+  margin: 0.2rem 0 0.2rem;
+}
+
+.read-thumb {
+  display: block;
+  width: 220px;
+}
+
+.read-thumb img {
+  border-radius: 0.45rem;
+  display: block;
+  object-fit: cover;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+}
+
+.read-body {
+  line-height: 1.45;
+  margin-top: 0.35rem;
+  max-height: 8.5rem;
+  overflow: hidden;
+  position: relative;
+  overflow-wrap: anywhere;
+}
+
+.read-body::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0 0;
+  height: 2.2rem;
+  background: linear-gradient(to bottom, transparent, var(--bg));
+}
+
+.read-body > :first-child {
+  margin-top: 0;
+}
+
+.read-body > :last-child {
+  margin-bottom: 0;
+}
+
+.read-body h1,
+.read-body h2,
+.read-body h3,
+.read-body h4 {
+  margin: 1rem 0 0.35rem;
+  font-size: 1rem;
+}
+
+.read-body p,
+.read-body ul,
+.read-body ol,
+.read-body blockquote,
+.read-body pre,
+.read-body table,
+.read-body hr {
+  margin: 0.65rem 0;
+}
+
+.read-body ul,
+.read-body ol {
+  padding-left: 1.2rem;
+}
+
+.read-body li + li {
+  margin-top: 0.2rem;
+}
+
+.read-body ul ul,
+.read-body ul ol,
+.read-body ol ul,
+.read-body ol ol {
+  margin: 0.3rem 0 0.2rem;
+}
+
+.read-body blockquote {
+  margin-left: 0;
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--border);
+  color: var(--muted);
+}
+
+.read-body a {
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  overflow-wrap: anywhere;
+}
+
+.read-body code,
+.read-body pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 0.95em;
+}
+
+.read-body p code,
+.read-body li code,
+.read-body blockquote code,
+.read-body td code,
+.read-body th code {
+  border: 1px solid var(--border);
+  border-radius: 0.2rem;
+  padding: 0.02rem 0.25rem;
+}
+
+.read-body pre {
+  border: 1px solid var(--border);
+  padding: 0.5rem 0.65rem;
+  overflow-x: auto;
+}
+
+.read-body table {
+  border-collapse: collapse;
+  width: 100%;
+  min-width: 0;
+  font-size: 0.96em;
+}
+
+.read-body table th,
+.read-body table td {
+  border: 1px solid var(--border);
+  padding: 0.32rem 0.45rem;
+  vertical-align: top;
+  text-align: left;
+}
+
+.read-body table th {
+  font-weight: 700;
+}
+
+.read-body hr {
+  border: 0;
+  border-top: 1px dashed var(--border);
+}
+
+.read-body img {
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  display: block;
+  height: auto;
+  max-width: 100%;
+}
+
+.read-body input[type="checkbox"] {
+  accent-color: var(--fg);
+}
+
+.read-body img {
+  display: none;
+}
+
+.read-article.is-full .read-body {
+  margin-top: 0.65rem;
+  max-height: none;
+  overflow: visible;
+}
+
+.read-article.is-full .read-meta {
+  display: block;
+}
+
+.read-article.is-full .read-meta-copy {
+  width: 100%;
+}
+
+.read-article.is-full .read-body::after {
+  display: none;
+}
+
+.read-article.is-full .read-body img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.read-detail-column .read-title {
+  font-size: 2.2rem;
+  line-height: 1.2;
+  margin: 0 0 0.4rem;
+}
+
+.read-thumb-full {
+  width: 100%;
+  margin-top: 0.55rem;
+}
+
+.read-thumb-full img {
+  aspect-ratio: auto;
+  max-height: 520px;
+  object-fit: contain;
+}
+
+.reads-actions {
+  margin: 0.55rem 0 0;
+}
+
+.reads-more {
+  margin: 0.2rem 0 0;
+}
+
+@media (max-width: 1023px) {
+  .app-shell.reads-shell {
+    grid-template-columns: 74px minmax(0, 700px);
+  }
+
+  .read-article h2 {
+    font-size: 1.45rem;
+  }
+
+  .read-thumb {
+    width: 190px;
+  }
+
+  .read-detail-column .read-title {
+    font-size: 1.8rem;
+  }
+}
+
+/* Reads / single read: must follow base .read-* rules or mobile overrides lose. */
+@media (max-width: 700px) {
+  .reads-column .page-heading .ascii-border,
+  .read-article .ascii-border,
+  .read-ascii-row .ascii-edge {
+    display: none;
+  }
+
+  .reads-column .page-heading .ascii-content {
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  .reads-column .feed-heading-title-row .feed-sort-label {
+    flex-shrink: 0;
+    margin-left: auto;
+    width: auto;
+  }
+
+  .reads-column .feed-heading-title-row .feed-sort-label select {
+    max-width: min(100%, 12rem);
+    min-width: 7.5rem;
+    width: auto;
+  }
+
+  .reads-column .feed-heading-sort-row {
+    align-items: stretch;
+  }
+
+  .reads-column .feed-heading-sort-row .feed-sort-label {
+    margin-left: 0;
+    width: 100%;
+  }
+
+  .reads-column .feed-heading-sort-row .feed-sort-label select {
+    width: 100%;
+  }
+
+  .reads-list .read-article {
+    border-bottom: 1px dashed var(--border);
+    padding: 0 0 1rem;
+  }
+
+  .reads-column .read-ascii-row {
+    display: block;
+    margin: 0;
+    width: 100%;
+  }
+
+  .reads-column .read-ascii-content {
+    padding: 0;
+  }
+
+  .reads-list .read-article:last-child {
+    border-bottom: 0;
+    padding-bottom: 0;
+  }
+
+  .reads-column .read-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .reads-column .read-thumb {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .read-detail-column .read-title {
+    font-size: 1.55rem;
+  }
+
+  .reads-list .read-body {
+    max-height: 10rem;
+  }
+
+  .reads-column .read-body table {
+    display: block;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}

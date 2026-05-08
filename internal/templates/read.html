@@ -1,0 +1,54 @@
+{{define "read"}}
+{{template "document_start" .}}
+<div class="app-shell reads-shell">
+  {{template "left_rail" .}}
+  <section class="feed-column reads-column read-detail-column">
+    <section class="page-heading">
+      <p><a href="/reads" data-relay-aware data-session-reads-link>&lt;-- back to reads</a></p>
+    </section>
+    <article class="read-article is-full" id="read-{{.Read.Event.ID}}">
+      <div class="ascii-border">{{asciiBorder}}</div>
+      <div class="ascii-row read-ascii-row">
+        <span class="ascii-edge">|</span>
+        <div class="ascii-content read-ascii-content">
+          <header class="read-meta">
+            <div class="read-meta-copy">
+              <h1 class="read-title">{{.Read.Title}}</h1>
+              <p class="muted"><a href="/u/{{.Read.Event.PubKey}}" data-relay-aware>{{displayName .Profiles .Read.Event.PubKey}}</a> · <span class="mono">{{formatDate .Read.PublishedAt}}</span></p>
+            </div>
+            {{if .Read.ImageURL}}
+              <div class="read-thumb read-thumb-full">
+                <img src="{{.Read.ImageURL}}" alt="" loading="lazy" decoding="async">
+              </div>
+            {{end}}
+          </header>
+          <section class="read-body read-body-full">{{renderMarkdown .Read.Event.Content}}</section>
+          <p class="reads-actions"><a href="/thread/{{.Read.Event.ID}}?back_read={{.Read.Event.ID}}" data-relay-aware>View replies</a></p>
+        </div>
+        <span class="ascii-edge">|</span>
+      </div>
+      <div class="ascii-border">{{asciiBorder}}</div>
+    </article>
+  </section>
+  <aside class="right-rail reads-right-rail">
+    <section class="trending-panel">
+      <h2>More reads from {{displayName .Profiles .Read.Event.PubKey}}</h2>
+      <ol class="trending-list">
+        {{range .MoreReads}}
+          <li>
+            <a href="/reads/{{.Event.ID}}" data-relay-aware>
+              <strong>{{.Title}}</strong>
+              {{if .Summary}}<span>{{.Summary}}</span>{{end}}
+              <em>{{formatDate .PublishedAt}}</em>
+            </a>
+          </li>
+        {{else}}
+          <li class="muted">No additional reads yet.</li>
+        {{end}}
+      </ol>
+    </section>
+  </aside>
+</div>
+<script type="module" src="/static/js/layout.js"></script>
+{{template "document_end" .}}
+{{end}}

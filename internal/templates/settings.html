@@ -1,0 +1,85 @@
+{{define "settings"}}
+{{template "document_start" .}}
+<div class="app-shell">
+  {{template "left_rail" .}}
+  {{template "settings_main" .}}
+  {{template "right_rail_static" .}}
+</div>
+<script type="module" src="/static/js/layout.js"></script>
+{{template "document_end" .}}
+{{end}}
+
+{{define "settings_main"}}
+<section class="feed-column shell-main-top" data-shell-main>
+  <section class="page-heading">
+    <h1>Settings</h1>
+  </section>
+  <section class="settings-card">
+    <div class="settings-form settings-preferences">
+      <h2>Modes</h2>
+      <div class="settings-mode-tree-group">
+        <div class="settings-mode-tree-group-main settings-mode-tree-group-main-stacked">
+          <div class="settings-mode-tree" data-settings-mode-row>
+            <div class="settings-mode-branch" aria-hidden="true"></div>
+            <div class="settings-mode-copy">
+              <strong>Media Mode</strong>
+              <small class="muted">Replaces urls in notes with a collapsible media footer.</small>
+            </div>
+            <div class="settings-mode-switch" role="group" aria-label="Media Mode toggle">
+              <input id="image-mode-toggle" type="checkbox" data-image-mode-toggle>
+              <button type="button" class="settings-mode-option" data-image-mode-set="off">OFF</button>
+              <button type="button" class="settings-mode-option" data-image-mode-set="on">ON</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <h2>Web of Trust</h2>
+      <div class="settings-mode-tree-group">
+        <div class="settings-mode-tree-group-main">
+          <div class="settings-mode-tree settings-mode-tree-stacked" data-settings-mode-row>
+            <div class="settings-mode-branch" aria-hidden="true"></div>
+            <div class="settings-mode-row-head">
+              <strong>Filter Notes By Web of Trust</strong>
+              <div class="settings-mode-switch" role="group" aria-label="Web of Trust toggle">
+                <input id="wot-toggle" type="checkbox" data-wot-toggle>
+                <button type="button" class="settings-mode-option is-active" data-wot-set="off" aria-pressed="true">OFF</button>
+                <button type="button" class="settings-mode-option" data-wot-set="on" aria-pressed="false">ON</button>
+              </div>
+            </div>
+            <div class="settings-mode-row-body">
+              <small class="muted">Limit note feeds to authors reachable within a selected follow graph. Default setup uses 3 degrees from Jack Dorsey. You can choose another seed profile, or log in to use your own follow list.</small>
+              <small class="muted" data-wot-eligibility-note hidden>To use your own follow graph, log in and follow at least 1 user.</small>
+            </div>
+          </div>
+          <div class="settings-slider-tree settings-mode-tree-stacked" data-settings-slider-row>
+            <div class="settings-mode-branch" aria-hidden="true"></div>
+            <div class="settings-mode-row-head">
+              <strong>Degrees of Separation</strong>
+              <div class="settings-depth-control">
+                <select id="settings-wot-depth" class="feed-wot-depth-select settings-wot-depth-select" data-wot-depth aria-label="Web of Trust depth">
+                  <option value="1">wot: 1°</option>
+                  <option value="2">wot: 2°</option>
+                  <option value="3">wot: 3°</option>
+                </select>
+              </div>
+            </div>
+            <div class="settings-mode-row-body">
+              <small class="muted">Choose how many follow hops to include, from 1 to {{.WebOfTrustMaxDepth}}.</small>
+            </div>
+          </div>
+          <div class="settings-slider-tree settings-mode-tree-stacked" data-wot-seed-row{{if .UserPubKey}} hidden{{end}}>
+            <div class="settings-mode-branch" aria-hidden="true"></div>
+            <div class="settings-mode-row-head">
+              <strong>Seed Profile</strong>
+            </div>
+            <div class="settings-mode-row-body">
+              <small class="muted">Browse from this profile's follow graph when you're not logged in.</small>
+              <fieldset class="settings-wot-seed-group" data-wot-seed-group aria-label="Seed profiles"></fieldset>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+</section>
+{{end}}

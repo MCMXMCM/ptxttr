@@ -1,0 +1,38 @@
+__DOMAIN_NAME__ {
+	encode zstd gzip
+
+	log {
+		output file /var/log/caddy/access.log
+		format json
+	}
+
+	# AI / social preview crawlers hammering /?pubkey=… and deep content/media URLs
+	# bypass guest feed cache and each request can do full WoT + SQLite + relay work.
+	# Short-circuit them here (not googlebot on / — keep home indexable).
+	@crawlerHomeFeedHeavy {
+		path_regexp homeOrFeed ^/(feed)?$
+		header_regexp uaHeavy User-Agent (?i)(meta-externalagent|gptbot|claudebot|oai-searchbot|perplexitybot)
+	}
+
+	@crawlerLimited {
+		path_regexp expensive ^/(thread|u|og|avatar)/.*
+		header_regexp ua User-Agent (?i)(meta-externalagent|gptbot|claudebot|oai-searchbot|perplexitybot|googlebot|googleother)
+	}
+
+	handle @crawlerHomeFeedHeavy {
+		header X-Robots-Tag "noindex, nofollow"
+		respond "" 204
+	}
+
+	handle /robots.txt {
+		header Content-Type "text/plain; charset=utf-8"
+		respond "User-agent: *\nDisallow: /thread/\nDisallow: /u/\n" 200
+	}
+
+	handle @crawlerLimited {
+		header X-Robots-Tag "noindex, nofollow"
+		respond "" 204
+	}
+
+	reverse_proxy 127.0.0.1:8080
+}

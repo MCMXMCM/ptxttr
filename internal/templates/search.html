@@ -1,0 +1,63 @@
+{{define "search"}}
+{{template "document_start" .}}
+<div class="app-shell">
+  {{template "left_rail" .}}
+  {{template "search_main" .}}
+  {{template "right_rail_static" .}}
+</div>
+<script type="module" src="/static/js/layout.js"></script>
+{{template "document_end" .}}
+{{end}}
+
+{{define "search_main"}}
+<section class="feed-column shell-main-top" data-shell-main>
+  <section class="page-heading search-heading" data-search-heading>
+    <h1>Search</h1>
+    {{if .ShowScopeToggle}}
+      <p class="muted search-scope-links">
+        Scope:
+        {{if eq .Scope "network"}}
+          <strong>current network</strong>
+          <span aria-hidden="true">·</span>
+          <a href="{{.ScopeAllURL}}" data-relay-aware>expand to all cached notes</a>
+        {{else}}
+          <a href="{{.ScopeNetworkURL}}" data-relay-aware>current network</a>
+          <span aria-hidden="true">·</span>
+          <strong>all cached notes</strong>
+        {{end}}
+      </p>
+    {{end}}
+    {{if .Query}}
+      <p class="muted">Best effort search from this server's local event cache (not global Nostr search).</p>
+      {{if and (gt .OldestCachedAt 0) (gt .LatestCachedAt 0)}}
+        <p class="muted search-cache-window">Cache window for this scope: <strong>{{formatDate .OldestCachedAt}}</strong> to <strong>{{formatDate .LatestCachedAt}}</strong>.</p>
+      {{else}}
+        <p class="muted search-cache-window">Cache window is still warming for this scope.</p>
+      {{end}}
+      <p class="muted">Showing matches for <strong>"{{.Query}}"</strong> in {{.ScopeLabel}}.</p>
+    {{else}}
+      <p class="muted">Enter terms in the search box to find notes from local cache.</p>
+    {{end}}
+  </section>
+
+  <section class="feed search-results" data-feed data-search-results>
+    {{template "search_items" .}}
+  </section>
+
+  {{if and .Query .HasMore}}
+    <button class="load-more" data-load-more data-feed-url="/search" data-fragment="1" data-cursor="{{.Cursor}}" data-cursor-id="{{.CursorID}}" data-search-query="{{.Query}}" data-search-scope="{{.Scope}}" type="button">Load more</button>
+  {{end}}
+</section>
+{{end}}
+
+{{define "search_items"}}
+{{if not .Query}}
+  <p class="muted">Search notes by keyword.</p>
+{{else}}
+  {{range .Feed}}
+    {{template "note" dict "Event" . "Profiles" $.Profiles "Width" $.AsciiWidth "ReplyCount" (index $.ReplyCounts .ID) "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "ReferencedEvents" $.ReferencedEvents}}
+  {{else}}
+    <p class="muted">No cached notes matched that query in {{.ScopeLabel}}.</p>
+  {{end}}
+{{end}}
+{{end}}

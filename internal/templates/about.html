@@ -1,0 +1,40 @@
+{{define "about"}}
+{{template "document_start" .}}
+<div class="app-shell">
+  {{template "left_rail" .}}
+  {{template "about_main" .}}
+  {{template "right_rail_static" .}}
+</div>
+<script type="module" src="/static/js/layout.js"></script>
+{{template "document_end" .}}
+{{end}}
+
+{{define "about_main"}}
+<section class="feed-column shell-main-top" data-shell-main>
+  <section class="page-heading about-page">
+    <div class="about-page-brand">
+      <span class="about-page-logo" aria-hidden="true">
+        <img src="/static/img/ascritch_icon_black.png" alt="" width="80" height="80" decoding="async" class="about-logo about-logo-light-scheme">
+        <img src="/static/img/ascritch_icon_white.png" alt="" width="80" height="80" decoding="async" class="about-logo about-logo-dark-scheme">
+      </span>
+      <span class="about-page-app-name">Plain Text Nostr</span>
+    </div>
+    <h1>About</h1>
+    <p class="about-page-lead muted">A simple and fast Nostr web reader:
+      keys and signing in browser, 
+      server crawls relay hints, 
+      caches events, and makes them available via SQLite.
+      <p class="about-page-lead muted"> 
+      You browse over HTTP and get HTML; the server does the graphing, filtering, websocketing, 
+      deduplicating, JSONing, and all the other stuff that drains your battery, 
+      toasts your device, and makes notes over nostr feel clunky and slow.
+      </p>
+
+    <h2 class="about-page-sub">NIPs and libraries</h2>
+    <nav class="rail-nav about-page-links" aria-label="Nostr specifications and dependencies">
+      <a href="https://github.com/nostr-protocol/nips" rel="noopener noreferrer" target="_blank"><span class="rail-icon" aria-hidden="true">></span><span class="rail-label">Nostr NIPs (specs and implementations)</span></a>
+      <a href="https://pkg.go.dev/fiatjaf.com/nostr" rel="noopener noreferrer" target="_blank"><span class="rail-icon" aria-hidden="true">></span><span class="rail-label">fiatjaf.com/nostr (events, nip19, relay types)</span></a>
+    </nav>
+  </section>
+</section>
+{{end}}

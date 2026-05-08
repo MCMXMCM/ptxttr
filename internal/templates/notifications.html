@@ -1,0 +1,55 @@
+{{define "notifications"}}
+{{template "document_start" .}}
+<div class="app-shell">
+  {{template "left_rail" .}}
+  {{template "notifications_main" .}}
+  {{template "right_rail_static" .}}
+</div>
+<script type="module" src="/static/js/feed.js"></script>
+<script type="module" src="/static/js/layout.js"></script>
+{{template "document_end" .}}
+{{end}}
+
+{{define "notifications_main"}}
+<section class="feed-column shell-main-top" data-shell-main>
+  <section class="page-heading">
+    <h1>Notifications</h1>
+    {{if .UserPubKey}}
+      {{if .WebOfTrustEnabled}}
+        <p class="muted">Only showing mentions from authors within {{.WebOfTrustDepth}} degrees of {{if .LoggedOutWOTSeedDisplayName}}{{.LoggedOutWOTSeedDisplayName}}'s follow graph{{else}}your follow graph{{end}}. To include mentions from accounts nobody in that graph follows (including more spammy traffic), turn off Web of Trust in <a href="/settings" data-relay-aware>settings</a>.</p>
+      {{else}}
+        <p class="muted">Web of Trust is off for this page: any mention your relays return can appear here. Turn it on in <a href="/settings" data-relay-aware>settings</a> to limit mentions to authors within your follow graph.</p>
+      {{end}}
+      <p class="muted">Scope: notes and reposts from others that tag you with a <code>p</code> tag; plus a summary of reactions on your notes. Replies without a <code>p</code> tag and zaps are not included yet.</p>
+    {{else}}
+      <p><a href="/login" data-relay-aware>Login to view notifications</a></p>
+    {{end}}
+  </section>
+  {{if .UserPubKey}}
+    <section class="feed" data-feed>
+      {{template "notifications_items" .}}
+    </section>
+    {{if .HasMore}}
+      <button class="load-more" type="button" data-load-more data-feed-url="/notifications" data-fragment="1" data-cursor="{{.Cursor}}" data-cursor-id="{{.CursorID}}" data-pubkey="{{.UserPubKey}}" data-wot="{{if .WebOfTrustEnabled}}1{{else}}0{{end}}" data-wot-depth="{{.WebOfTrustDepth}}" data-has-more="1">Load more</button>
+    {{end}}
+  {{end}}
+</section>
+{{end}}
+
+{{define "notifications_items"}}
+  {{if .UserPubKey}}
+    {{range .Entries}}
+      {{if eq .Type "reaction_rollup"}}
+        <p class="notification-reaction-roll muted"><a href="/thread/{{.Rollup.NoteID}}" data-relay-aware>{{.Rollup.ReactorCount}} people reacted</a> to <span class="mono">{{short .Rollup.NoteID}}</span></p>
+      {{else}}
+        {{template "note" dict "Event" .Event "Profiles" $.Profiles "Width" $.AsciiWidth "ReplyCount" (index $.ReplyCounts .Event.ID) "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "ReferencedEvents" $.ReferencedEvents}}
+      {{end}}
+    {{else}}
+      {{if .WebOfTrustEnabled}}
+        <p class="muted">No mentions from within {{.WebOfTrustDepth}} degrees of {{if .LoggedOutWOTSeedDisplayName}}{{.LoggedOutWOTSeedDisplayName}}'s follow graph{{else}}your follow graph{{end}} yet. Turn off Web of Trust in <a href="/settings" data-relay-aware>settings</a> to include mentions from outside that graph.</p>
+      {{else}}
+        <p class="muted">No mentions found in the local cache yet. Try again after relays sync, or post where others can tag you.</p>
+      {{end}}
+    {{end}}
+  {{end}}
+{{end}}

@@ -1,0 +1,215 @@
+{{define "user"}}
+{{template "document_start" .}}
+<div class="app-shell">
+  {{template "left_rail" .}}
+  <section class="feed-column user-profile-column">
+    <section id="user-header" data-user-fragment="header">{{template "user_header" .}}</section>
+    <section id="user-stats" class="stats profile-stats-row" data-user-fragment="stats">{{template "user_stats" .}}</section>
+
+    <div class="user-tabs profile-tabs">
+      <nav class="user-tab-nav" aria-label="Profile timeline">
+        <label class="user-tab-label" for="user-tab-posts">Posts <span class="muted">({{len .Feed}})</span></label>
+        <span class="user-tab-sep" aria-hidden="true">·</span>
+        <label class="user-tab-label" for="user-tab-replies">Replies <span class="muted">({{len .Replies}})</span></label>
+        <span class="user-tab-sep" aria-hidden="true">·</span>
+        <label class="user-tab-label" for="user-tab-media">Media <span class="muted">({{len .Media}})</span></label>
+        <span class="user-tab-sep profile-mobile-only-tab" aria-hidden="true">·</span>
+        <label class="user-tab-label profile-mobile-only-tab" for="user-tab-identifiers">Identities</label>
+        <span class="user-tab-sep profile-mobile-only-tab" aria-hidden="true">·</span>
+        <label class="user-tab-label profile-mobile-only-tab" for="user-tab-relays">Relays</label>
+      </nav>
+
+      <input type="radio" name="user-tab" id="user-tab-posts" class="user-tab-state" checked>
+      <section class="user-tab-panel" aria-label="Posts" id="user-panel-posts" data-user-fragment="posts">
+        <button class="feed-new-notes" type="button" data-profile-new-notes hidden>Show <span data-profile-new-notes-count>0</span> newer posts</button>
+        <div class="feed" data-feed>
+          {{template "user_posts_items" .}}
+        </div>
+        {{if .HasMore}}
+          <button class="load-more" data-load-more data-feed-url="/u/{{.Profile.PubKey}}" data-fragment="posts" data-cursor="{{.Cursor}}" data-cursor-id="{{.CursorID}}" data-pubkey="{{.Profile.PubKey}}" type="button">Load more</button>
+        {{end}}
+      </section>
+
+      <input type="radio" name="user-tab" id="user-tab-replies" class="user-tab-state">
+      <section class="user-tab-panel" aria-label="Replies" id="user-panel-replies" data-user-fragment="replies">
+        <div class="feed">
+          {{template "user_event_items" dict "Events" .Replies "Profiles" .Profiles "ReplyCounts" .ReplyCounts "AsciiWidth" .AsciiWidth "EmptyMessage" "No replies found in cached notes yet."}}
+        </div>
+      </section>
+
+      <input type="radio" name="user-tab" id="user-tab-media" class="user-tab-state">
+      <section class="user-tab-panel" aria-label="Media" id="user-panel-media" data-user-fragment="media">
+        <div class="feed">
+          {{template "user_event_items" dict "Events" .Media "Profiles" .Profiles "ReplyCounts" .ReplyCounts "AsciiWidth" .AsciiWidth "EmptyMessage" "No media posts found in cached notes yet."}}
+        </div>
+      </section>
+
+      <input type="radio" name="user-tab" id="user-tab-following" class="user-tab-state">
+      <section class="user-tab-panel" aria-label="Following" id="user-panel-following" data-user-fragment="following">{{template "user_following" .}}</section>
+
+      <input type="radio" name="user-tab" id="user-tab-followers" class="user-tab-state">
+      <section class="user-tab-panel" aria-label="Followed by" id="user-panel-followers" data-user-fragment="followers">{{template "user_followers" .}}</section>
+
+      <input type="radio" name="user-tab" id="user-tab-identifiers" class="user-tab-state">
+      <section class="user-tab-panel profile-mobile-only-panel" aria-label="Identifiers" id="user-panel-identifiers" data-user-fragment="identifiers">{{template "user_identifiers" .}}</section>
+
+      <input type="radio" name="user-tab" id="user-tab-relays" class="user-tab-state">
+      <section class="user-tab-panel profile-mobile-only-panel" aria-label="Relays" id="user-panel-relays" data-user-fragment="relays">{{template "user_relays" .}}</section>
+    </div>
+  </section>
+  {{template "user_right_rail" .}}
+</div>
+<script type="module" src="/static/js/layout.js"></script>
+<script type="module" src="/static/js/relays.js"></script>
+{{template "document_end" .}}
+{{end}}
+
+{{define "user_header"}}
+{{template "profile_header_modern" .}}
+{{end}}
+
+{{define "user_stats"}}
+<span class="profile-stats-counts">
+  <a href="#user-panel-following" class="profile-stat-link" data-profile-tab="user-tab-following">following {{if .FollowingList.CachedExact}}{{.FollowingList.CachedTotal}}{{else}}{{len .FollowingList.Items}}+{{end}}</a>
+  <span class="muted" aria-hidden="true"> • </span>
+  <a href="#user-panel-followers" class="profile-stat-link" data-profile-tab="user-tab-followers">followed {{if .FollowersList.CachedExact}}{{.FollowersList.CachedTotal}}{{else}}{{len .FollowersList.Items}}+{{end}}</a>
+</span>
+<span><a href="/?pubkey={{.Profile.PubKey}}" data-relay-aware>view feed</a></span>
+{{end}}
+
+{{define "user_identifiers"}}
+<div class="ascii-border">{{asciiBorder}}</div>
+<div class="ascii-row">
+  <span class="ascii-edge">|</span>
+  <div class="ascii-content">
+    <h2 class="user-tab-panel-heading">Identifiers</h2>
+    <p>npub: <span class="mono">{{npub .Profile.PubKey}}</span></p>
+    <p>hex: <span class="mono">{{.Profile.PubKey}}</span></p>
+    {{if .Profile.Event}}
+      <p class="muted">metadata cached from kind 0 event <a href="/thread/{{.Profile.Event.ID}}" data-relay-aware>{{short .Profile.Event.ID}}</a></p>
+    {{else}}
+      <p class="muted">no cached metadata event yet</p>
+    {{end}}
+  </div>
+  <span class="ascii-edge">|</span>
+</div>
+<div class="ascii-border">{{asciiBorder}}</div>
+{{end}}
+
+{{define "user_following"}}
+<p class="muted">
+  {{if .FollowingList.CachedExact}}
+    {{.FollowingList.CachedTotal}} cached follows discovered for this profile. Nostr does not provide a reliable network-wide total.
+  {{else}}
+    Cached follow data is partial for this profile, so this count is not exact. Nostr does not provide a reliable network-wide total.
+  {{end}}
+</p>
+<form method="get" action="/u/{{.Profile.PubKey}}" data-follow-fragment-form data-follow-fragment="following" class="profile-search-form">
+  <input type="search" name="following_q" value="{{.FollowingList.Query}}" placeholder="Search cached following" aria-label="Search cached following">
+  <button type="submit">Search</button>
+</form>
+<p class="muted">Page {{.FollowingList.Page}} · Showing up to {{.FollowingList.PageSize}} per page.</p>
+<ul class="columns">
+  {{range .FollowingList.Items}}
+    <li><a href="/u/{{.}}" data-relay-aware>{{displayName $.ContactProfiles .}}</a> <span class="muted">{{short .}}</span></li>
+  {{else}}
+    {{if .FollowingList.Query}}
+      <li class="muted">No cached follows matched this search.</li>
+    {{else}}
+      <li class="muted">No cached follows yet.</li>
+    {{end}}
+  {{end}}
+</ul>
+<p class="muted profile-follow-pager">
+  {{if .FollowingList.HasPrev}}
+    <a href="/u/{{.Profile.PubKey}}?following_q={{.FollowingList.Query}}&following_page={{.FollowingList.PrevPage}}" data-follow-fragment-link="following">Newer</a>
+  {{else}}
+    <span>Newer</span>
+  {{end}}
+  ·
+  {{if .FollowingList.HasNext}}
+    <a href="/u/{{.Profile.PubKey}}?following_q={{.FollowingList.Query}}&following_page={{.FollowingList.NextPage}}" data-follow-fragment-link="following">Older</a>
+  {{else}}
+    <span>Older</span>
+  {{end}}
+</p>
+{{end}}
+
+{{define "user_followers"}}
+<p class="muted">
+  {{if .FollowersList.CachedExact}}
+    {{.FollowersList.CachedTotal}} cached followers discovered from kind 3 events. Nostr does not provide a reliable network-wide follower total.
+  {{else}}
+    Cached follower data is partial for this profile, so this count is not exact. Nostr does not provide a reliable network-wide follower total.
+  {{end}}
+</p>
+<form method="get" action="/u/{{.Profile.PubKey}}" data-follow-fragment-form data-follow-fragment="followers" class="profile-search-form">
+  <input type="search" name="followers_q" value="{{.FollowersList.Query}}" placeholder="Search cached followers" aria-label="Search cached followers">
+  <button type="submit">Search</button>
+</form>
+<p class="muted">Page {{.FollowersList.Page}} · Showing up to {{.FollowersList.PageSize}} per page.</p>
+<ul class="columns">
+  {{range .FollowersList.Items}}
+    <li><a href="/u/{{.}}" data-relay-aware>{{displayName $.ContactProfiles .}}</a> <span class="muted">{{short .}}</span></li>
+  {{else}}
+    {{if .FollowersList.Query}}
+      <li class="muted">No cached followers matched this search.</li>
+    {{else}}
+      <li class="muted">No cached followers yet.</li>
+    {{end}}
+  {{end}}
+</ul>
+<p class="muted profile-follow-pager">
+  {{if .FollowersList.HasPrev}}
+    <a href="/u/{{.Profile.PubKey}}?followers_q={{.FollowersList.Query}}&followers_page={{.FollowersList.PrevPage}}" data-follow-fragment-link="followers">Newer</a>
+  {{else}}
+    <span>Newer</span>
+  {{end}}
+  ·
+  {{if .FollowersList.HasNext}}
+    <a href="/u/{{.Profile.PubKey}}?followers_q={{.FollowersList.Query}}&followers_page={{.FollowersList.NextPage}}" data-follow-fragment-link="followers">Older</a>
+  {{else}}
+    <span>Older</span>
+  {{end}}
+</p>
+{{end}}
+
+{{define "user_relays"}}
+<p class="muted">Suggested read/write relays from this user's latest kind 10002 event.</p>
+<ul class="relay-list">
+  {{range .UserRelays}}
+    <li>
+      <code class="relay-url-popover" data-check-relay="{{.}}" tabindex="0" role="button">{{.}}</code>
+    </li>
+  {{else}}
+    <li class="muted">No cached NIP-65 relay hints yet.</li>
+  {{end}}
+</ul>
+{{end}}
+
+{{define "user_posts_items"}}
+{{template "user_event_items" dict "Events" .Feed "Profiles" .Profiles "ReplyCounts" .ReplyCounts "ReactionTotals" .ReactionTotals "ReactionViewers" .ReactionViewers "ReferencedEvents" .ReferencedEvents "AsciiWidth" .AsciiWidth "EmptyMessage" "No posts found yet."}}
+{{end}}
+
+{{define "user_replies_items"}}
+{{template "user_event_items" dict "Events" .Feed "Profiles" .Profiles "ReplyCounts" .ReplyCounts "ReactionTotals" .ReactionTotals "ReactionViewers" .ReactionViewers "ReferencedEvents" .ReferencedEvents "AsciiWidth" .AsciiWidth "EmptyMessage" "No replies found in cached notes yet."}}
+{{end}}
+
+{{define "user_media_items"}}
+{{template "user_event_items" dict "Events" .Feed "Profiles" .Profiles "ReplyCounts" .ReplyCounts "ReactionTotals" .ReactionTotals "ReactionViewers" .ReactionViewers "ReferencedEvents" .ReferencedEvents "AsciiWidth" .AsciiWidth "EmptyMessage" "No media posts found in cached notes yet."}}
+{{end}}
+
+{{define "user_event_items"}}
+  {{range .Events}}
+    {{template "note" dict "Event" . "Profiles" $.Profiles "Width" $.AsciiWidth "ReplyCount" (index $.ReplyCounts .ID) "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "ReferencedEvents" $.ReferencedEvents}}
+  {{else}}
+    <p class="muted">{{.EmptyMessage}}</p>
+  {{end}}
+{{end}}
+
+{{define "user_right_rail"}}
+<aside class="right-rail profile-right-rail">
+  <section class="profile-card profile-right-panel" id="user-right-identifiers" data-user-fragment="identifiers">{{template "user_identifiers" .}}</section>
+  <section class="profile-card profile-right-panel" id="user-right-relays" data-user-fragment="relays">{{template "user_relays" .}}</section>
+</aside>
+{{end}}

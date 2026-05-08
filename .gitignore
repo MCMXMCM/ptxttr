@@ -1,0 +1,14 @@
+# Go build cache (GOCACHE); never commit — paths look like .gocache/build/<hex>
+.gocache
+.gocache/
+
+data/*.sqlite
+data/*.sqlite-*
+data/profile-debug/
+tmp/
+dist/
+deploy/environments/*.env
+!deploy/environments/*.example
+
+# Local profiling output (pprof, runtime snapshots)
+profiles/

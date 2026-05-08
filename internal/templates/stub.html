@@ -1,0 +1,34 @@
+{{define "stub"}}
+{{template "document_start" .}}
+<div class="app-shell">
+  {{template "left_rail" .}}
+  <section class="feed-column shell-main-top">
+    <section class="page-heading">
+      <h1>{{.Heading}}</h1>
+      <p class="muted">{{.Message}}</p>
+      {{if eq .Active "settings"}}
+        <p>
+          <button type="button" data-logout data-logout-redirect="/login">Log out</button>
+        </p>
+      {{end}}
+    </section>
+  </section>
+  {{template "right_rail_static" .}}
+</div>
+<script type="module" src="/static/js/layout.js"></script>
+{{template "document_end" .}}
+{{end}}
+
+{{define "stub_main"}}
+<section class="feed-column shell-main-top" data-shell-main>
+  <section class="page-heading">
+    <h1>{{.Heading}}</h1>
+    <p class="muted">{{.Message}}</p>
+    {{if eq .Active "settings"}}
+      <p>
+        <button type="button" data-logout data-logout-redirect="/login">Log out</button>
+      </p>
+    {{end}}
+  </section>
+</section>
+{{end}}

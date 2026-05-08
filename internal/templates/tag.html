@@ -1,0 +1,59 @@
+{{define "tag"}}
+{{template "document_start" .}}
+<div class="app-shell">
+  {{template "left_rail" .}}
+  {{template "tag_main" .}}
+  {{template "right_rail_static" .}}
+</div>
+<script type="module" src="/static/js/layout.js"></script>
+{{template "document_end" .}}
+{{end}}
+
+{{define "tag_main"}}
+<section class="feed-column shell-main-top" data-shell-main>
+  <section class="page-heading search-heading" data-tag-heading>
+    <h1>#{{.Tag}}</h1>
+    {{if .ShowScopeToggle}}
+      <p class="muted search-scope-links">
+        Scope:
+        {{if eq .Scope "network"}}
+          <strong>current network</strong>
+          <span aria-hidden="true">·</span>
+          <a href="{{.ScopeAllURL}}" data-relay-aware>expand to all cached notes</a>
+        {{else}}
+          <a href="{{.ScopeNetworkURL}}" data-relay-aware>current network</a>
+          <span aria-hidden="true">·</span>
+          <strong>all cached notes</strong>
+        {{end}}
+      </p>
+    {{end}}
+    <p class="muted">Notes on this page are from this server’s local cache, filtered by NIP-12 <code>t</code> tags (hashtag index). Notes that only include <code>#</code> in the body without a matching <code>t</code> tag will not appear here.</p>
+    {{if and (gt .OldestCachedAt 0) (gt .LatestCachedAt 0)}}
+      <p class="muted search-cache-window">Cache window for this scope: <strong>{{formatDate .OldestCachedAt}}</strong> to <strong>{{formatDate .LatestCachedAt}}</strong>.</p>
+    {{else}}
+      <p class="muted search-cache-window">Cache window is still warming for this scope.</p>
+    {{end}}
+    <p class="muted">Showing notes tagged <strong>#{{.Tag}}</strong> in {{.ScopeLabel}}.</p>
+  </section>
+
+  <section class="feed search-results" data-feed data-tag-results>
+    {{template "tag_items" .}}
+  </section>
+
+  {{if and .Tag .HasMore}}
+    <button class="load-more" data-load-more data-feed-url="/tag/{{.TagPath}}" data-fragment="1" data-cursor="{{.Cursor}}" data-cursor-id="{{.CursorID}}" data-tag-scope="{{.Scope}}" type="button">Load more</button>
+  {{end}}
+</section>
+{{end}}
+
+{{define "tag_items"}}
+{{if not .Tag}}
+  <p class="muted">Invalid hashtag.</p>
+{{else}}
+  {{range .Feed}}
+    {{template "note" dict "Event" . "Profiles" $.Profiles "Width" $.AsciiWidth "ReplyCount" (index $.ReplyCounts .ID) "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "ReferencedEvents" $.ReferencedEvents}}
+  {{else}}
+    <p class="muted">No cached notes with this hashtag in {{.ScopeLabel}}.</p>
+  {{end}}
+{{end}}
+{{end}}
