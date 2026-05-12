@@ -302,3 +302,7 @@ Then repeatedly load `/`, `/feed`, `/relays`, a known `/u/<npub-or-hex>`, and a 
 ## Hosted deployment (advanced)
 
 For a single-instance AWS deployment, TLS, optional CloudFront in front of the origin, and operational runbooks, see [`deploy/README.md`](deploy/README.md). This path is aimed at operators who want a public site, not at someone who only wants to try the app locally.
+
+## License
+
+[MIT License](LICENSE): 
