@@ -8,7 +8,7 @@
       {{template "feed_heading" .}}
     </section>
 
-    <button class="feed-new-notes" type="button" data-new-notes data-feed-sort="{{.FeedSort}}" data-wot="{{if .WebOfTrustEnabled}}1{{else}}0{{end}}" data-wot-depth="{{.WebOfTrustDepth}}" hidden>Show <span data-new-notes-count>0</span> new notes</button>
+    <button class="feed-new-notes" type="button" data-new-notes hidden>Show <span data-new-notes-count>0</span> new notes</button>
 
     <section id="feed" class="feed" data-feed data-feed-snapshot-starter="{{if .FeedSnapshotStarter}}1{{else}}0{{end}}">
       {{if and (not .Cursor) (eq (len .Feed) 0)}}
@@ -19,7 +19,7 @@
     </section>
 
     {{/* Shell first paint has HasMore false but client hydrates via ?fragment=1; the button must exist so feed.js can bind infinite scroll. */}}
-    <button class="load-more" data-load-more data-feed-url="/feed" data-fragment="1" data-cursor="{{.Cursor}}" data-cursor-id="{{.CursorID}}" data-pubkey="{{.UserPubKey}}" data-timeframe="{{.TrendingTimeframe}}" data-sort="{{.FeedSort}}" data-wot="{{if .WebOfTrustEnabled}}1{{else}}0{{end}}" data-wot-depth="{{.WebOfTrustDepth}}" type="button"{{if not .HasMore}} hidden{{end}} data-has-more="{{if .HasMore}}1{{else}}0{{end}}">Load more</button>
+    <button class="load-more" data-load-more data-feed-url="/feed" data-fragment="1" data-cursor="{{.Cursor}}" data-cursor-id="{{.CursorID}}" type="button"{{if not .HasMore}} hidden{{end}} data-has-more="{{if .HasMore}}1{{else}}0{{end}}">Load more</button>
   </section>
 
   {{template "right_rail" .}}

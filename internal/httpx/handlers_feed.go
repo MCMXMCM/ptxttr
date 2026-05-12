@@ -98,23 +98,26 @@ func (s *Server) homeOrFeedDocumentData(ctx context.Context, req feedRequest) Fe
 	return s.feedData(ctx, req)
 }
 
-// feedRequestFromHTTP extracts the common feed parameters from the request
-// query string. Cursors are left zero; callers fill those in per fragment.
+// feedRequestFromHTTP extracts the common feed parameters from the request.
+// The viewer identity comes from the X-Ptxt-Viewer header (with `?pubkey=`
+// fallback); cursors are left zero so callers can fill those in per fragment.
 func (s *Server) feedRequestFromHTTP(r *http.Request) feedRequest {
-	pubkey := r.URL.Query().Get("pubkey")
-	seedPubkey := strings.TrimSpace(r.URL.Query().Get("seed_pubkey"))
-	wot := webOfTrustOptionsFromRequest(r)
+	pubkey := viewerFromRequest(r)
+	seedPubkey := seedPubkeyFromRequest(r)
+	wotSet, wotRaw := wotEnabledFromRequest(r)
+	wotDepthSet, wotDepthRaw := wotDepthFromRequest(r)
+	wot := buildWebOfTrust(wotRaw, wotDepthRaw)
 	loggedOut := strings.TrimSpace(pubkey) == ""
 	if !loggedOut {
 		_, err := nostrx.DecodeIdentifier(pubkey)
 		loggedOut = err != nil
 	}
 	if loggedOut {
-		if !r.URL.Query().Has("wot") {
+		if !wotSet {
 			wot.Enabled = true
 		}
 		if wot.Enabled {
-			if !r.URL.Query().Has("wot_depth") {
+			if !wotDepthSet {
 				wot.Depth = defaultLoggedOutWOTDepth
 			}
 			if seedPubkey == "" {
@@ -127,8 +130,8 @@ func (s *Server) feedRequestFromHTTP(r *http.Request) feedRequest {
 		SeedPubkey: seedPubkey,
 		Limit:      30,
 		Relays:     s.requestRelays(r),
-		Timeframe:  normalizeTrendingTimeframe(r.URL.Query().Get("tf")),
-		SortMode:   feedSortForPubkey(pubkey, r.URL.Query().Get("sort")),
+		Timeframe:  normalizeTrendingTimeframe(feedTrendingTfFromRequest(r)),
+		SortMode:   feedSortForPubkey(pubkey, feedSortFromRequest(r)),
 		WoT:        wot,
 	}
 }
@@ -153,11 +156,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleReads(w http.ResponseWriter, r *http.Request) {
 	defer s.observe("handler.reads", time.Now())
 	cursor, _ := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
-	trendingTimeframe := normalizeTrendingTimeframe(r.URL.Query().Get("reads_tf"))
+	trendingTimeframe := normalizeTrendingTimeframe(readsTrendingTfFromRequest(r))
 	req := s.feedRequestFromHTTP(r)
 	// /reads keeps the default as an unscoped firehose unless the caller
-	// explicitly opts into WoT with query params.
-	if !r.URL.Query().Has("wot") {
+	// explicitly opts into WoT (via X-Ptxt-Wot header or ?wot= back-compat).
+	wotSet, _ := wotEnabledFromRequest(r)
+	if !wotSet {
 		req.WoT.Enabled = false
 	}
 	req.Cursor = cursor
@@ -167,7 +171,7 @@ func (s *Server) handleReads(w http.ResponseWriter, r *http.Request) {
 	// differs from the home feed, so we intentionally bypass feedSortForPubkey
 	// (which would default logged-out readers to trend7d on the feed) and use
 	// the simpler normalize that defaults to recent.
-	req.SortMode = normalizeFeedSort(r.URL.Query().Get("sort"))
+	req.SortMode = normalizeFeedSort(feedSortFromRequest(r))
 	data := s.readsData(r.Context(), req, trendingTimeframe)
 	data.BasePageData = s.basePageData(r, "Reads", "reads", "feed-shell")
 	switch r.URL.Query().Get("fragment") {
@@ -192,7 +196,7 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	relays := s.requestRelays(r)
-	viewerPub, loggedOut := s.resolveViewer(r.URL.Query().Get("pubkey"), relays)
+	viewerPub, loggedOut := s.resolveViewer(viewerFromRequest(r), relays)
 	allowReadRelay := allowSyncRelayWork(viewerPub, loggedOut)
 	event := s.eventByIDEx(r.Context(), id, relays, allowReadRelay)
 	if event == nil {
@@ -223,7 +227,7 @@ func (s *Server) renderReadNotFound(w http.ResponseWriter, r *http.Request, head
 
 func (s *Server) handleBookmarks(w http.ResponseWriter, r *http.Request) {
 	defer s.observe("handler.bookmarks", time.Now())
-	pubkey := r.URL.Query().Get("pubkey")
+	pubkey := viewerFromRequest(r)
 	data := s.bookmarksData(r.Context(), pubkey, s.requestRelays(r))
 	data.BasePageData = s.basePageData(r, "Bookmarks", "bookmarks", "feed-shell")
 	data.HideTrendingRail = true
@@ -240,11 +244,11 @@ func (s *Server) handleBookmarks(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleNotifications(w http.ResponseWriter, r *http.Request) {
 	defer s.observe("handler.notifications", time.Now())
-	pubkey := r.URL.Query().Get("pubkey")
+	pubkey := viewerFromRequest(r)
 	cursor, _ := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
 	cursorID := r.URL.Query().Get("cursor_id")
 	refreshFromRelays := cursor == 0 && cursorID == ""
-	data := s.notificationsData(r.Context(), pubkey, strings.TrimSpace(r.URL.Query().Get("seed_pubkey")), s.requestRelays(r), cursor, cursorID, refreshFromRelays, webOfTrustOptionsFromRequest(r))
+	data := s.notificationsData(r.Context(), pubkey, seedPubkeyFromRequest(r), s.requestRelays(r), cursor, cursorID, refreshFromRelays, webOfTrustOptionsFromRequest(r))
 	data.BasePageData = s.basePageData(r, "Notifications", "notifications", "feed-shell")
 	data.HideTrendingRail = true
 	switch r.URL.Query().Get("fragment") {
@@ -272,7 +276,7 @@ func (s *Server) handleAbout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
-	userPub, _ := s.resolveViewer(r.URL.Query().Get("pubkey"), s.requestRelays(r))
+	userPub, _ := s.resolveViewer(viewerFromRequest(r), s.requestRelays(r))
 	data := SettingsPageData{
 		BasePageData:       s.basePageData(r, "Settings", "settings", "feed-shell"),
 		UserPubKey:         userPub,
@@ -362,7 +366,7 @@ func (s *Server) renderSearchPage(w http.ResponseWriter, r *http.Request, status
 }
 
 func (s *Server) handleTrending(w http.ResponseWriter, r *http.Request) {
-	timeframe := normalizeTrendingTimeframe(r.URL.Query().Get("tf"))
+	timeframe := normalizeTrendingTimeframe(feedTrendingTfFromRequest(r))
 	fragment := strings.TrimSpace(r.URL.Query().Get("fragment"))
 	cacheOnly := fragment != ""
 	trending := s.trendingData(r.Context(), timeframe, s.requestRelays(r), cacheOnly)
@@ -376,7 +380,7 @@ func (s *Server) handleTrending(w http.ResponseWriter, r *http.Request) {
 		Profiles:          s.profilesFor(r.Context(), events),
 	}
 	if fragment == "" {
-		viewerPub, _ := s.resolveViewer(r.URL.Query().Get("pubkey"), s.requestRelays(r))
+		viewerPub, _ := s.resolveViewer(viewerFromRequest(r), s.requestRelays(r))
 		data.ReactionTotals, data.ReactionViewers = s.reactionMapsForEvents(r.Context(), events, viewerPub)
 	}
 	s.render(w, "trending_list", data)
@@ -385,7 +389,7 @@ func (s *Server) handleTrending(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRelays(w http.ResponseWriter, r *http.Request) {
 	relays := s.requestRelays(r)
 	var suggested []string
-	if pubkey, err := nostrx.DecodeIdentifier(r.URL.Query().Get("pubkey")); err == nil {
+	if pubkey, err := nostrx.DecodeIdentifier(viewerFromRequest(r)); err == nil {
 		s.refreshAuthor(r.Context(), pubkey, relays)
 		suggested = s.userRelays(r.Context(), pubkey)
 	}
@@ -410,8 +414,8 @@ func (s *Server) handleRelays(w http.ResponseWriter, r *http.Request) {
 func (s *Server) searchRequestFromHTTP(r *http.Request) searchRequest {
 	cursor, _ := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
 	return searchRequest{
-		Pubkey:     r.URL.Query().Get("pubkey"),
-		SeedPubkey: r.URL.Query().Get("seed_pubkey"),
+		Pubkey:     viewerFromRequest(r),
+		SeedPubkey: seedPubkeyFromRequest(r),
 		Query:      strings.TrimSpace(r.URL.Query().Get("q")),
 		Scope:      strings.TrimSpace(r.URL.Query().Get("scope")),
 		Cursor:     cursor,
@@ -422,35 +426,18 @@ func (s *Server) searchRequestFromHTTP(r *http.Request) searchRequest {
 	}
 }
 
-func (s *Server) searchScopeURL(r *http.Request, req searchRequest, scope string) string {
+// searchScopeURL builds /search?... links. Viewer pubkey, WoT seed, WoT
+// settings and relays are intentionally omitted: the client sends those as
+// request headers so the URL stays cache-key-shared across all viewers.
+func (s *Server) searchScopeURL(_ *http.Request, req searchRequest, scope string) string {
 	values := url.Values{}
 	if req.Query != "" {
 		values.Set("q", req.Query)
-	}
-	if req.Pubkey != "" {
-		values.Set("pubkey", req.Pubkey)
-	}
-	if req.SeedPubkey != "" {
-		values.Set("seed_pubkey", req.SeedPubkey)
 	}
 	if scope == searchScopeAll {
 		values.Set("scope", searchScopeAll)
 	} else {
 		values.Set("scope", searchScopeNetwork)
-	}
-	if req.WoT.Enabled {
-		values.Set("wot", "1")
-		values.Set("wot_depth", strconv.Itoa(req.WoT.Depth))
-	}
-	for _, relay := range r.URL.Query()["relay"] {
-		if relay != "" {
-			values.Add("relay", relay)
-		}
-	}
-	for _, relay := range r.URL.Query()["relays"] {
-		if relay != "" {
-			values.Add("relays", relay)
-		}
 	}
 	return "/search?" + values.Encode()
 }

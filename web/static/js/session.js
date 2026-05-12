@@ -2,6 +2,42 @@ import { nip19 } from "../lib/nostr-tools.js";
 
 const KEY = "ptxt_nostr_session";
 const RELAYS = "ptxt_relays";
+// Viewer prefs live under sort-prefs' localStorage keys; we read them directly
+// here (rather than importing the getters) to avoid a circular import
+// (sort-prefs.js -> session.js). Keep these key names in sync with sort-prefs.js.
+const WOT_SEED_KEY = "ptxt_wot_seed_pubkey";
+const FEED_SORT_KEY = "ptxt_feed_sort";
+const READS_SORT_KEY = "ptxt_reads_sort";
+const TRENDING_TF_KEY = "ptxt_trending_tf";
+const READS_TRENDING_TF_KEY = "ptxt_reads_trending_tf";
+const WEB_OF_TRUST_ENABLED_KEY = "ptxt_wot_enabled";
+const WEB_OF_TRUST_DEPTH_KEY = "ptxt_wot_depth";
+
+// After a successful publish, GET/HEAD to `/thread*`, `/u/*`, `/e/*` append
+// `?_=<publishMs>` so the publisher's CloudFront key diverges until the edge
+// TTL (~setContentAddressedCache s-maxage, 5m) would have expired anyway.
+const RECENT_PUBLISH_KEY = "ptxt_last_publish_at_ms";
+const RECENT_PUBLISH_WINDOW_MS = 5 * 60 * 1000;
+const CACHE_BUST_PATH_PREFIXES = ["/thread", "/u/", "/e/"];
+
+/** In-tab memo so parallel fragment fetches after publish avoid N× getItem. */
+let publishBustToken = "";
+let publishBustExpires = 0;
+
+// HTTP headers the client uses to send viewer identity + view preferences to
+// the origin without putting them in URLs (so anonymous SSR HTML can share a
+// single CloudFront cache entry across all viewers). The server prefers these
+// headers, falling back to the legacy `?pubkey=`, `?seed_pubkey=`, `?relays=`,
+// `?sort=`, `?tf=`, `?reads_tf=`, `?wot=`, `?wot_depth=` query strings only
+// for old bookmarks.
+const HEADER_VIEWER_PUBKEY = "X-Ptxt-Viewer";
+const HEADER_WOT_SEED = "X-Ptxt-Wot-Seed";
+const HEADER_RELAYS = "X-Ptxt-Relays";
+const HEADER_FEED_SORT = "X-Ptxt-Sort";
+const HEADER_FEED_TRENDING_TF = "X-Ptxt-Tf";
+const HEADER_READS_TRENDING_TF = "X-Ptxt-Reads-Tf";
+const HEADER_WOT_ENABLED = "X-Ptxt-Wot";
+const HEADER_WOT_DEPTH = "X-Ptxt-Wot-Depth";
 const LOGIN_METHOD_META = {
   readonly: { label: "Npub Login", canSign: false, readOnly: true, needsExtension: false, needsRemoteSigner: false },
   nip07: { label: "Browser Extension", canSign: true, readOnly: false, needsExtension: true, needsRemoteSigner: false },
@@ -48,42 +84,200 @@ export function normalizedPubkey(session = getSession()) {
   return session.pubkey || "";
 }
 
-// Routes that get a session-derived `pubkey` query param injected and that
-// also respect the stored Web-of-Trust preference. Keeping the canonical
-// list here avoids drift between session pubkey injection, WoT URL
-// rewriting, and other route-aware helpers.
+function readLocalStorageString(key) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw == null ? "" : String(raw).trim();
+  } catch {
+    return "";
+  }
+}
+
+function storedWotSeed() {
+  return readLocalStorageString(WOT_SEED_KEY);
+}
+
+function storedSortForPath(pathname) {
+  if (pathname === "/" || pathname === "/feed") {
+    return readLocalStorageString(FEED_SORT_KEY);
+  }
+  if (pathname === "/reads") {
+    return readLocalStorageString(READS_SORT_KEY);
+  }
+  return "";
+}
+
+function inputPathname(input) {
+  try {
+    if (typeof input === "string") return new URL(input, window.location.origin).pathname;
+    if (input instanceof URL) return input.pathname;
+    if (input && typeof input === "object" && typeof input.url === "string") {
+      return new URL(input.url, window.location.origin).pathname;
+    }
+  } catch {
+    return "";
+  }
+  return "";
+}
+
+/** Call after `/api/events` 200 so this tab's fetches bust CDN for ~5m. */
+export function recordPublishedAt(now = Date.now()) {
+  try {
+    localStorage.setItem(RECENT_PUBLISH_KEY, String(now));
+  } catch {
+    // private mode / quota — no bust; staleness bounded by origin s-maxage
+  }
+  publishBustToken = String(now);
+  publishBustExpires = now + RECENT_PUBLISH_WINDOW_MS;
+}
+
+function recentPublishToken() {
+  const now = Date.now();
+  if (publishBustToken && now < publishBustExpires) return publishBustToken;
+  publishBustToken = "";
+  publishBustExpires = 0;
+  try {
+    const raw = Number.parseInt(localStorage.getItem(RECENT_PUBLISH_KEY) || "", 10);
+    if (!Number.isFinite(raw) || now - raw > RECENT_PUBLISH_WINDOW_MS) return "";
+    publishBustToken = String(raw);
+    publishBustExpires = raw + RECENT_PUBLISH_WINDOW_MS;
+    return publishBustToken;
+  } catch {
+    return "";
+  }
+}
+
+function shouldCacheBustPath(pathname) {
+  if (!pathname) return false;
+  return CACHE_BUST_PATH_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+}
+
+function urlWithCacheBust(input, token) {
+  if (!token) return input;
+  try {
+    if (input instanceof Request) {
+      const u = new URL(input.url, window.location.origin);
+      u.searchParams.set("_", token);
+      return new Request(u, {
+        method: input.method,
+        headers: input.headers,
+        mode: input.mode,
+        credentials: input.credentials,
+        cache: input.cache,
+        redirect: input.redirect,
+        referrer: input.referrer,
+        referrerPolicy: input.referrerPolicy,
+        integrity: input.integrity,
+        keepalive: input.keepalive,
+        signal: input.signal,
+      });
+    }
+    let url = null;
+    if (typeof input === "string") {
+      url = new URL(input, window.location.origin);
+    } else if (input instanceof URL) {
+      url = new URL(input.href);
+    }
+    if (!url) return input;
+    url.searchParams.set("_", token);
+    if (typeof input === "string") {
+      const isAbsolute = /^https?:\/\//i.test(input) || input.startsWith("//");
+      return isAbsolute ? url.toString() : `${url.pathname}${url.search}${url.hash}`;
+    }
+    return url;
+  } catch {
+    return input;
+  }
+}
+
+// sessionHeaders attaches the X-Ptxt-* viewer headers to `extra` and returns a
+// `Headers` object suitable to drop into a fetch init. Pubkey comes from the
+// local session; the remaining prefs come from localStorage. Each header is
+// only set when the user has an explicit stored value, so unset prefs fall
+// through to the server's defaults (matching the prior URL-less behavior).
+//
+// `requestPath` is the request URL's pathname (used to disambiguate the
+// per-path X-Ptxt-Sort source between feed and reads). Pass "" when unknown.
+export function sessionHeaders(extra, requestPath = "") {
+  const headers = new Headers(extra || {});
+  const pubkey = normalizedPubkey();
+  if (pubkey) headers.set(HEADER_VIEWER_PUBKEY, pubkey);
+  const seed = storedWotSeed();
+  if (seed) headers.set(HEADER_WOT_SEED, seed);
+  const relays = relayParam();
+  if (relays) headers.set(HEADER_RELAYS, relays);
+  const sort = storedSortForPath(requestPath);
+  if (sort) headers.set(HEADER_FEED_SORT, sort);
+  const tf = readLocalStorageString(TRENDING_TF_KEY);
+  if (tf) headers.set(HEADER_FEED_TRENDING_TF, tf);
+  const readsTf = readLocalStorageString(READS_TRENDING_TF_KEY);
+  if (readsTf) headers.set(HEADER_READS_TRENDING_TF, readsTf);
+  const wotRaw = readLocalStorageString(WEB_OF_TRUST_ENABLED_KEY);
+  if (wotRaw) headers.set(HEADER_WOT_ENABLED, wotRaw);
+  const wotDepth = readLocalStorageString(WEB_OF_TRUST_DEPTH_KEY);
+  if (wotDepth) headers.set(HEADER_WOT_DEPTH, wotDepth);
+  return headers;
+}
+
+// fetchWithSession wraps `fetch` so every request carries the viewer identity
+// and view preferences as X-Ptxt-* request headers instead of URL params. Pass
+// a string, URL, or Request as `input`; `init` follows the standard fetch
+// shape.
+//
+// For GET/HEAD on `/thread*`, `/u/*`, `/e/*`, appends `?_=<publishMs>` while
+// the recent-publish window is open (publisher-only CDN key split).
+export function fetchWithSession(input, init) {
+  const baseInit = init || {};
+  const pathname = inputPathname(input);
+  const headers = sessionHeaders(baseInit.headers, pathname);
+  let target = input;
+  const methodSource = input instanceof Request ? input.method : baseInit.method;
+  const method = String(methodSource || "GET").toUpperCase();
+  if ((method === "GET" || method === "HEAD") && shouldCacheBustPath(pathname)) {
+    const token = recentPublishToken();
+    if (token) target = urlWithCacheBust(input, token);
+  }
+  return fetch(target, { ...baseInit, headers });
+}
+
+// Routes that respect the stored Web-of-Trust preference. Keeping the
+// canonical list here avoids drift between WoT URL rewriting and other
+// route-aware helpers.
 export const FEED_LIKE_PATHS = new Set(["/", "/feed", "/reads", "/notifications"]);
 export function isFeedLikePath(pathname) {
   return FEED_LIKE_PATHS.has(pathname);
 }
 
-/** For feed-like routes, set `pubkey` from session when absent. */
-export function ensureFeedURLHasSessionPubkey(url) {
-  if (!isFeedLikePath(url.pathname)) return false;
-  if (url.searchParams.get("pubkey")) return false;
-  const pk = normalizedPubkey();
-  if (!pk) return false;
-  url.searchParams.set("pubkey", pk);
-  return true;
+/** True when the address bar may carry legacy viewer-pref query params to scrub. */
+export function shouldSyncViewerPrefLocation(pathname) {
+  return isFeedLikePath(pathname) || pathname === "/settings";
 }
 
-/** Thread SSR and fragments need `pubkey` so reaction fill matches the session (same as feed). */
-export function ensureThreadURLHasSessionPubkey(url) {
-  if (!url.pathname.startsWith("/thread/")) return false;
-  if (url.searchParams.get("pubkey")) return false;
-  const pk = normalizedPubkey();
-  if (!pk) return false;
-  url.searchParams.set("pubkey", pk);
-  return true;
+/**
+ * No-op kept for backwards compatibility with callers that still pass URLs
+ * through this helper. Relays are now sent as the `X-Ptxt-Relays` header via
+ * `fetchWithSession()`, so server-bound URLs no longer need a `relays` query
+ * string. We additionally strip any stale `relays` / `relay` parameters so
+ * routes that were called before this refactor do not leak the values back
+ * into the address bar.
+ */
+export function applyRelayParamsToURL(url) {
+  if (!url?.searchParams) return;
+  url.searchParams.delete("relays");
+  url.searchParams.delete("relay");
 }
 
-/** Mutates `url`: current relay selection plus session pubkey on `/thread/*` paths. */
-export function applyRelayAndThreadSessionToURL(url) {
-  const relays = relayParam();
-  if (relays) {
-    url.searchParams.set("relays", relays);
+// Legacy viewer-pref keys that used to live on feed-like URLs. Fragment and
+// SPA fetches must omit them; sessionHeaders() sends the values as X-Ptxt-*.
+const VIEWER_PREF_QUERY_KEYS = ["pubkey", "seed_pubkey", "sort", "tf", "reads_tf", "wot", "wot_depth"];
+
+/** Removes relay + legacy viewer-pref query keys from `url` in place. */
+export function stripViewerPrefSearchParams(url) {
+  if (!url?.searchParams) return;
+  applyRelayParamsToURL(url);
+  for (const k of VIEWER_PREF_QUERY_KEYS) {
+    url.searchParams.delete(k);
   }
-  ensureThreadURLHasSessionPubkey(url);
 }
 
 export function loginMethodMeta(method) {
@@ -109,16 +303,12 @@ export function loginCapabilities(session = getSession()) {
   };
 }
 
-export function sessionFeedURL(session = getSession()) {
-  const pubkey = normalizedPubkey(session);
-  const url = pubkey ? `/?pubkey=${encodeURIComponent(pubkey)}` : "/";
-  return withRelayParams(url);
+export function sessionFeedURL() {
+  return "/";
 }
 
-export function sessionReadsURL(session = getSession()) {
-  const pubkey = normalizedPubkey(session);
-  const url = pubkey ? `/reads?pubkey=${encodeURIComponent(pubkey)}` : "/reads";
-  return withRelayParams(url);
+export function sessionReadsURL() {
+  return "/reads";
 }
 
 export function selectedRelays() {
@@ -146,9 +336,15 @@ export function normalizeRelayURL(raw) {
   return value;
 }
 
+/**
+ * No-op kept for backwards compatibility. Relay selection now flows via the
+ * `X-Ptxt-Relays` header, so client-built URLs no longer encode `?relays=`.
+ * Any stale relay params on the input are stripped to keep the address bar
+ * clean as routes that pre-date this refactor flow through.
+ */
 export function withRelayParams(href) {
   const url = new URL(href, window.location.origin);
-  applyRelayAndThreadSessionToURL(url);
+  applyRelayParamsToURL(url);
   return `${url.pathname}${url.search}${url.hash}`;
 }
 
@@ -157,8 +353,8 @@ export function updateSessionLinks() {
   const pubkey = normalizedPubkey(session);
   const methodLabel = loginMethodLabel(session);
   const short = pubkey ? shortPubkey(pubkey) : "";
-  const feedURL = sessionFeedURL(session);
-  const readsURL = sessionReadsURL(session);
+  const feedURL = sessionFeedURL();
+  const readsURL = sessionReadsURL();
   document.querySelectorAll("[data-session-feed-link]").forEach((link) => {
     link.href = feedURL;
     link.hidden = !pubkey;
@@ -177,12 +373,10 @@ export function updateSessionLinks() {
     }
   });
   document.querySelectorAll("[data-session-bookmarks-link]").forEach((link) => {
-    const base = pubkey ? `/bookmarks?pubkey=${encodeURIComponent(pubkey)}` : "/bookmarks";
-    if (link instanceof HTMLAnchorElement) link.href = withRelayParams(base);
+    if (link instanceof HTMLAnchorElement) link.href = withRelayParams("/bookmarks");
   });
   document.querySelectorAll("[data-session-notifications-link]").forEach((link) => {
-    const base = pubkey ? `/notifications?pubkey=${encodeURIComponent(pubkey)}` : "/notifications";
-    if (link instanceof HTMLAnchorElement) link.href = withRelayParams(base);
+    if (link instanceof HTMLAnchorElement) link.href = withRelayParams("/notifications");
   });
   document.querySelectorAll("[data-session-label]").forEach((node) => {
     node.textContent = pubkey ? `Logged in via ${methodLabel} as ${short}` : "Not logged in";
@@ -278,21 +472,13 @@ window.addEventListener("storage", (event) => {
 });
 
 document.addEventListener("submit", (event) => {
+  // Strip any stale hidden `relays` input from GET forms so the address bar
+  // stays clean after submission. Selected relays now travel as
+  // X-Ptxt-Relays via fetchWithSession, so we no longer need to thread them
+  // through form actions.
   const form = event.target.closest("form[method='get']");
   if (!form) return;
-  const relays = relayParam();
-  let input = form.querySelector("input[name='relays']");
-  if (!relays) {
-    input?.remove();
-    return;
-  }
-  if (!input) {
-    input = document.createElement("input");
-    input.type = "hidden";
-    input.name = "relays";
-    form.append(input);
-  }
-  input.value = relays;
+  form.querySelector("input[name='relays']")?.remove();
 });
 
 document.addEventListener("click", (event) => {

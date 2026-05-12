@@ -1,4 +1,4 @@
-import { applyRelayAndThreadSessionToURL } from "./session.js";
+import { applyRelayParamsToURL } from "./session.js";
 import {
   replaceRouteOutletAndScroll,
   routeOutletInnerHTML,
@@ -12,7 +12,7 @@ export function profileSnapshotKey(urlLike) {
   const url = new URL(urlLike, window.location.origin);
   url.searchParams.delete("cursor");
   url.searchParams.delete("cursor_id");
-  applyRelayAndThreadSessionToURL(url);
+  applyRelayParamsToURL(url);
   return `${url.pathname}?${url.searchParams.toString()}`;
 }
 

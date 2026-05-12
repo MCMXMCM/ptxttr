@@ -1,4 +1,4 @@
-.PHONY: run test fmt tidy vet lint check build-cfn-artifact upload-cfn-artifact deploy deploy-infra
+.PHONY: run test fmt tidy vet lint check build-cfn-artifact upload-cfn-artifact deploy deploy-infra deploy-cloudfront grow-prod-volume grow-prod-data-volume validate-cfn
 
 ARTIFACT_BUCKET ?= your-artifact-bucket
 
@@ -33,3 +33,19 @@ deploy:
 
 deploy-infra:
 	./scripts/deploy-prod-infra.sh
+
+deploy-cloudfront:
+	./scripts/deploy-prod-cloudfront.sh
+
+# Requires AWS credentials with cloudformation:ValidateTemplate (calls the AWS API).
+validate-cfn:
+	aws cloudformation validate-template \
+		--template-body "file://$(CURDIR)/deploy/cloudformation/ptxt-nstr-single-instance.yaml"
+	aws cloudformation validate-template \
+		--template-body "file://$(CURDIR)/deploy/cloudformation/ptxt-nstr-cloudfront.yaml"
+
+grow-prod-volume:
+	./scripts/grow-prod-volume.sh
+
+grow-prod-data-volume:
+	./scripts/grow-prod-data-volume.sh

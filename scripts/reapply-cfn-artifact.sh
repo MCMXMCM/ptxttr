@@ -12,6 +12,7 @@ EOF
 
 STACK_NAME=""
 DOMAIN_NAME="example.com"
+ORIGIN_DOMAIN_NAME=""
 ARTIFACT_BUCKET=""
 ARTIFACT_KEY=""
 ARTIFACT_VERSION=""
@@ -30,6 +31,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --domain-name)
       DOMAIN_NAME="$2"
+      shift 2
+      ;;
+    --origin-domain-name)
+      ORIGIN_DOMAIN_NAME="$2"
       shift 2
       ;;
     --artifact-bucket)
@@ -91,7 +96,17 @@ INSTANCE_ID="$(aws cloudformation describe-stacks \
   --output text)"
 
 if [[ -z "${INSTANCE_ID}" || "${INSTANCE_ID}" == "None" ]]; then
-  echo "failed to resolve instance ID from stack ${STACK_NAME}" >&2
+  echo "failed to resolve InstanceId from stack ${STACK_NAME}" >&2
+  exit 1
+fi
+
+DATA_VOLUME_ID="$(aws cloudformation describe-stacks \
+  --stack-name "${STACK_NAME}" \
+  --query "Stacks[0].Outputs[?OutputKey=='DataVolumeId'].OutputValue | [0]" \
+  --output text)"
+
+if [[ -z "${DATA_VOLUME_ID}" || "${DATA_VOLUME_ID}" == "None" ]]; then
+  echo "failed to resolve DataVolumeId from stack ${STACK_NAME}" >&2
   exit 1
 fi
 
@@ -126,7 +141,7 @@ fi
 
 SSM_COMMANDS+=(
   "tar -xzf \"\$tmpdir/ptxt-nstr-artifact.tar.gz\" -C \"\$tmpdir\""
-  "bash \"\$tmpdir/install.sh\" --artifact-dir \"\$tmpdir\" --domain '${DOMAIN_NAME}' --app-user '${APP_USER}' --caddy-version '${CADDY_VERSION}' --gomemlimit '${GO_MEMORY_LIMIT}' --ptxt-addr '127.0.0.1:8080' --ptxt-db '/var/lib/ptxt-nstr/ptxt-nstr.sqlite' --ptxt-debug '${DEBUG_ENABLED}' --ptxt-event-retention '${EVENT_RETENTION}' --ptxt-compact-on-start '${COMPACT_ON_START}'"
+  "bash \"\$tmpdir/install.sh\" --artifact-dir \"\$tmpdir\" --domain '${DOMAIN_NAME}' --origin-domain '${ORIGIN_DOMAIN_NAME}' --app-user '${APP_USER}' --caddy-version '${CADDY_VERSION}' --gomemlimit '${GO_MEMORY_LIMIT}' --ptxt-addr '127.0.0.1:8080' --ptxt-db '/var/lib/ptxt-nstr/ptxt-nstr.sqlite' --ptxt-debug '${DEBUG_ENABLED}' --ptxt-event-retention '${EVENT_RETENTION}' --ptxt-compact-on-start '${COMPACT_ON_START}' --data-volume-id '${DATA_VOLUME_ID}'"
 )
 
 SSM_COMMANDS_JSON="$(

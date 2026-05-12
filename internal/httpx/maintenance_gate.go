@@ -8,6 +8,18 @@ import (
 const (
 	foregroundBusyWindow     = 150 * time.Millisecond
 	foregroundQuietWaitLimit = 750 * time.Millisecond
+
+	// userAsyncWorkerCount is the number of goroutines draining
+	// userAsyncQueue. relayWriteSem is sized to match so each worker can
+	// run its job's relay-write phase in parallel; if these drift apart
+	// the extra workers are decorative.
+	userAsyncWorkerCount = 2
+
+	// userAsyncQueueCapacity is the buffered channel depth for
+	// userAsyncQueue. Foreground request handlers never block on this
+	// channel (see runBackgroundUserAsync); excess work is dropped and
+	// re-fired by the next request that observes the missing/stale entry.
+	userAsyncQueueCapacity = 64
 )
 
 // tryRunMaintenanceWork runs fn when no other maintenance job holds the global
@@ -79,7 +91,11 @@ func (s *Server) runWithRelayWriteBudget(ctx context.Context, kind string, fn fu
 }
 
 // runBackgroundUserAsync enqueues short follow-up work (e.g. guest fragment
-// warm) onto a bounded worker queue instead of dropping it under burst load.
+// warm) onto a bounded worker queue. The send is strictly non-blocking: if the
+// queue is full the job is dropped (and counted) so a slow worker can never
+// stall a foreground request handler. Each call site is gated by an
+// endRefresh/cache-TTL key, so dropped work is re-fired by the next request
+// that observes the missing/stale entry.
 func (s *Server) runBackgroundUserAsync(fn func()) {
 	if s == nil || fn == nil {
 		return
@@ -93,13 +109,7 @@ func (s *Server) runBackgroundUserAsync(fn func()) {
 	case s.userAsyncQueue <- fn:
 		s.metrics.Add("bg.user_async_enqueued", 1)
 	default:
-		s.metrics.Add("bg.user_async_backpressure", 1)
-		select {
-		case <-s.ctx.Done():
-			return
-		case s.userAsyncQueue <- fn:
-			s.metrics.Add("bg.user_async_enqueued", 1)
-		}
+		s.metrics.Add("bg.user_async_dropped", 1)
 	}
 }
 

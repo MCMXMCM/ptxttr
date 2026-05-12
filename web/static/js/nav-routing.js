@@ -1,4 +1,4 @@
-import { applyRelayAndThreadSessionToURL } from "./session.js";
+import { applyRelayParamsToURL } from "./session.js";
 
 export function closestLink(target) {
   if (!(target instanceof Element)) return null;
@@ -33,6 +33,6 @@ export function routeKind(pathname) {
 
 export function withRelays(href) {
   const url = new URL(href, window.location.origin);
-  applyRelayAndThreadSessionToURL(url);
+  applyRelayParamsToURL(url);
   return `${url.pathname}${url.search}${url.hash}`;
 }

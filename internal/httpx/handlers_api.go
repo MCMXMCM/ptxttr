@@ -94,7 +94,7 @@ func (s *Server) handleReactionStats(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]reactionStatsRow{}, nil)
 		return
 	}
-	viewer := strings.TrimSpace(r.URL.Query().Get("pubkey"))
+	viewer := viewerFromRequest(r)
 	if decoded, err := nostrx.DecodeIdentifier(viewer); err == nil && decoded != "" {
 		viewer = decoded
 	}
@@ -262,11 +262,18 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		persistCtx, persistCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer persistCancel()
 		if err := s.store.SaveEvent(persistCtx, payload.Event); err != nil {
-			writeJSON(w, nil, err)
-			return
+			// Relays accepted the event; failing the response here would
+			// discard a successful publish and trip the client's retry loop
+			// against an event that already exists at the relay. Log and
+			// surface persisted=false so the caller (and recordPublishedAt
+			// on the JS side) still treats this as a publish success and
+			// opens the publisher's cache-bust window for /thread, /u, /e.
+			slog.Warn("save event after publish failed",
+				"id", payload.Event.ID, "kind", payload.Event.Kind, "err", err)
+		} else {
+			s.invalidateResolvedAuthorsForEvents([]nostrx.Event{payload.Event})
+			persisted = true
 		}
-		s.invalidateResolvedAuthorsForEvents([]nostrx.Event{payload.Event})
-		persisted = true
 	}
 	response := publishEventResponse{
 		EventID:    payload.Event.ID,
@@ -348,7 +355,7 @@ func (s *Server) handleProfileAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	pubkey, err := nostrx.DecodeIdentifier(strings.TrimSpace(r.URL.Query().Get("pubkey")))
+	pubkey, err := nostrx.DecodeIdentifier(viewerFromRequest(r))
 	if err != nil || pubkey == "" {
 		writeJSON(w, nil, httpError("valid pubkey is required", http.StatusBadRequest))
 		return
@@ -387,7 +394,7 @@ func (s *Server) handleRelayInsightAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	pubkey, err := nostrx.DecodeIdentifier(strings.TrimSpace(r.URL.Query().Get("pubkey")))
+	pubkey, err := nostrx.DecodeIdentifier(viewerFromRequest(r))
 	if err != nil || pubkey == "" {
 		writeJSON(w, nil, httpError("valid pubkey is required", http.StatusBadRequest))
 		return
@@ -413,7 +420,7 @@ func (s *Server) handleMentionsAPI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	pubkey, err := nostrx.DecodeIdentifier(strings.TrimSpace(r.URL.Query().Get("pubkey")))
+	pubkey, err := nostrx.DecodeIdentifier(viewerFromRequest(r))
 	if err != nil || pubkey == "" {
 		writeJSON(w, nil, httpError("valid pubkey is required", http.StatusBadRequest))
 		return
@@ -548,12 +555,46 @@ func (s *Server) mentionContactsAndRelays(ctx context.Context, pubkey string) ([
 	return contacts, relayHints
 }
 
+// handleEventAPI returns a single Nostr event as JSON keyed by its hex id.
+// The response is fully content-addressed and immutable (events are signed
+// and not editable), so we return an aggressive `immutable` Cache-Control so
+// CloudFront and viewer browsers can cache the bytes effectively forever.
+//
+// Cache misses are short-cached so a 404 doesn't keep the renderer hot when
+// crawlers ping random ids; clients (or replay later) can re-request.
+func (s *Server) handleEventAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	raw := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/event/"))
+	id := strings.ToLower(thread.NormalizeHexEventID(raw))
+	if !isBare64Hex(id) {
+		writeJSON(w, nil, httpError("invalid event id", http.StatusBadRequest))
+		return
+	}
+	if matchesETag(r, id) {
+		writeNotModifiedImmutable(w, id)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout(s.cfg.RequestTimeout))
+	defer cancel()
+	event := s.eventFromStore(ctx, id)
+	if event == nil {
+		setNegativeCache(w)
+		writeJSON(w, nil, httpError("event not found", http.StatusNotFound))
+		return
+	}
+	setImmutableCache(w, id)
+	writeJSON(w, map[string]any{"event": event}, nil)
+}
+
 func (s *Server) handleBookmarksAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	pubkey, err := nostrx.DecodeIdentifier(strings.TrimSpace(r.URL.Query().Get("pubkey")))
+	pubkey, err := nostrx.DecodeIdentifier(viewerFromRequest(r))
 	if err != nil || pubkey == "" {
 		writeJSON(w, nil, httpError("valid pubkey is required", http.StatusBadRequest))
 		return

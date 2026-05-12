@@ -1,5 +1,5 @@
 import { DEFAULT_RETRY_ATTEMPTS, sleepBackoff } from "./backoff.js";
-import { getSession, normalizedPubkey, relayParam, selectedRelays } from "./session.js";
+import { fetchWithSession, getSession, normalizedPubkey, recordPublishedAt, selectedRelays } from "./session.js";
 import { activeSignerState, signEventDraft } from "./signer.js";
 
 const KIND_BOOKMARK_LIST = 10003;
@@ -72,7 +72,7 @@ export async function publishSignedEvent(event) {
   for (let attempt = 0; attempt < DEFAULT_RETRY_ATTEMPTS; attempt++) {
     let response;
     try {
-      response = await fetch("/api/events", {
+      response = await fetchWithSession("/api/events", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -94,6 +94,7 @@ export async function publishSignedEvent(event) {
       payload = {};
     }
     if (response.ok) {
+      recordPublishedAt();
       return payload;
     }
     const retriable = RETRIABLE_PUBLISH_STATUSES.has(response.status);
@@ -129,11 +130,8 @@ async function loadBookmarks(pubkey) {
     return bookmarkState.entries;
   }
   bookmarkState.pubkey = pubkey;
-  const requestURL = new URL("/api/bookmarks", window.location.origin);
-  requestURL.searchParams.set("pubkey", pubkey);
-  const relays = relayParam();
-  if (relays) requestURL.searchParams.set("relays", relays);
-  bookmarkState.loading = fetch(requestURL.toString())
+  // Relays are sent as X-Ptxt-Relays via fetchWithSession.
+  bookmarkState.loading = fetchWithSession("/api/bookmarks")
     .then(async (response) => {
       if (!response.ok) throw new Error("bookmark list request failed");
       const payload = await response.json();

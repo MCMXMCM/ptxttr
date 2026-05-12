@@ -1,4 +1,4 @@
-import { applyRelayAndThreadSessionToURL } from "./session.js";
+import { applyRelayParamsToURL } from "./session.js";
 import {
   replaceRouteOutletAndScroll,
   routeOutletInnerHTML,
@@ -10,7 +10,7 @@ const threadSnapshots = new Map();
 
 export function threadSnapshotKey(urlLike) {
   const url = new URL(urlLike, window.location.origin);
-  applyRelayAndThreadSessionToURL(url);
+  applyRelayParamsToURL(url);
   return `${url.pathname}?${url.searchParams.toString()}`;
 }
 

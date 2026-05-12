@@ -30,7 +30,7 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	relays := s.requestRelays(r)
-	viewerPub, loggedOut := s.resolveViewer(r.URL.Query().Get("pubkey"), relays)
+	viewerPub, loggedOut := s.resolveViewer(viewerFromRequest(r), relays)
 	allowUserRelayWork := allowSyncRelayWork(viewerPub, loggedOut)
 	if event, err := s.store.LatestReplaceable(r.Context(), pubkey, nostrx.KindProfileMetadata); err == nil && event == nil {
 		if allowUserRelayWork && s.store.ShouldRefresh(r.Context(), "author", pubkey, 10*time.Minute) {
@@ -236,7 +236,7 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) viewerReactionMaps(r *http.Request, relays []string, combined []nostrx.Event) (map[string]int, map[string]string) {
-	viewerPub, _ := s.resolveViewer(r.URL.Query().Get("pubkey"), relays)
+	viewerPub, _ := s.resolveViewer(viewerFromRequest(r), relays)
 	return s.reactionMapsForEvents(r.Context(), combined, viewerPub)
 }
 
@@ -283,7 +283,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/thread/")
 	fragment := r.URL.Query().Get("fragment")
 	relays := s.requestRelays(r)
-	viewerPub, loggedOut := s.resolveViewer(r.URL.Query().Get("pubkey"), relays)
+	viewerPub, loggedOut := s.resolveViewer(viewerFromRequest(r), relays)
 	// UI fragments use relays for missing ancestry; fragment=replies alone stays
 	// store-first (selected, resolveEvent, and reply paging bodies).
 	allowThreadRelayFetch := allowSyncRelayWork(viewerPub, loggedOut) || threadFragmentUsesRelayFetch(fragment)
@@ -519,7 +519,10 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	reactionEvents := collectThreadNotesForReactions(view, all)
-	reactionTotals, reactionViewers := s.reactionMapsForEvents(r.Context(), reactionEvents, viewerPub)
+	// Thread SSR is publicly cached keyed by URL only, so we must never bake
+	// viewer-specific reactions in here. The client refills viewer state from
+	// /api/reaction-stats in thread.js initThreadPage().
+	reactionTotals, reactionViewers := s.reactionMapsForEvents(r.Context(), reactionEvents, "")
 
 	data := ThreadPageData{
 		BasePageData:     s.basePageData(r, "Thread", "thread", "feed-shell"),

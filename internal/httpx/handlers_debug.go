@@ -111,7 +111,7 @@ func (s *Server) handleDebugEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDebugProfile(w http.ResponseWriter, r *http.Request) {
-	pubkey, err := nostrx.DecodeIdentifier(r.URL.Query().Get("pubkey"))
+	pubkey, err := nostrx.DecodeIdentifier(viewerFromRequest(r))
 	if err != nil {
 		writeJSON(w, nil, httpError(err.Error(), http.StatusBadRequest))
 		return

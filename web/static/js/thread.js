@@ -1,7 +1,8 @@
 import { refreshAscii } from "./ascii.js";
 import { prepareInlineVideo } from "./inline-video.js";
 import { addAsciiWidthHint } from "./ascii-width-hint.js";
-import { normalizedPubkey } from "./session.js";
+import { refreshVisibleFeedReactionStats } from "./feed-metadata.js";
+import { fetchWithSession } from "./session.js";
 import { threadRepliesPageSkeletonMarkup, threadTreeSkeletonMarkup } from "./shell.js";
 import {
   applyTruncatableViewMore,
@@ -67,13 +68,10 @@ async function loadMoreReplies(button) {
   if (rootID) params.set("root_id", rootID);
   if (parentID) params.set("parent_id", parentID);
   if (selectedID) params.set("selected_id", selectedID);
-  const relays = current.searchParams.get("relays");
-  if (relays) params.set("relays", relays);
-  const viewer = normalizedPubkey();
-  if (viewer) params.set("pubkey", viewer);
+  // Relays now flow via the X-Ptxt-Relays header (fetchWithSession).
   addAsciiWidthHint(params, current.pathname);
   try {
-    const response = await fetch(`${current.pathname}?${params.toString()}`);
+    const response = await fetchWithSession(`${current.pathname}?${params.toString()}`);
     if (!response.ok) throw new Error(`Reply request failed: ${response.status}`);
     const html = await response.text();
     const appended = appendThreadReplies(html);
@@ -235,10 +233,7 @@ function currentThreadFragmentURL(fragment, focusID = "") {
   const current = new URL(window.location.href);
   const params = new URLSearchParams({ fragment });
   if (focusID) params.set("tree_note", focusID);
-  const relays = current.searchParams.get("relays");
-  if (relays) params.set("relays", relays);
-  const viewer = normalizedPubkey();
-  if (viewer) params.set("pubkey", viewer);
+  // Relays travel as X-Ptxt-Relays via fetchWithSession; no need in the URL.
   addAsciiWidthHint(params, current.pathname);
   return `${current.pathname}?${params.toString()}`;
 }
@@ -346,7 +341,7 @@ async function ensureTreeFragmentForFocus(focusID) {
   section.innerHTML = threadTreeSkeletonMarkup();
   refreshAscii(section);
   try {
-    const response = await fetch(currentThreadFragmentURL("tree", focusID || ""));
+    const response = await fetchWithSession(currentThreadFragmentURL("tree", focusID || ""));
     if (!response.ok) throw new Error(`Tree request failed: ${response.status}`);
     section.innerHTML = await response.text();
     applyTreeMediaMode();
@@ -739,12 +734,39 @@ export function teardownThreadTreeConnector() {
   document.body.classList.remove("thread-tree-wide-layout");
 }
 
+// Thread SSR ships with `data-ascii-reaction-viewer=""` for every note so the
+// HTML is viewer-agnostic and safe to share at the CDN. After paint the
+// client fills in the current viewer's reaction state by re-running the
+// existing /api/reaction-stats path on whatever notes + comments are on the
+// page.
+function collectThreadNoteIds(root = document) {
+  const ids = [];
+  const seen = new Set();
+  for (const el of root.querySelectorAll("[id^='note-'][data-ascii-reaction-viewer]")) {
+    const id = el.id.replace(/^note-/, "");
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+    if (ids.length >= 50) break;
+  }
+  return ids;
+}
+
+function refreshThreadViewerReactionState(root = document) {
+  const ids = collectThreadNoteIds(root);
+  if (!ids.length) return;
+  // opts.ids bypasses the feed-only scope in refreshVisibleFeedReactionStats;
+  // reply counts are server-truthful + viewer-agnostic, so we skip them here.
+  void refreshVisibleFeedReactionStats(root, null, "", { ids });
+}
+
 export function initThreadPage() {
   attachListeners();
   applyTreeMediaMode();
   void applyThreadViewFromHistoryStateOrPreference();
   bindThreadTreeConnectorObserver();
   scheduleThreadTreeConnectorGeometry();
+  refreshThreadViewerReactionState();
   if (!hashListenerBound) {
     hashListenerBound = true;
     window.addEventListener("hashchange", focusFromHash);

@@ -1,5 +1,5 @@
 import { refreshAscii } from "./ascii.js";
-import { ensureFeedURLHasSessionPubkey, normalizedPubkey, relayParam } from "./session.js";
+import { fetchWithSession } from "./session.js";
 import { replyLabelForCount } from "./reply-label.js";
 
 /** Collect up to 50 visible note hex ids under a feed column (newest-first scan). */
@@ -19,15 +19,14 @@ export function collectVisibleFeedNoteIds(root, feedSelector = "[data-feed]") {
   return ids;
 }
 
-export async function refreshVisibleFeedReplyCounts(root, baseURL, feedSelector = "[data-feed]", opts = {}) {
-  const ids = collectVisibleFeedNoteIds(root, feedSelector);
+export async function refreshVisibleFeedReplyCounts(root, _baseURL, feedSelector = "[data-feed]", opts = {}) {
+  const ids = opts.ids ?? collectVisibleFeedNoteIds(root, feedSelector);
   if (!ids.length) return;
   const requestURL = new URL("/api/reply-counts", window.location.origin);
   ids.forEach((id) => requestURL.searchParams.append("id", id));
-  const relays = baseURL.searchParams.get("relays") || relayParam();
-  if (relays) requestURL.searchParams.set("relays", relays);
+  // Relays travel as X-Ptxt-Relays via fetchWithSession.
   try {
-    const response = await fetch(requestURL.toString());
+    const response = await fetchWithSession(requestURL.toString());
     if (!response.ok) return;
     const counts = await response.json();
     ids.forEach((id) => {
@@ -43,19 +42,14 @@ export async function refreshVisibleFeedReplyCounts(root, baseURL, feedSelector 
   }
 }
 
-export async function refreshVisibleFeedReactionStats(root, baseURL, feedSelector = "[data-feed]", opts = {}) {
-  const ids = collectVisibleFeedNoteIds(root, feedSelector);
+export async function refreshVisibleFeedReactionStats(root, _baseURL, feedSelector = "[data-feed]", opts = {}) {
+  const ids = opts.ids ?? collectVisibleFeedNoteIds(root, feedSelector);
   if (!ids.length) return;
   const requestURL = new URL("/api/reaction-stats", window.location.origin);
   ids.forEach((id) => requestURL.searchParams.append("id", id));
-  const relays = baseURL.searchParams.get("relays") || relayParam();
-  if (relays) requestURL.searchParams.set("relays", relays);
-  const url = new URL(baseURL.toString());
-  ensureFeedURLHasSessionPubkey(url);
-  const pk = url.searchParams.get("pubkey") || normalizedPubkey();
-  if (pk) requestURL.searchParams.set("pubkey", pk);
+  // Relays travel as X-Ptxt-Relays via fetchWithSession.
   try {
-    const response = await fetch(requestURL.toString());
+    const response = await fetchWithSession(requestURL.toString());
     if (!response.ok) return;
     const payload = await response.json();
     ids.forEach((id) => {
@@ -75,7 +69,9 @@ export async function refreshVisibleFeedReactionStats(root, baseURL, feedSelecto
 
 export async function refreshVisibleFeedNoteMetadata(root, baseURL, options = {}) {
   const feedSelector = options.feedSelector || "[data-feed]";
-  const metaOpts = { skipAsciiRefresh: true };
+  const ids = collectVisibleFeedNoteIds(root, feedSelector);
+  if (!ids.length) return;
+  const metaOpts = { skipAsciiRefresh: true, ids };
   await Promise.all([
     refreshVisibleFeedReplyCounts(root, baseURL, feedSelector, metaOpts),
     refreshVisibleFeedReactionStats(root, baseURL, feedSelector, metaOpts),

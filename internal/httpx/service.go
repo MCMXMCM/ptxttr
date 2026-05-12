@@ -140,9 +140,18 @@ func webOfTrustOptionsFromRequest(r *http.Request) webOfTrustOptions {
 	if r == nil {
 		return webOfTrustOptions{Depth: 1}
 	}
-	q := r.URL.Query()
-	depth, _ := strconv.Atoi(strings.TrimSpace(q.Get("wot_depth")))
-	enabled, _ := config.ParseBool(q.Get("wot"))
+	_, enabledRaw := wotEnabledFromRequest(r)
+	_, depthRaw := wotDepthFromRequest(r)
+	return buildWebOfTrust(enabledRaw, depthRaw)
+}
+
+// buildWebOfTrust assembles the resolved WoT options from the raw strings
+// returned by wotEnabledFromRequest / wotDepthFromRequest. Splitting parsing
+// from option-construction lets feedRequestFromHTTP read the raw values once
+// and reuse them for both the "supplied?" check and the resolved options.
+func buildWebOfTrust(enabledRaw, depthRaw string) webOfTrustOptions {
+	depth, _ := strconv.Atoi(strings.TrimSpace(depthRaw))
+	enabled, _ := config.ParseBool(enabledRaw)
 	return webOfTrustOptions{
 		Enabled: enabled,
 		Depth:   store.ClampDepth(depth),
@@ -154,9 +163,7 @@ func feedSortSince(sortMode string, now time.Time) int64 {
 }
 
 func (s *Server) requestRelays(r *http.Request) []string {
-	rawValues := append([]string(nil), r.URL.Query()["relays"]...)
-	rawValues = append(rawValues, r.URL.Query()["relay"]...)
-	requestRelays := nostrx.ParseRelayParams(rawValues)
+	requestRelays := nostrx.ParseRelayParams(relayParamsFromRequest(r))
 	return nostrx.NormalizeRelayList(append(append([]string(nil), s.cfg.DefaultRelays...), requestRelays...), nostrx.MaxRelays)
 }
 
@@ -1018,7 +1025,7 @@ func (s *Server) profilePostsNewerFeedPageDataFromSummaries(ctx context.Context,
 	base := s.userBasePageData(r, "User", "feed", "feed-shell")
 	relays := s.requestRelays(r)
 	events := s.hydrateTimelineEvents(ctx, summaries)
-	viewer, loggedOut := s.resolveViewer(r.URL.Query().Get("pubkey"), relays)
+	viewer, loggedOut := s.resolveViewer(viewerFromRequest(r), relays)
 	var referenced map[string]nostrx.Event
 	var combined []nostrx.Event
 	if !allowSyncRelayWork(viewer, loggedOut) {

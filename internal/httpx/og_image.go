@@ -72,7 +72,7 @@ func (s *Server) handleOGImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if matchesETag(r, id) {
-		writeNotModified(w, id)
+		writeNotModifiedLong(w, id)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), ogImageRenderBudget)
@@ -92,7 +92,7 @@ func (s *Server) handleOGImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "image/png")
-	setContentAddressedCache(w, id)
+	setContentAddressedCacheLong(w, id)
 	if err := png.Encode(w, img); err != nil {
 		slog.Warn("og image encode failed", "id", id, "err", err)
 	}

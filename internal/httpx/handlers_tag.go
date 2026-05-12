@@ -78,8 +78,8 @@ func (s *Server) renderTagPage(w http.ResponseWriter, r *http.Request, status in
 func (s *Server) tagRequestFromHTTP(r *http.Request, tag string) tagRequest {
 	cursor, _ := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
 	return tagRequest{
-		Pubkey:     r.URL.Query().Get("pubkey"),
-		SeedPubkey: r.URL.Query().Get("seed_pubkey"),
+		Pubkey:     viewerFromRequest(r),
+		SeedPubkey: seedPubkeyFromRequest(r),
 		Tag:        tag,
 		Scope:      strings.TrimSpace(r.URL.Query().Get("scope")),
 		Cursor:     cursor,
@@ -90,32 +90,15 @@ func (s *Server) tagRequestFromHTTP(r *http.Request, tag string) tagRequest {
 	}
 }
 
-func (s *Server) tagScopeURL(r *http.Request, req tagRequest, scope string) string {
+// tagScopeURL builds /tag/<tag>?... links. Viewer pubkey, WoT seed, WoT
+// settings and relays are intentionally omitted: the client sends those as
+// request headers so the URL stays cache-key-shared across all viewers.
+func (s *Server) tagScopeURL(_ *http.Request, req tagRequest, scope string) string {
 	values := url.Values{}
-	if req.Pubkey != "" {
-		values.Set("pubkey", req.Pubkey)
-	}
-	if req.SeedPubkey != "" {
-		values.Set("seed_pubkey", req.SeedPubkey)
-	}
 	if scope == searchScopeAll {
 		values.Set("scope", searchScopeAll)
 	} else {
 		values.Set("scope", searchScopeNetwork)
-	}
-	if req.WoT.Enabled {
-		values.Set("wot", "1")
-		values.Set("wot_depth", strconv.Itoa(req.WoT.Depth))
-	}
-	for _, relay := range r.URL.Query()["relay"] {
-		if relay != "" {
-			values.Add("relay", relay)
-		}
-	}
-	for _, relay := range r.URL.Query()["relays"] {
-		if relay != "" {
-			values.Add("relays", relay)
-		}
 	}
 	return "/tag/" + url.PathEscape(req.Tag) + "?" + values.Encode()
 }

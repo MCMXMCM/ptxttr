@@ -26,7 +26,7 @@
           {{template "user_posts_items" .}}
         </div>
         {{if .HasMore}}
-          <button class="load-more" data-load-more data-feed-url="/u/{{.Profile.PubKey}}" data-fragment="posts" data-cursor="{{.Cursor}}" data-cursor-id="{{.CursorID}}" data-pubkey="{{.Profile.PubKey}}" type="button">Load more</button>
+          <button class="load-more" data-load-more data-feed-url="/u/{{.Profile.PubKey}}" data-fragment="posts" data-cursor="{{.Cursor}}" data-cursor-id="{{.CursorID}}" type="button">Load more</button>
         {{end}}
       </section>
 
@@ -74,7 +74,7 @@
   <span class="muted" aria-hidden="true"> • </span>
   <a href="#user-panel-followers" class="profile-stat-link" data-profile-tab="user-tab-followers">followed {{if .FollowersList.CachedExact}}{{.FollowersList.CachedTotal}}{{else}}{{len .FollowersList.Items}}+{{end}}</a>
 </span>
-<span><a href="/?pubkey={{.Profile.PubKey}}" data-relay-aware>view feed</a></span>
+<span><a href="/" data-relay-aware>view feed</a></span>
 {{end}}
 
 {{define "user_identifiers"}}

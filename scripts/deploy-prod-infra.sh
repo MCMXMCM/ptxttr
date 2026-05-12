@@ -16,11 +16,21 @@ set +a
 
 STACK_NAME="${STACK_NAME:?missing STACK_NAME}"
 DOMAIN_NAME="${DOMAIN_NAME:?missing DOMAIN_NAME}"
+ORIGIN_DOMAIN_NAME="${ORIGIN_DOMAIN_NAME:-}"
+VIEWER_DNS_MODE="${VIEWER_DNS_MODE:-DirectToEip}"
+CLOUDFRONT_DISTRIBUTION_DOMAIN_NAME="${CLOUDFRONT_DISTRIBUTION_DOMAIN_NAME:-}"
 HOSTED_ZONE_ID="${HOSTED_ZONE_ID:?missing HOSTED_ZONE_ID}"
 VPC_ID="${VPC_ID:?missing VPC_ID}"
 SUBNET_ID="${SUBNET_ID:?missing SUBNET_ID}"
 INSTANCE_TYPE="${INSTANCE_TYPE:?missing INSTANCE_TYPE}"
 ROOT_VOLUME_SIZE_GIB="${ROOT_VOLUME_SIZE_GIB:?missing ROOT_VOLUME_SIZE_GIB}"
+EXISTING_DATA_VOLUME_ID="${EXISTING_DATA_VOLUME_ID:-}"
+# Size/type only apply when creating a new DataVolume; default is harmless when
+# reusing an existing one (the CFN resource is conditional on
+# ExistingDataVolumeId being empty).
+DATA_VOLUME_SIZE_GIB="${DATA_VOLUME_SIZE_GIB:-20}"
+DATA_VOLUME_TYPE="${DATA_VOLUME_TYPE:-gp3}"
+AVAILABILITY_ZONE="${AVAILABILITY_ZONE:-}"
 ARTIFACT_BUCKET="${ARTIFACT_BUCKET:?missing ARTIFACT_BUCKET}"
 ARTIFACT_PREFIX="${ARTIFACT_PREFIX:?missing ARTIFACT_PREFIX}"
 APP_USER="${APP_USER:?missing APP_USER}"
@@ -67,11 +77,16 @@ fi
 DEPLOY_ARGS=(
   --stack-name "${STACK_NAME}"
   --domain-name "${DOMAIN_NAME}"
+  --origin-domain-name "${ORIGIN_DOMAIN_NAME}"
+  --viewer-dns-mode "${VIEWER_DNS_MODE}"
+  --cloudfront-distribution-domain-name "${CLOUDFRONT_DISTRIBUTION_DOMAIN_NAME}"
   --hosted-zone-id "${HOSTED_ZONE_ID}"
   --vpc-id "${VPC_ID}"
   --subnet-id "${SUBNET_ID}"
   --instance-type "${INSTANCE_TYPE}"
   --root-volume-size-gib "${ROOT_VOLUME_SIZE_GIB}"
+  --data-volume-size-gib "${DATA_VOLUME_SIZE_GIB}"
+  --data-volume-type "${DATA_VOLUME_TYPE}"
   --artifact-bucket "${ARTIFACT_BUCKET}"
   --artifact-prefix "${ARTIFACT_PREFIX}"
   --artifact-key "${ARTIFACT_KEY}"
@@ -82,6 +97,14 @@ DEPLOY_ARGS=(
   --debug-enabled "${DEBUG_ENABLED}"
   --compact-on-start "${COMPACT_ON_START}"
 )
+
+if [[ -n "${AVAILABILITY_ZONE}" ]]; then
+  DEPLOY_ARGS+=(--availability-zone "${AVAILABILITY_ZONE}")
+fi
+
+if [[ -n "${EXISTING_DATA_VOLUME_ID}" ]]; then
+  DEPLOY_ARGS+=(--existing-data-volume-id "${EXISTING_DATA_VOLUME_ID}")
+fi
 
 if [[ -n "${ARTIFACT_VERSION}" ]]; then
   DEPLOY_ARGS+=(--artifact-version "${ARTIFACT_VERSION}")

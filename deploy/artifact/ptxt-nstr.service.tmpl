@@ -2,6 +2,7 @@
 Description=Plain Text Nostr Go server
 After=network-online.target
 Wants=network-online.target
+RequiresMountsFor=__DATA_DIR__
 
 [Service]
 Type=simple

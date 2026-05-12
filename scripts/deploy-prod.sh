@@ -16,6 +16,7 @@ set +a
 
 STACK_NAME="${STACK_NAME:?missing STACK_NAME}"
 DOMAIN_NAME="${DOMAIN_NAME:?missing DOMAIN_NAME}"
+ORIGIN_DOMAIN_NAME="${ORIGIN_DOMAIN_NAME:-}"
 ARTIFACT_BUCKET="${ARTIFACT_BUCKET:?missing ARTIFACT_BUCKET}"
 ARTIFACT_PREFIX="${ARTIFACT_PREFIX:?missing ARTIFACT_PREFIX}"
 APP_USER="${APP_USER:?missing APP_USER}"
@@ -62,6 +63,7 @@ fi
 DEPLOY_ARGS=(
   --stack-name "${STACK_NAME}"
   --domain-name "${DOMAIN_NAME}"
+  --origin-domain-name "${ORIGIN_DOMAIN_NAME}"
   --artifact-bucket "${ARTIFACT_BUCKET}"
   --artifact-key "${ARTIFACT_KEY}"
   --app-user "${APP_USER}"
@@ -77,6 +79,8 @@ if [[ -n "${ARTIFACT_VERSION}" ]]; then
 fi
 
 "${SCRIPT_DIR}/reapply-cfn-artifact.sh" "${DEPLOY_ARGS[@]}"
+
+"${SCRIPT_DIR}/cloudfront-invalidate-static.sh"
 
 echo
 echo "Deployed app on ${STACK_NAME} to https://${DOMAIN_NAME}/"

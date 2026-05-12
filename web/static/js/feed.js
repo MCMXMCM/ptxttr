@@ -1,11 +1,11 @@
 import { addAsciiWidthHint } from "./ascii-width-hint.js";
 import { wireAvatarImageFallbacks } from "./layout.js";
-import { ensureFeedURLHasSessionPubkey, normalizedPubkey, relayParam } from "./session.js";
+import { fetchWithSession, normalizedPubkey } from "./session.js";
 import { refreshVisibleFeedNoteMetadata } from "./feed-metadata.js";
 import { bindProfileStatLinks } from "./profile-tabs.js";
 import { initViewMore } from "./notes.js";
 import { syncBookmarkState } from "./bookmarks.js";
-import { applyStoredWebOfTrustIfMissing, copyWebOfTrustParams, feedSortForSession } from "./sort-prefs.js";
+import { feedSortForSession, getFeedSortPref } from "./sort-prefs.js";
 
 let initialized = false;
 const loadMoreRequestTimeoutMs = 12000;
@@ -87,7 +87,6 @@ export function initFeedLoadMore(root = document) {
   }
   let loading = false;
   const defaultLabel = button.textContent;
-  button.dataset.pubkey ||= normalizedPubkey();
 
   const stopLoading = () => {
     disconnectLoadMoreIntersection(button);
@@ -130,36 +129,20 @@ export function initFeedLoadMore(root = document) {
         fragment: button.dataset.fragment || "1",
         cursor: previousCursor,
         cursor_id: previousCursorID,
-        pubkey: "",
       });
-      const resolvedPubkey = button.dataset.pubkey || normalizedPubkey();
-      params.set("pubkey", resolvedPubkey);
-      const sortMode = button.dataset.sort || feedSortForSession(resolvedPubkey, "recent");
-      if (sortMode) params.set("sort", sortMode);
-      const currentURL = new URL(window.location.href);
-      applyStoredWebOfTrustIfMissing(currentURL);
-      copyWebOfTrustParams(currentURL, params);
-      if (isReads) {
-        const readsTF = button.dataset.readsTf || "24h";
-        params.set("reads_tf", readsTF);
-      } else if (isSearch) {
+      // sort / tf / reads_tf / wot / wot_depth / relays now travel as
+      // X-Ptxt-* request headers (see fetchWithSession in session.js), so
+      // they no longer need to be threaded through the URL. We only keep
+      // route-specific bits (search query/scope, tag scope, etc).
+      if (isSearch) {
         const searchQuery = button.dataset.searchQuery || "";
         if (searchQuery) params.set("q", searchQuery);
         const searchScope = button.dataset.searchScope || "network";
         params.set("scope", searchScope);
-        params.delete("sort");
       } else if (isTag) {
         const tagScope = button.dataset.tagScope || "network";
         params.set("scope", tagScope);
-        params.delete("sort");
-      } else if (isNotifications) {
-        params.delete("sort");
-      } else {
-        const timeframe = button.dataset.timeframe || "";
-        if (timeframe) params.set("tf", timeframe);
       }
-      const relays = relayParam();
-      if (relays) params.set("relays", relays);
       addAsciiWidthHint(params, feedPathname);
       const response = await fetchWithTimeout(`${url}?${params.toString()}`, loadMoreRequestTimeoutMs);
       if (!response.ok) throw new Error(`Load more failed: ${response.status}`);
@@ -176,11 +159,9 @@ export function initFeedLoadMore(root = document) {
       }
       const appended = isReads ? appendReadArticles(feed, html) : appendNewNotes(feed, html);
       if (appended > 0 && !isReads) {
-        const metaURL = new URL(window.location.href);
-        applyStoredWebOfTrustIfMissing(metaURL);
-        ensureFeedURLHasSessionPubkey(metaURL);
-        void refreshVisibleFeedNoteMetadata(document, metaURL);
+        void refreshVisibleFeedNoteMetadata(document, new URL(window.location.href));
       }
+      const sortMode = feedSortForSession(normalizedPubkey(), getFeedSortPref()) || "recent";
       const last = cursorFromHeaders ? null : feed.querySelector(".note:last-of-type");
       if (cursorFromHeaders) {
         button.dataset.cursor = cursorHeader || button.dataset.cursor || "";
@@ -252,7 +233,7 @@ async function fetchWithTimeout(url, timeoutMs) {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { signal: controller.signal });
+    return await fetchWithSession(url, { signal: controller.signal });
   } catch (error) {
     if (error?.name === "AbortError") {
       throw new Error("Load more timed out");

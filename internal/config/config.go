@@ -112,6 +112,11 @@ type Config struct {
 	HealthProbeTimeout time.Duration
 	// HealthProbeDegradedThreshold marks /healthz degraded after this many consecutive probe failures.
 	HealthProbeDegradedThreshold int
+	// PprofAddr controls the always-on net/http/pprof + expvar listener.
+	// Defaults to "127.0.0.1:6060" so goroutine/heap profiles are reachable
+	// from on-host triage (SSM/SSH) without flipping Debug. Set empty to
+	// disable. Bind to a non-loopback address only behind explicit auth.
+	PprofAddr string
 }
 
 func Load() Config {
@@ -172,6 +177,7 @@ func Load() Config {
 		HealthProbePath:                 env("PTXT_HEALTH_PROBE_PATH", "/healthz"),
 		HealthProbeTimeout:              durationEnv("PTXT_HEALTH_PROBE_TIMEOUT_MS", 12_000*time.Millisecond),
 		HealthProbeDegradedThreshold:    intEnv("PTXT_HEALTH_PROBE_DEGRADED_THRESHOLD", 3),
+		PprofAddr:                       pprofAddrEnv("PTXT_PPROF_ADDR", "127.0.0.1:6060"),
 	}
 
 	slog.Info(
@@ -219,6 +225,7 @@ func Load() Config {
 		"health_probe_path", cfg.HealthProbePath,
 		"health_probe_timeout", cfg.HealthProbeTimeout,
 		"health_probe_degraded_threshold", cfg.HealthProbeDegradedThreshold,
+		"pprof_addr", cfg.PprofAddr,
 	)
 
 	return cfg
@@ -336,6 +343,23 @@ func boolEnv(key string, fallback bool) bool {
 		return value
 	}
 	return fallback
+}
+
+// pprofAddrEnv resolves the pprof/expvar listen address. An unset variable
+// returns the loopback default; explicit "off" / "false" / "disabled" / "0"
+// disables the listener. Any other value (including a non-loopback host:port)
+// is returned verbatim so operators can override deliberately.
+func pprofAddrEnv(key, fallback string) string {
+	raw, ok := os.LookupEnv(key)
+	if !ok {
+		return fallback
+	}
+	trimmed := strings.TrimSpace(raw)
+	switch strings.ToLower(trimmed) {
+	case "", "off", "false", "disabled", "0":
+		return ""
+	}
+	return trimmed
 }
 
 // ingestVerifyParallelEnv parses PTXT_INGEST_VERIFY_PARALLEL (0–32).

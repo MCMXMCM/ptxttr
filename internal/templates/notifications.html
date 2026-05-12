@@ -30,7 +30,7 @@
       {{template "notifications_items" .}}
     </section>
     {{if .HasMore}}
-      <button class="load-more" type="button" data-load-more data-feed-url="/notifications" data-fragment="1" data-cursor="{{.Cursor}}" data-cursor-id="{{.CursorID}}" data-pubkey="{{.UserPubKey}}" data-wot="{{if .WebOfTrustEnabled}}1{{else}}0{{end}}" data-wot-depth="{{.WebOfTrustDepth}}" data-has-more="1">Load more</button>
+      <button class="load-more" type="button" data-load-more data-feed-url="/notifications" data-fragment="1" data-cursor="{{.Cursor}}" data-cursor-id="{{.CursorID}}" data-has-more="1">Load more</button>
     {{end}}
   {{end}}
 </section>

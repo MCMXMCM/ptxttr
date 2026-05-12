@@ -1,4 +1,4 @@
-import { getSession, normalizedPubkey, normalizeRelayURL, relayParam, saveSelectedRelays, selectedRelays } from "./session.js";
+import { fetchWithSession, getSession, normalizedPubkey, normalizeRelayURL, saveSelectedRelays, selectedRelays } from "./session.js";
 
 let list = null;
 let suggestions = null;
@@ -109,11 +109,9 @@ async function loadSessionRelaySuggestions() {
   if (!suggestions) return;
   const pubkey = normalizedPubkey(getSession());
   if (!pubkey) return;
-  const params = new URLSearchParams({ fragment: "suggestions", pubkey });
-  const relays = relayParam();
-  if (relays) params.set("relays", relays);
+  // Selected relays travel as X-Ptxt-Relays via fetchWithSession; no need in URL.
   try {
-    const response = await fetch(`/relays?${params.toString()}`);
+    const response = await fetchWithSession(`/relays?fragment=suggestions`);
     if (!response.ok) return;
     suggestions.innerHTML = await response.text();
   } catch {

@@ -4,8 +4,7 @@ import {
   routeOutletInnerHTML,
   routeScrollTop,
 } from "./shell-swap.js";
-import { applyRelayAndThreadSessionToURL, isFeedLikePath } from "./session.js";
-import { applyCanonicalFeedLikeParams } from "./sort-prefs.js";
+import { applyRelayParamsToURL, isFeedLikePath } from "./session.js";
 
 const maxSnapshots = 4;
 const feedSnapshots = new Map();
@@ -13,8 +12,7 @@ const feedSnapshots = new Map();
 export function feedSnapshotKey(urlLike) {
   const url = new URL(urlLike, window.location.origin);
   if (isFeedLikePath(url.pathname)) {
-    applyCanonicalFeedLikeParams(url);
-    applyRelayAndThreadSessionToURL(url);
+    applyRelayParamsToURL(url);
   }
   return `${url.pathname}?${url.searchParams.toString()}`;
 }

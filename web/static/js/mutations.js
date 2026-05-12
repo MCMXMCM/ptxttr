@@ -1,6 +1,6 @@
-import { getSession, normalizedPubkey, normalizeRelayURL, saveSelectedRelays, selectedRelays, withRelayParams } from "./session.js";
+import { fetchWithSession, getSession, normalizedPubkey, normalizeRelayURL, saveSelectedRelays, selectedRelays, withRelayParams } from "./session.js";
 import { activeSignerState, signEventDraft } from "./signer.js";
-import { initBookmarks } from "./bookmarks.js";
+import { initBookmarks, publishSignedEvent } from "./bookmarks.js";
 import { MENTION_TOKEN_RE, mentionPubKey } from "./nip27.js";
 
 const MENTION_LIMIT = 12;
@@ -142,8 +142,7 @@ async function loadFollowState(viewer) {
     if (state.loading) await state.loading;
     return state;
   }
-  const params = new URLSearchParams({ pubkey: viewer });
-  state.loading = fetch(`/api/mentions?${params.toString()}`)
+  state.loading = fetchWithSession(`/api/mentions`)
     .then(async (response) => {
       if (!response.ok) return;
       const payload = await response.json();
@@ -344,11 +343,13 @@ async function loadMentionCandidates(root, state, rootID) {
     setMentionCandidates(state, mentionCandidateCache.get(contextKey));
     return;
   }
-  const params = new URLSearchParams({ pubkey: viewer });
+  const params = new URLSearchParams();
   if (rootID) params.set("root_id", rootID);
   let normalized = [];
   try {
-    const response = await fetch(`/api/mentions?${params.toString()}`);
+    const queryString = params.toString();
+    const url = queryString ? `/api/mentions?${queryString}` : "/api/mentions";
+    const response = await fetchWithSession(url);
     if (response.ok) {
       const payload = await response.json();
       const rawCandidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
@@ -675,30 +676,6 @@ function buildReplyTags(rootID, replyID, replyPubKey) {
   return dedupeTags(tags);
 }
 
-async function publishSignedEvent(event) {
-  const response = await fetch("/api/events", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      event,
-      relays: selectedRelays(),
-    }),
-  });
-  let payload = {};
-  try {
-    payload = await response.json();
-  } catch {
-    payload = {};
-  }
-  if (!response.ok) {
-    const fallback = response.status === 502
-      ? "No relay accepted this event."
-      : "Publish failed.";
-    throw new Error(payload.error || fallback);
-  }
-  return payload;
-}
-
 function bindPostTriggers(root, state) {
   root.querySelectorAll("[data-post-trigger]").forEach((button) => {
     if (button._ptxtComposeBound) return;
@@ -903,7 +880,7 @@ async function loadProfileMetadata(form, statusNode) {
     return;
   }
   try {
-    const response = await fetch(`/api/profile?pubkey=${encodeURIComponent(pubkey)}`);
+    const response = await fetchWithSession(`/api/profile`);
     if (!response.ok) throw new Error("profile metadata request failed");
     const metadata = await response.json();
     assignIfEmpty(form, "display_name", metadata.display_name);
@@ -1015,7 +992,7 @@ async function loadRelayInsight(state) {
     return null;
   }
   try {
-    const response = await fetch(`/api/relay-insight?pubkey=${encodeURIComponent(pubkey)}`);
+    const response = await fetchWithSession(`/api/relay-insight`);
     if (!response.ok) throw new Error("relay insight request failed");
     const payload = await response.json();
     renderInsightRelayList(state.publishedList, payload.published_relays, "No published relay preferences yet.");

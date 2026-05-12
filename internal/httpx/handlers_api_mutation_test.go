@@ -332,6 +332,54 @@ func TestHandleEventsRejectsUnsupportedKind(t *testing.T) {
 	}
 }
 
+// When relays accept the event but the local SQLite store fails to persist
+// it, the handler must still report success so the publisher's cache-bust
+// window opens in the browser (recordPublishedAt fires only on a 2xx
+// response). Closing the store mid-test is the lowest-friction way to make
+// SaveEvent fail without disturbing the relay publish path.
+func TestHandleEventsSucceedsWhenPersistFails(t *testing.T) {
+	srv, st := mutationTestServer(t)
+	relay := mutationRelayServer(t, true, "saved")
+	defer relay.Close()
+
+	event := signedMutationEvent(t, nostrx.KindTextNote, "publish ok, persist will fail", nil)
+	requestBody, _ := json.Marshal(map[string]any{
+		"event":  event,
+		"relays": []string{wsURL(relay.URL)},
+	})
+
+	// Close the store after the server is wired but before the request fires
+	// so the relay round trip succeeds and only the SaveEvent call inside
+	// handleEvents hits a "database is closed" error.
+	if err := st.Close(); err != nil {
+		t.Fatalf("st.Close() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/events", bytes.NewReader(requestBody))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 on partial-persist failure: %s", rec.Code, rec.Body.String())
+	}
+	var response publishEventResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("response JSON decode failed: %v", err)
+	}
+	if response.EventID != event.ID {
+		t.Fatalf("response.EventID = %q, want %q", response.EventID, event.ID)
+	}
+	if response.Accepted < 1 {
+		t.Fatalf("response.Accepted = %d, want >= 1 (relay accepted)", response.Accepted)
+	}
+	if response.Persisted {
+		t.Fatalf("response.Persisted = true, want false when SaveEvent failed")
+	}
+	if response.Error != "" {
+		t.Fatalf("response.Error = %q, want empty (200 OK does not surface error string)", response.Error)
+	}
+}
+
 func TestHandleProfileAPIReturnsCachedMetadata(t *testing.T) {
 	srv, st := mutationTestServer(t)
 	event := signedMutationEvent(t, nostrx.KindProfileMetadata, `{"name":"seed","display_name":"Seed","website":"https://seed.example","nip05":"seed@example.com"}`, nil)

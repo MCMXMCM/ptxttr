@@ -27,7 +27,7 @@ function completeLogin(session, redirect = true) {
   setSession(session);
   renderSession();
   if (redirect && session.pubkey) {
-    window.location.href = sessionFeedURL(session);
+    window.location.href = sessionFeedURL();
   }
 }
 

@@ -99,27 +99,16 @@ func templateFuncs() template.FuncMap {
 // readsLoadMoreURL builds the "Load more reads" link with proper URL encoding,
 // keeping the template free of nested {{if}} chains and avoiding
 // query-string-injection footguns when values contain unexpected characters.
+//
+// Viewer prefs (`pubkey`, `seed_pubkey`, `sort`, `reads_tf`, `wot`,
+// `wot_depth`, `relays`) are NOT emitted: the client sends those as
+// X-Ptxt-* request headers so the resulting URL is cache-key-shared across
+// all viewers.
 func readsLoadMoreURL(data ReadsPageData) string {
 	values := url.Values{}
 	values.Set("cursor", strconv.FormatInt(data.Cursor, 10))
 	if data.CursorID != "" {
 		values.Set("cursor_id", data.CursorID)
-	}
-	if data.ReadsSort != "" {
-		values.Set("sort", data.ReadsSort)
-	}
-	if data.ReadsTrendingTimeframe != "" {
-		values.Set("reads_tf", data.ReadsTrendingTimeframe)
-	}
-	if data.UserPubKey != "" {
-		values.Set("pubkey", data.UserPubKey)
-	}
-	if data.WebOfTrustEnabled {
-		values.Set("wot", "1")
-		values.Set("wot_depth", strconv.Itoa(data.WebOfTrustDepth))
-		if data.WebOfTrustSeedPubkey != "" {
-			values.Set("seed_pubkey", data.WebOfTrustSeedPubkey)
-		}
 	}
 	return "/reads?" + values.Encode()
 }

@@ -1,9 +1,9 @@
 import {
-  ensureFeedURLHasSessionPubkey,
+  fetchWithSession,
   isFeedLikePath,
   normalizedPubkey,
-  relayParam,
-  ensureThreadURLHasSessionPubkey,
+  shouldSyncViewerPrefLocation,
+  stripViewerPrefSearchParams,
   updateRelayAwareLinks,
   updateSessionLinks,
 } from "./session.js";
@@ -15,6 +15,7 @@ import { refreshAscii } from "./ascii.js";
 import {
   dismissOpenMobileMenuForNavigation,
   initLayoutUI,
+  syncLocationFromStoredPrefs,
   syncMobileAppNavHeight,
   wireAvatarImageFallbacks,
 } from "./layout.js";
@@ -34,10 +35,8 @@ import {
   threadTreeSkeletonMarkup,
 } from "./shell.js";
 import {
-  applyCanonicalFeedLikeParams,
-  applyStoredWebOfTrustIfMissing,
-  copyWebOfTrustParams,
   feedSortForSession,
+  getFeedSortPref,
 } from "./sort-prefs.js";
 import { initThreadPage, maybeScrollThreadPageToRootForNavigation, teardownThreadTreeConnector } from "./thread.js";
 import { addAsciiWidthHint } from "./ascii-width-hint.js";
@@ -48,10 +47,12 @@ import {
 
 const main = document.querySelector("[data-nav-root]");
 
-/** Mirrors server default sort when `sort` is absent from the URL (see feedSortForPubkey + enforceFeedSortForAuth). */
+/** Mirrors server default sort when `sort` is absent. Reads from the URL
+ *  first (back-compat for old bookmarks), then localStorage, then the server
+ *  default for the current session pubkey. */
 function effectiveFeedSortFromURL(url) {
-  const pubkey = url.searchParams.get("pubkey") || normalizedPubkey();
-  const raw = url.searchParams.get("sort") || "";
+  const pubkey = normalizedPubkey();
+  const raw = url.searchParams.get("sort") || getFeedSortPref() || "";
   return feedSortForSession(pubkey, raw) || "recent";
 }
 const prefetchQueue = [];
@@ -177,11 +178,14 @@ if (main) {
   });
 
   window.addEventListener("ptxt:session", clearRouteSnapshots);
-  window.addEventListener("ptxt:relays", clearRouteSnapshots);
-  window.addEventListener("ptxt:web-of-trust-changed", () => {
+  const onViewerTransportPrefsChanged = () => {
     clearRouteSnapshots();
     clearFragmentPrefetch();
-  });
+    void rehydrateCurrentRouteForPrefChange();
+  };
+  for (const evt of ["ptxt:relays", "ptxt:web-of-trust-changed", "ptxt:viewer-prefs-changed"]) {
+    window.addEventListener(evt, onViewerTransportPrefsChanged);
+  }
   if (currentRoute === "thread") {
     initThreadPage();
   }
@@ -196,8 +200,6 @@ function navigate(href, { push, fromMainMenu = false } = {}) {
 
 async function navigateImpl(href, { push, fromMainMenu = false }) {
   const url = new URL(href, window.location.origin);
-  applyCanonicalFeedLikeParams(url);
-  ensureThreadURLHasSessionPubkey(url);
   const route = routeKind(url.pathname);
   if (route === "profile") {
     url.searchParams.delete("cursor");
@@ -211,7 +213,6 @@ async function navigateImpl(href, { push, fromMainMenu = false }) {
   let currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   if (isFeedLikePath(window.location.pathname)) {
     const cur = new URL(window.location.href);
-    applyCanonicalFeedLikeParams(cur);
     currentHref = `${cur.pathname}${cur.search}${cur.hash}`;
   }
   if (push && currentHref === effectiveHref) {
@@ -285,13 +286,15 @@ async function navigateImpl(href, { push, fromMainMenu = false }) {
 }
 
 function canonicalURLFromLocation() {
-  const url = new URL(window.location.href);
-  applyCanonicalFeedLikeParams(url);
-  ensureThreadURLHasSessionPubkey(url);
-  return url;
+  return new URL(window.location.href);
 }
 
 async function bootstrapInitialRoute() {
+  // Run before first fragment fetches: hydrateRoute calls loadFeedFragments
+  // before initLayoutUI, so address-bar cleanup must happen here too.
+  if (shouldSyncViewerPrefLocation(window.location.pathname)) {
+    syncLocationFromStoredPrefs();
+  }
   const url = canonicalURLFromLocation();
   const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   const effectiveHref = `${url.pathname}${url.search}${url.hash}`;
@@ -389,6 +392,31 @@ function clearRouteSnapshots() {
   clearProfileSnapshots();
 }
 
+/**
+ * Re-runs the current route's hydration pipeline. Used when the viewer
+ * toggles a localStorage preference (sort, tf, wot, relays, …) so the SPA
+ * picks up the new `X-Ptxt-*` header value without a URL change. Routes that
+ * don't have a corresponding hydrator (e.g. /settings) become no-ops here.
+ */
+async function rehydrateCurrentRouteForPrefChange() {
+  if (!main) return;
+  const route = routeKind(window.location.pathname);
+  if (!route) return;
+  const url = canonicalURLFromLocation();
+  try {
+    await hydrateRoute(route, url, {
+      restoredFeed: false,
+      restoredThread: false,
+      restoredProfile: false,
+      intraThreadHistory: false,
+    });
+  } catch {
+    // Stay on the current view if the re-hydration fails; the user can
+    // refresh manually. Throwing here would replace the route with the bare
+    // /href page load, which is more disruptive than a stale view.
+  }
+}
+
 function replaceThreadShellContent(body) {
   const shell = main.querySelector(".app-shell");
   if (!shell) {
@@ -419,12 +447,6 @@ function replaceThreadShellContent(body) {
 
 function renderShell(route, url) {
   if (route === "feed") {
-    const pubkey = url.searchParams.get("pubkey") || normalizedPubkey();
-    const tf = url.searchParams.get("tf") || "24h";
-    const requestedSort = url.searchParams.get("sort") || "";
-    const sort = feedSortForSession(pubkey, requestedSort) || "recent";
-    const wotEnabled = url.searchParams.get("wot") === "1";
-    const wotDepth = url.searchParams.get("wot_depth") || "1";
     setMainHTMLPreservingRailUser(renderRouteOutletLayout({
       active: "/",
       mainContent: `
@@ -433,21 +455,18 @@ function renderShell(route, url) {
             <p class="text-skeleton text-skeleton-block" aria-hidden="true">Nostr Feed</p>
             <p class="text-skeleton text-skeleton-block" aria-hidden="true">----------------------------------------------</p>
           </section>
-          <button class="feed-new-notes" type="button" data-new-notes data-feed-sort="${sort}" data-wot="${wotEnabled ? "1" : "0"}" data-wot-depth="${wotDepth}" hidden>Show <span data-new-notes-count>0</span> new notes</button>
+          <button class="feed-new-notes" type="button" data-new-notes hidden>Show <span data-new-notes-count>0</span> new notes</button>
           <section id="feed" class="feed" data-feed>
             ${feedLoaderMarkup()}
           </section>
-          <button class="load-more" data-load-more data-feed-url="/feed" data-fragment="1" data-cursor="" data-cursor-id="" data-pubkey="${pubkey}" data-timeframe="${tf}" data-sort="${sort}" data-wot="${wotEnabled ? "1" : "0"}" data-wot-depth="${wotDepth}" type="button" hidden>Load more</button>
+          <button class="load-more" data-load-more data-feed-url="/feed" data-fragment="1" data-cursor="" data-cursor-id="" type="button" hidden>Load more</button>
         </section>
       `,
-      rightRail: feedRightRail(tf, url.searchParams.get("q") || ""),
+      rightRail: feedRightRail("24h", url.searchParams.get("q") || ""),
     }));
     return;
   }
   if (route === "reads") {
-    const pubkey = url.searchParams.get("pubkey") || "";
-    const readsTF = url.searchParams.get("reads_tf") || "24h";
-    const sort = url.searchParams.get("sort") || "recent";
     setMainHTMLPreservingRailUser(renderRouteOutletLayout({
       active: "/reads",
       shellClass: "reads-shell",
@@ -464,11 +483,11 @@ function renderShell(route, url) {
             </div>
           </section>
           <p class="reads-more">
-            <button class="load-more" type="button" data-load-more data-feed-url="/reads" data-fragment="1" data-cursor="" data-cursor-id="" data-pubkey="${pubkey}" data-reads-tf="${readsTF}" data-sort="${sort}" hidden>Load more reads</button>
+            <button class="load-more" type="button" data-load-more data-feed-url="/reads" data-fragment="1" data-cursor="" data-cursor-id="" hidden>Load more reads</button>
           </p>
         </section>
       `,
-      rightRail: readsRightRail(readsTF, url.searchParams.get("q") || ""),
+      rightRail: readsRightRail("24h", url.searchParams.get("q") || ""),
     }));
     return;
   }
@@ -592,7 +611,6 @@ function renderShell(route, url) {
     return;
   }
   if (route === "profile") {
-    const pubkey = url.pathname.replace("/u/", "");
     setMainHTMLPreservingRailUser(renderRouteOutletLayout({
       mainContent: `
         <section class="feed-column user-profile-column">
@@ -634,7 +652,7 @@ function renderShell(route, url) {
               <div class="feed profile-feed-skeleton" data-feed>
                 ${skeletonWaveStackMarkup()}
               </div>
-              <button class="load-more" data-load-more data-feed-url="${url.pathname}" data-fragment="posts" data-cursor="" data-cursor-id="" data-pubkey="${pubkey}" type="button" hidden>Load more</button>
+              <button class="load-more" data-load-more data-feed-url="${url.pathname}" data-fragment="posts" data-cursor="" data-cursor-id="" type="button" hidden>Load more</button>
             </section>
             <input type="radio" name="user-tab" id="user-tab-replies" class="user-tab-state">
             <section class="user-tab-panel" id="user-panel-replies" data-user-fragment="replies"><div class="feed"><p class="text-skeleton text-skeleton-block" aria-hidden="true">------------------------------</p></div></section>
@@ -783,8 +801,6 @@ async function loadReadsFragments(url) {
     readButton.dataset.cursorId = list.cursorID;
     readButton.dataset.hasMore = list.hasMore ? "1" : "0";
     readButton.hidden = !list.hasMore;
-    readButton.dataset.sort = url.searchParams.get("sort") || "recent";
-    readButton.dataset.readsTf = url.searchParams.get("reads_tf") || "24h";
   }
   headingRequest
     .then((heading) => {
@@ -846,8 +862,6 @@ async function loadFeedFragments(url) {
     button.dataset.cursorId = notes.cursorID;
     button.dataset.hasMore = notes.hasMore ? "1" : "0";
     button.hidden = !notes.hasMore;
-    button.dataset.timeframe = url.searchParams.get("tf") || "24h";
-    button.dataset.sort = effectiveFeedSortFromURL(url);
   }
 
   headingRequest
@@ -883,8 +897,6 @@ async function loadFeedFragments(url) {
             loadBtn.dataset.cursorId = n2.cursorID;
             loadBtn.dataset.hasMore = n2.hasMore ? "1" : "0";
             loadBtn.hidden = !n2.hasMore;
-            loadBtn.dataset.timeframe = url.searchParams.get("tf") || "24h";
-            loadBtn.dataset.sort = effectiveFeedSortFromURL(url);
           }
           void refreshVisibleFeedNoteMetadata(main, url);
         })
@@ -893,13 +905,10 @@ async function loadFeedFragments(url) {
   }
 }
 
-async function fetchTrendingFragment(baseURL) {
-  const requestURL = new URL("/trending", window.location.origin);
-  requestURL.searchParams.set("fragment", "1");
-  requestURL.searchParams.set("tf", baseURL.searchParams.get("tf") || "24h");
-  const relays = relayParam();
-  if (relays) requestURL.searchParams.set("relays", relays);
-  const response = await fetch(requestURL.toString());
+async function fetchTrendingFragment(_baseURL) {
+  // tf + relays now travel via X-Ptxt-Tf / X-Ptxt-Relays headers
+  // (fetchWithSession reads them from localStorage on every request).
+  const response = await fetchWithSession(`/trending?fragment=1`);
   if (!response.ok) throw new Error("fragment trending failed");
   return { body: await response.text() };
 }
@@ -912,7 +921,6 @@ function bindNewNotesButton(url) {
   const button = existing.cloneNode(true);
   existing.replaceWith(button);
   const sort = effectiveFeedSortFromURL(url);
-  button.dataset.feedSort = sort;
   if (sort !== "recent") {
     button.hidden = true;
     return;
@@ -1044,24 +1052,18 @@ async function parseNewerFragmentResponse(response, errorMessage) {
 async function fetchNewerNotes(baseURL, options = {}) {
   const button = main.querySelector("[data-new-notes]");
   const feedRef = new URL(baseURL, window.location.origin);
-  ensureFeedURLHasSessionPubkey(feedRef);
-  applyStoredWebOfTrustIfMissing(feedRef);
   const sort = effectiveFeedSortFromURL(feedRef);
   if (sort !== "recent") {
     return { body: "", count: 0 };
   }
+  // tf / relays / wot flow through X-Ptxt-* headers (sessionHeaders), so we
+  // only need to carry per-request bits in the URL.
   const requestURL = new URL("/feed", window.location.origin);
   requestURL.searchParams.set("fragment", "newer");
-  requestURL.searchParams.set("pubkey", feedRef.searchParams.get("pubkey") || "");
   requestURL.searchParams.set("since", button?.dataset.topCursor || "0");
   requestURL.searchParams.set("since_id", button?.dataset.topCursorId || "");
   if (options.includeBody) requestURL.searchParams.set("body", "1");
-  const timeframe = feedRef.searchParams.get("tf") || "";
-  if (timeframe) requestURL.searchParams.set("tf", timeframe);
-  copyWebOfTrustParams(feedRef, requestURL.searchParams);
-  const relays = relayParam();
-  if (relays) requestURL.searchParams.set("relays", relays);
-  const response = await fetch(requestURL.toString());
+  const response = await fetchWithSession(requestURL.toString());
   return parseNewerFragmentResponse(response, "fragment newer failed");
 }
 
@@ -1076,10 +1078,8 @@ async function fetchProfileNewerPosts(baseURL, options = {}) {
   requestURL.searchParams.set("since", button?.dataset.topCursor || "0");
   requestURL.searchParams.set("since_id", button?.dataset.topCursorId || "");
   if (options.includeBody) requestURL.searchParams.set("body", "1");
-  const relays = relayParam();
-  if (relays) requestURL.searchParams.set("relays", relays);
   addAsciiWidthHint(requestURL.searchParams, requestURL.pathname);
-  const response = await fetch(requestURL.toString());
+  const response = await fetchWithSession(requestURL.toString());
   return parseNewerFragmentResponse(response, "profile posts-newer fragment failed");
 }
 
@@ -1390,11 +1390,19 @@ function runPrefetchQueue() {
   }
 }
 
+function canonicalFragmentBaseURL(baseURL) {
+  const u = new URL(baseURL, window.location.origin);
+  stripViewerPrefSearchParams(u);
+  return u;
+}
+
+function fragmentKeyFromNormalized(normalized, fragment) {
+  return `${normalized.pathname}?${normalized.searchParams.toString()}::${fragment}`;
+}
+
 async function fetchFragment(baseURL, fragment) {
-  const canonical = new URL(baseURL, window.location.origin);
-  applyCanonicalFeedLikeParams(canonical);
-  ensureThreadURLHasSessionPubkey(canonical);
-  const key = fragmentKey(canonical, fragment);
+  const canonical = canonicalFragmentBaseURL(baseURL);
+  const key = fragmentKeyFromNormalized(canonical, fragment);
   const cached = prefetchCache.get(key);
   if (cached) {
     try {
@@ -1408,29 +1416,29 @@ async function fetchFragment(baseURL, fragment) {
   addAsciiWidthHint(requestURL.searchParams, requestURL.pathname);
   const controller = new AbortController();
   const abortTimer = setTimeout(() => controller.abort(), fragmentRequestTimeoutMs);
-    const request = fetch(requestURL.toString(), { signal: controller.signal }).then(async (response) => {
-      clearTimeout(abortTimer);
-      const navigate = response.headers.get("X-Ptxt-Navigate");
-      if (navigate) {
-        return {
-          body: "",
-          navigate,
-          cursor: "",
-          cursorID: "",
-          hasMore: false,
-          snapshotStarter: false,
-        };
-      }
-      if (!response.ok) throw new Error(`fragment ${fragment} failed`);
+  const request = fetchWithSession(requestURL.toString(), { signal: controller.signal }).then(async (response) => {
+    clearTimeout(abortTimer);
+    const navigate = response.headers.get("X-Ptxt-Navigate");
+    if (navigate) {
       return {
-        body: await response.text(),
-        navigate: "",
-        cursor: response.headers.get("X-Ptxt-Cursor") || "",
-        cursorID: response.headers.get("X-Ptxt-Cursor-Id") || "",
-        hasMore: response.headers.get("X-Ptxt-Has-More") === "1",
-        snapshotStarter: response.headers.get("X-Ptxt-Feed-Snapshot-Starter") === "1",
+        body: "",
+        navigate,
+        cursor: "",
+        cursorID: "",
+        hasMore: false,
+        snapshotStarter: false,
       };
-    }).catch((error) => {
+    }
+    if (!response.ok) throw new Error(`fragment ${fragment} failed`);
+    return {
+      body: await response.text(),
+      navigate: "",
+      cursor: response.headers.get("X-Ptxt-Cursor") || "",
+      cursorID: response.headers.get("X-Ptxt-Cursor-Id") || "",
+      hasMore: response.headers.get("X-Ptxt-Has-More") === "1",
+      snapshotStarter: response.headers.get("X-Ptxt-Feed-Snapshot-Starter") === "1",
+    };
+  }).catch((error) => {
     clearTimeout(abortTimer);
     prefetchCache.delete(key);
     throw error;
@@ -1444,15 +1452,11 @@ async function fetchFragment(baseURL, fragment) {
 }
 
 function fragmentKey(url, fragment) {
-  const normalized = new URL(url, window.location.origin);
-  return `${normalized.pathname}?${normalized.searchParams.toString()}::${fragment}`;
+  return fragmentKeyFromNormalized(canonicalFragmentBaseURL(url), fragment);
 }
 
 function invalidateFragmentPrefetch(baseURL, fragment) {
-  const canonical = new URL(baseURL, window.location.origin);
-  applyCanonicalFeedLikeParams(canonical);
-  ensureThreadURLHasSessionPubkey(canonical);
-  prefetchCache.delete(fragmentKey(canonical, fragment));
+  prefetchCache.delete(fragmentKey(baseURL, fragment));
 }
 
 function withFragmentTimeout(promise, key) {

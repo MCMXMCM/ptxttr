@@ -12,11 +12,18 @@ EOF
 
 STACK_NAME=""
 DOMAIN_NAME="example.com"
+ORIGIN_DOMAIN_NAME=""
+VIEWER_DNS_MODE="DirectToEip"
+CLOUDFRONT_DISTRIBUTION_DOMAIN_NAME=""
 HOSTED_ZONE_ID=""
 VPC_ID=""
 SUBNET_ID=""
+AVAILABILITY_ZONE=""
 INSTANCE_TYPE="t4g.small"
 ROOT_VOLUME_SIZE_GIB="30"
+DATA_VOLUME_SIZE_GIB="20"
+DATA_VOLUME_TYPE="gp3"
+EXISTING_DATA_VOLUME_ID=""
 ARTIFACT_BUCKET=""
 ARTIFACT_PREFIX="ptxt-nstr/deploy"
 ARTIFACT_KEY=""
@@ -40,6 +47,18 @@ while [[ $# -gt 0 ]]; do
       DOMAIN_NAME="$2"
       shift 2
       ;;
+    --origin-domain-name)
+      ORIGIN_DOMAIN_NAME="$2"
+      shift 2
+      ;;
+    --viewer-dns-mode)
+      VIEWER_DNS_MODE="$2"
+      shift 2
+      ;;
+    --cloudfront-distribution-domain-name)
+      CLOUDFRONT_DISTRIBUTION_DOMAIN_NAME="$2"
+      shift 2
+      ;;
     --hosted-zone-id)
       HOSTED_ZONE_ID="$2"
       shift 2
@@ -52,12 +71,28 @@ while [[ $# -gt 0 ]]; do
       SUBNET_ID="$2"
       shift 2
       ;;
+    --availability-zone)
+      AVAILABILITY_ZONE="$2"
+      shift 2
+      ;;
     --instance-type)
       INSTANCE_TYPE="$2"
       shift 2
       ;;
     --root-volume-size-gib)
       ROOT_VOLUME_SIZE_GIB="$2"
+      shift 2
+      ;;
+    --data-volume-size-gib)
+      DATA_VOLUME_SIZE_GIB="$2"
+      shift 2
+      ;;
+    --data-volume-type)
+      DATA_VOLUME_TYPE="$2"
+      shift 2
+      ;;
+    --existing-data-volume-id)
+      EXISTING_DATA_VOLUME_ID="$2"
       shift 2
       ;;
     --artifact-bucket)
@@ -130,6 +165,17 @@ if [[ -n "${EXISTING_EIP_ALLOCATION_ID}" && -z "${EXISTING_EIP_ADDRESS}" ]]; the
   exit 1
 fi
 
+if [[ -z "${AVAILABILITY_ZONE}" ]]; then
+  AVAILABILITY_ZONE="$(aws ec2 describe-subnets \
+    --subnet-ids "${SUBNET_ID}" \
+    --query "Subnets[0].AvailabilityZone" \
+    --output text)"
+  if [[ -z "${AVAILABILITY_ZONE}" || "${AVAILABILITY_ZONE}" == "None" ]]; then
+    echo "failed to resolve AvailabilityZone for ${SUBNET_ID}" >&2
+    exit 1
+  fi
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 TEMPLATE_PATH="${REPO_ROOT}/deploy/cloudformation/ptxt-nstr-single-instance.yaml"
@@ -140,11 +186,18 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM \
   --parameter-overrides \
     DomainName="${DOMAIN_NAME}" \
+    OriginDomainName="${ORIGIN_DOMAIN_NAME}" \
+    ViewerDnsMode="${VIEWER_DNS_MODE}" \
+    CloudFrontDistributionDomainName="${CLOUDFRONT_DISTRIBUTION_DOMAIN_NAME}" \
     HostedZoneId="${HOSTED_ZONE_ID}" \
     VpcId="${VPC_ID}" \
     SubnetId="${SUBNET_ID}" \
+    AvailabilityZone="${AVAILABILITY_ZONE}" \
     InstanceType="${INSTANCE_TYPE}" \
     RootVolumeSizeGiB="${ROOT_VOLUME_SIZE_GIB}" \
+    DataVolumeSizeGiB="${DATA_VOLUME_SIZE_GIB}" \
+    DataVolumeType="${DATA_VOLUME_TYPE}" \
+    ExistingDataVolumeId="${EXISTING_DATA_VOLUME_ID}" \
     ArtifactBucket="${ARTIFACT_BUCKET}" \
     ArtifactPrefix="${ARTIFACT_PREFIX}" \
     ArtifactKey="${ARTIFACT_KEY}" \
@@ -161,6 +214,7 @@ aws cloudformation deploy \
 REAPPLY_ARGS=(
   --stack-name "${STACK_NAME}"
   --domain-name "${DOMAIN_NAME}"
+  --origin-domain-name "${ORIGIN_DOMAIN_NAME}"
   --artifact-bucket "${ARTIFACT_BUCKET}"
   --artifact-key "${ARTIFACT_KEY}"
   --app-user "${APP_USER}"

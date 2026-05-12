@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
-	"net/http/pprof"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -82,8 +81,8 @@ func New(cfg config.Config, st *store.Store, nostrClient *nostrx.Client) (*Serve
 		searchGroup:      newSearchSingleFlight(),
 		tagGroup:         newTagSingleFlight(),
 		inFlight:         make(map[string]bool),
-		userAsyncQueue:   make(chan func(), 64),
-		relayWriteSem:    make(chan struct{}, 1),
+		userAsyncQueue:   make(chan func(), userAsyncQueueCapacity),
+		relayWriteSem:    make(chan struct{}, userAsyncWorkerCount),
 	}
 	server.ctx, server.cancel = context.WithCancel(context.Background())
 	server.store.SetEventRetention(cfg.EventRetention)
@@ -99,7 +98,7 @@ func New(cfg config.Config, st *store.Store, nostrClient *nostrx.Client) (*Serve
 	nostrClient.SetNegentropyCache(st)
 	nostrClient.SetRelayMaxOutboundConns(cfg.RelayMaxOutboundConns)
 	server.warmer = newWarmQueue(server, 2)
-	for range 2 {
+	for range userAsyncWorkerCount {
 		server.runBackground(server.runUserAsyncWorker)
 	}
 	if cfg.HydrationEnabled {
@@ -125,6 +124,9 @@ func New(cfg config.Config, st *store.Store, nostrClient *nostrx.Client) (*Serve
 		} else {
 			slog.Warn("health probe enabled but listen addr not suitable for loopback probe; skipping", "addr", cfg.Addr)
 		}
+	}
+	if cfg.PprofAddr != "" {
+		server.startPprofListener(cfg.PprofAddr)
 	}
 	return server, nil
 }
@@ -192,6 +194,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/profile", s.handleProfileAPI)
 	mux.HandleFunc("/api/relay-insight", s.handleRelayInsightAPI)
 	mux.HandleFunc("/api/mentions", s.handleMentionsAPI)
+	mux.HandleFunc("/api/event/", s.handleEventAPI)
 	if s.cfg.Debug {
 		mux.HandleFunc("/debug/cache", s.handleDebugCache)
 		mux.HandleFunc("/debug/metrics", s.handleDebugMetrics)
@@ -199,18 +202,11 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/debug/event", s.handleDebugEvent)
 		mux.HandleFunc("/debug/profile", s.handleDebugProfile)
 		mux.HandleFunc("/debug/firehose", s.handleDebugFirehose)
-		mux.HandleFunc("/debug/pprof/", pprof.Index)
-		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
-		mux.Handle("/debug/pprof/allocs", pprof.Handler("allocs"))
-		mux.Handle("/debug/pprof/block", pprof.Handler("block"))
-		mux.Handle("/debug/pprof/goroutine", pprof.Handler("goroutine"))
-		mux.Handle("/debug/pprof/heap", pprof.Handler("heap"))
-		mux.Handle("/debug/pprof/mutex", pprof.Handler("mutex"))
-		mux.Handle("/debug/pprof/threadcreate", pprof.Handler("threadcreate"))
 	}
+	// pprof + expvar live on a separate listener bound to PprofAddr (default
+	// 127.0.0.1:6060) regardless of cfg.Debug so on-host triage (SSM/SSH)
+	// can grab a goroutine dump or heap profile without restarting the
+	// process. See pprof.go:startPprofListener.
 	mux.HandleFunc("/u/", s.handleUser)
 	mux.HandleFunc("/e/", s.handleEvent)
 	mux.HandleFunc("/thread/", s.handleThread)

@@ -1,8 +1,11 @@
-import { ensureFeedURLHasSessionPubkey, isFeedLikePath, normalizedPubkey, relayParam } from "./session.js";
+import {
+  fetchWithSession,
+  normalizedPubkey,
+  shouldSyncViewerPrefLocation,
+  stripViewerPrefSearchParams,
+} from "./session.js";
 import { initMutations, viewerHasAtLeastOneFollow } from "./mutations.js";
 import {
-  applyCanonicalFeedLikeParams,
-  applyWebOfTrustParams,
   WEB_OF_TRUST_SEED_PRESETS,
   getEffectiveLoggedOutWebOfTrustSeed,
   getImageModePref,
@@ -224,7 +227,7 @@ export function initLayoutUI(root = document) {
   bindWebOfTrustControls(root);
   bindFeedWebOfTrustControls(root);
   syncStoredWebOfTrustAwareLinks(root);
-  if (isFeedLikePath(window.location.pathname) || window.location.pathname === "/settings") {
+  if (shouldSyncViewerPrefLocation(window.location.pathname)) {
     syncLocationFromStoredPrefs();
   }
 }
@@ -311,28 +314,13 @@ function bindTrendingTimeframe(root) {
   if (!select || !target || select._ptxtTrendingBound) return;
   select._ptxtTrendingBound = true;
   select.addEventListener("change", async () => {
-    setTrendingTimeframePref(select.value || "24h");
-    const params = new URLSearchParams({
-      fragment: "1",
-      tf: select.value || "24h",
-    });
-    const relays = relayParam();
-    if (relays) params.set("relays", relays);
+    const tf = select.value || "24h";
+    setTrendingTimeframePref(tf);
     try {
-      const response = await fetch(`/trending?${params.toString()}`);
+      // X-Ptxt-Tf header (sessionHeaders) carries the new timeframe.
+      const response = await fetchWithSession(`/trending?fragment=1`);
       if (!response.ok) throw new Error("trending request failed");
       target.innerHTML = await response.text();
-      const tf = select.value || "24h";
-      const u = new URL(window.location.href);
-      if (u.pathname === "/" || u.pathname === "/feed") {
-        if (tf === "24h") u.searchParams.delete("tf");
-        else u.searchParams.set("tf", tf);
-        ensureFeedURLHasSessionPubkey(u);
-        const next = `${u.pathname}${u.search}${u.hash}`;
-        history.replaceState({}, "", next);
-      }
-      const loadMore = root.querySelector('[data-load-more]:not([data-feed-url="/reads"])');
-      if (loadMore) loadMore.dataset.timeframe = tf;
     } catch {
       target.innerHTML = `<p class="muted">Trending unavailable.</p>`;
     }
@@ -340,19 +328,19 @@ function bindTrendingTimeframe(root) {
 }
 
 /**
- * Bind a select that persists a preference and triggers in-app navigation.
- * `mutate(url, value)` updates the next URL's search params.
+ * Bind a select that persists a preference and triggers an in-place refresh
+ * of the current route. Because the preference now travels as an X-Ptxt-*
+ * request header (not a URL query param), we re-navigate to the same URL
+ * with cursors cleared so the SPA refetches with the new header.
  */
-function bindNavigatingSelect(root, { selector, boundFlag, defaultValue, persist, mutate }) {
+function bindNavigatingSelect(root, { selector, boundFlag, defaultValue, persist }) {
   const select = root.querySelector(selector);
   if (!select || select[boundFlag]) return;
   select[boundFlag] = true;
   select.addEventListener("change", () => {
     const value = select.value || defaultValue;
     persist(value);
-    const nextURL = new URL(window.location.href);
-    mutate(nextURL, value);
-    dispatchNavigate(nextURL);
+    refreshCurrentRouteForPrefChange();
   });
 }
 
@@ -362,11 +350,6 @@ function bindFeedSortSelect(root) {
     boundFlag: "_ptxtFeedSortBound",
     defaultValue: "recent",
     persist: setFeedSortPref,
-    mutate: (url, value) => {
-      url.searchParams.set("sort", value);
-      url.searchParams.delete("cursor");
-      url.searchParams.delete("cursor_id");
-    },
   });
 }
 
@@ -376,12 +359,6 @@ function bindReadsSortSelect(root) {
     boundFlag: "_ptxtReadsSortBound",
     defaultValue: "recent",
     persist: setReadsSortPref,
-    mutate: (url, value) => {
-      url.searchParams.set("sort", value);
-      if (!url.searchParams.has("reads_tf")) url.searchParams.set("reads_tf", "24h");
-      url.searchParams.delete("cursor");
-      url.searchParams.delete("cursor_id");
-    },
   });
 }
 
@@ -391,56 +368,43 @@ function bindReadsTrendingTimeframe(root) {
     boundFlag: "_ptxtReadsTfBound",
     defaultValue: "24h",
     persist: setReadsTrendingTimeframePref,
-    mutate: (url, value) => {
-      url.searchParams.set("reads_tf", value);
-      if (!url.searchParams.has("sort")) url.searchParams.set("sort", "recent");
-      url.searchParams.delete("cursor");
-      url.searchParams.delete("cursor_id");
-    },
   });
 }
 
-function dispatchNavigate(url) {
-  const href = `${url.pathname}${url.search}${url.hash}`;
-  window.dispatchEvent(new CustomEvent("ptxt:navigate", { detail: { href } }));
+/**
+ * Asks the SPA to re-run the current route's hydration pipeline so the new
+ * `X-Ptxt-*` header values (read from localStorage by fetchWithSession()) are
+ * applied. The handler lives in navigation.js, which listens for
+ * `ptxt:viewer-prefs-changed`.
+ */
+function refreshCurrentRouteForPrefChange() {
+  window.dispatchEvent(new CustomEvent("ptxt:viewer-prefs-changed"));
 }
 
-function applyStoredWebOfTrustPreferenceToURL(url) {
-  if (!(url instanceof URL)) return;
-  if (!isFeedLikePath(url.pathname) && url.pathname !== "/settings") return;
-  if (getWebOfTrustEnabledPref()) {
-    applyWebOfTrustParams(url.searchParams, { depth: getWebOfTrustDepthPref() });
-    return;
-  }
-  url.searchParams.delete("wot");
-  url.searchParams.delete("wot_depth");
-  url.searchParams.delete("seed_pubkey");
-}
 
 function syncStoredWebOfTrustAwareLinks(root = document) {
+  // The original implementation copied WoT + relay params onto SSR-rendered
+  // navigation links so SPA fetches keyed cleanly off the URL. After moving
+  // prefs to X-Ptxt-* headers we only need old base hrefs (data-ptxt-wot-base-href)
+  // and scrubbing any stale legacy query keys (sort, wot, pubkey, relays, …).
   root.querySelectorAll("[data-feed-home], [data-session-reads-link], [data-session-notifications-link], a[href='/settings'], a[href^='/settings?']").forEach((link) => {
     if (!(link instanceof HTMLAnchorElement)) return;
     const base = link.dataset.ptxtWotBaseHref || link.getAttribute("href") || "/";
     link.dataset.ptxtWotBaseHref = base;
     const url = new URL(base, window.location.origin);
-    ensureFeedURLHasSessionPubkey(url);
-    applyStoredWebOfTrustPreferenceToURL(url);
-    const relays = relayParam();
-    if (relays) url.searchParams.set("relays", relays);
-    else url.searchParams.delete("relays");
+    stripViewerPrefSearchParams(url);
     link.href = `${url.pathname}${url.search}${url.hash}`;
   });
 }
 
-/** Updates the address bar from localStorage when it differs (feed-like: full canonical params; settings: WoT only). */
-function syncLocationFromStoredPrefs() {
+/** Strips any stale `?sort=`, `?tf=`, `?reads_tf=`, `?wot=`, `?wot_depth=`,
+ *  `?seed_pubkey=`, `?relays=` params from the address bar (those prefs now
+ *  travel as X-Ptxt-* headers). Called on feed-like + settings routes so old
+ *  bookmarked URLs upgrade quietly. */
+export function syncLocationFromStoredPrefs() {
   const url = new URL(window.location.href);
   const current = `${url.pathname}${url.search}${url.hash}`;
-  if (isFeedLikePath(url.pathname)) {
-    applyCanonicalFeedLikeParams(url);
-  } else {
-    applyStoredWebOfTrustPreferenceToURL(url);
-  }
+  stripViewerPrefSearchParams(url);
   const next = `${url.pathname}${url.search}${url.hash}`;
   if (next !== current) history.replaceState({}, "", next);
 }
@@ -712,13 +676,6 @@ function bindFeedWebOfTrustControls(root) {
     window.dispatchEvent(new CustomEvent("ptxt:web-of-trust-changed", {
       detail: { enabled: true, depth: nextDepth },
     }));
-    const nextURL = new URL(window.location.href);
-    if (nextURL.pathname === "/" || nextURL.pathname === "/feed") {
-      applyWebOfTrustParams(nextURL.searchParams, { depth: nextDepth });
-      nextURL.searchParams.delete("cursor");
-      nextURL.searchParams.delete("cursor_id");
-      dispatchNavigate(nextURL);
-    }
   };
   syncSelect(control.dataset.wotDepth || getWebOfTrustDepthPref());
   depthSelect.addEventListener("change", () => {

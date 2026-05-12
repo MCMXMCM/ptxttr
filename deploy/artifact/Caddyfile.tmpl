@@ -1,4 +1,4 @@
-__DOMAIN_NAME__ {
+__DOMAIN_NAME____ORIGIN_DOMAIN_NAME_SUFFIX__ {
 	encode zstd gzip
 
 	log {
@@ -6,17 +6,18 @@ __DOMAIN_NAME__ {
 		format json
 	}
 
-	# AI / social preview crawlers hammering /?pubkey=… and deep content/media URLs
-	# bypass guest feed cache and each request can do full WoT + SQLite + relay work.
-	# Short-circuit them here (not googlebot on / — keep home indexable).
+	# AI / SEO crawlers hammering /?pubkey=… and deep content/media URLs bypass
+	# guest feed cache and each request can do full WoT + SQLite + relay work.
+	# Short-circuit here (home/feed): AI preview bots plus high-volume SEO/link bots.
+	# Expensive paths (/thread|u|og|avatar): same plus google/other listed below.
 	@crawlerHomeFeedHeavy {
 		path_regexp homeOrFeed ^/(feed)?$
-		header_regexp uaHeavy User-Agent (?i)(meta-externalagent|gptbot|claudebot|oai-searchbot|perplexitybot)
+		header_regexp uaHeavy User-Agent (?i)(meta-externalagent|gptbot|claudebot|oai-searchbot|perplexitybot|ahrefsbot|semrushbot|mj12bot|applebot|amazonbot|baiduspider)
 	}
 
 	@crawlerLimited {
 		path_regexp expensive ^/(thread|u|og|avatar)/.*
-		header_regexp ua User-Agent (?i)(meta-externalagent|gptbot|claudebot|oai-searchbot|perplexitybot|googlebot|googleother)
+		header_regexp ua User-Agent (?i)(meta-externalagent|gptbot|claudebot|oai-searchbot|perplexitybot|googlebot|googleother|ahrefsbot|semrushbot|mj12bot|applebot|amazonbot|baiduspider)
 	}
 
 	handle @crawlerHomeFeedHeavy {
@@ -32,6 +33,18 @@ __DOMAIN_NAME__ {
 	handle @crawlerLimited {
 		header X-Robots-Tag "noindex, nofollow"
 		respond "" 204
+	}
+
+	# Preserve X-Forwarded-Host when set upstream (e.g. by CloudFront's
+	# viewer-request function) so the Go app can render canonical / OpenGraph
+	# URLs with the viewer hostname rather than the origin hostname. Caddy's
+	# default behavior is to overwrite X-Forwarded-Host with the inbound Host
+	# header, which would always read as origin.example.com.
+	@xfh header X-Forwarded-Host *
+	handle @xfh {
+		reverse_proxy 127.0.0.1:8080 {
+			header_up X-Forwarded-Host {http.request.header.X-Forwarded-Host}
+		}
 	}
 
 	reverse_proxy 127.0.0.1:8080

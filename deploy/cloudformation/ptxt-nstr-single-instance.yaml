@@ -6,6 +6,32 @@ Parameters:
     Type: String
     Default: example.com
     Description: Public hostname served by Caddy.
+  OriginDomainName:
+    Type: String
+    Default: ''
+    Description: >
+      Optional dedicated CloudFront origin hostname (e.g. origin.example.com).
+      When non-empty, an additional Route 53 A record is created pointing at the EIP
+      and Caddy is configured to also obtain a TLS certificate for this name.
+  ViewerDnsMode:
+    Type: String
+    Default: DirectToEip
+    AllowedValues:
+      - DirectToEip
+      - CloudFrontAlias
+    Description: >
+      Where the apex DNS record points. DirectToEip (default) is the legacy
+      behavior: Route 53 A record straight at the EIP. CloudFrontAlias points
+      apex A/AAAA alias records at the CloudFront distribution provided via
+      CloudFrontDistributionDomainName. Switching modes is the cutover step
+      for putting CloudFront in front of the origin.
+  CloudFrontDistributionDomainName:
+    Type: String
+    Default: ''
+    Description: >
+      CloudFront distribution domain (e.g. d123abc.cloudfront.net). Required
+      when ViewerDnsMode=CloudFrontAlias; obtained from the cloudfront stack's
+      DistributionDomainName output.
   HostedZoneId:
     Type: String
     Description: Existing Route 53 hosted zone ID for the domain.
@@ -15,6 +41,13 @@ Parameters:
   SubnetId:
     Type: AWS::EC2::Subnet::Id
     Description: Public subnet where the instance will run.
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: >
+      Availability Zone of SubnetId. Required so the retained DataVolume can be
+      created in the same AZ as the instance without an Fn::GetAtt cycle from
+      AppInstance back to DataVolume. The deploy scripts auto-resolve this from
+      SubnetId.
   AmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
@@ -33,6 +66,30 @@ Parameters:
     Default: 30
     MinValue: 8
     Description: Size in GiB of the gp3 root volume.
+  DataVolumeSizeGiB:
+    Type: Number
+    Default: 20
+    MinValue: 8
+    Description: >
+      Size in GiB of the dedicated EBS data volume mounted at /var/lib/ptxt-nstr.
+      The volume is created with DeletionPolicy/UpdateReplacePolicy Retain so
+      SQLite state survives instance replacement and stack delete.
+  DataVolumeType:
+    Type: String
+    Default: gp3
+    AllowedValues:
+      - gp3
+      - gp2
+    Description: EBS volume type for the data volume.
+  ExistingDataVolumeId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^vol-[0-9a-fA-F]+$'
+    ConstraintDescription: must be empty or a valid EBS volume ID (vol- plus hex, any case).
+    Description: >
+      Optional existing EBS volume ID to attach as the data volume (e.g. after a
+      previous stack was deleted while the volume was retained). When empty, a
+      new retained volume is created.
   ArtifactBucket:
     Type: String
     Description: S3 bucket containing the deployment artifact.
@@ -90,6 +147,10 @@ Parameters:
 Conditions:
   UseExistingEip: !Not [!Equals [!Ref ExistingElasticIpAllocationId, '']]
   CreateElasticIp: !Equals [!Ref ExistingElasticIpAllocationId, '']
+  CreateDataVolume: !Equals [!Ref ExistingDataVolumeId, '']
+  HasOriginDomain: !Not [!Equals [!Ref OriginDomainName, '']]
+  DnsDirectToEip: !Equals [!Ref ViewerDnsMode, 'DirectToEip']
+  DnsCloudFrontAlias: !Equals [!Ref ViewerDnsMode, 'CloudFrontAlias']
 
 Resources:
   AppSecurityGroup:
@@ -144,6 +205,19 @@ Resources:
                   - s3:GetObject
                   - s3:GetObjectVersion
                 Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ArtifactPrefix}/*'
+        - PolicyName: !Sub '${AWS::StackName}-diagnostics-write'
+          PolicyDocument:
+            Version: '2012-10-17'
+            # Scoped to a diagnostics/ prefix only so the instance role can
+            # stash goroutine dumps / heap profiles during incident triage
+            # (see SSM workflow in README) without gaining write access to
+            # deploy artifacts.
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:AbortMultipartUpload
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ArtifactPrefix}/diagnostics/*'
       Tags:
         - Key: Name
           Value: !Sub '${AWS::StackName}-role'
@@ -193,40 +267,68 @@ Resources:
           Value: !Sub '${AWS::StackName}-instance'
       UserData:
         Fn::Base64:
-          !Sub |
-            #!/bin/bash
-            set -euxo pipefail
-            exec > >(tee -a /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
+          !Sub
+            - |
+              #!/bin/bash
+              set -euxo pipefail
+              exec > >(tee -a /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
 
-            tempdir="$(mktemp -d)"
-            trap 'rm -rf "$tempdir"' EXIT
+              tempdir="$(mktemp -d)"
+              trap 'rm -rf "$tempdir"' EXIT
 
-            if [[ -n "${ArtifactVersion}" ]]; then
-              aws s3api get-object \
-                --bucket "${ArtifactBucket}" \
-                --key "${ArtifactKey}" \
-                --version-id "${ArtifactVersion}" \
-                "$tempdir/ptxt-nstr-artifact.tar.gz"
-            else
-              aws s3api get-object \
-                --bucket "${ArtifactBucket}" \
-                --key "${ArtifactKey}" \
-                "$tempdir/ptxt-nstr-artifact.tar.gz"
-            fi
+              if [[ -n "${ArtifactVersion}" ]]; then
+                aws s3api get-object \
+                  --bucket "${ArtifactBucket}" \
+                  --key "${ArtifactKey}" \
+                  --version-id "${ArtifactVersion}" \
+                  "$tempdir/ptxt-nstr-artifact.tar.gz"
+              else
+                aws s3api get-object \
+                  --bucket "${ArtifactBucket}" \
+                  --key "${ArtifactKey}" \
+                  "$tempdir/ptxt-nstr-artifact.tar.gz"
+              fi
 
-            tar -xzf "$tempdir/ptxt-nstr-artifact.tar.gz" -C "$tempdir"
+              tar -xzf "$tempdir/ptxt-nstr-artifact.tar.gz" -C "$tempdir"
 
-            bash "$tempdir/install.sh" \
-              --artifact-dir "$tempdir" \
-              --domain "${DomainName}" \
-              --app-user "${AppUser}" \
-              --caddy-version "${CaddyVersion}" \
-              --gomemlimit "${GoMemoryLimit}" \
-              --ptxt-addr "127.0.0.1:8080" \
-              --ptxt-db "/var/lib/ptxt-nstr/ptxt-nstr.sqlite" \
-              --ptxt-debug "${DebugEnabled}" \
-              --ptxt-event-retention "${EventRetention}" \
-              --ptxt-compact-on-start "${CompactOnStart}"
+              bash "$tempdir/install.sh" \
+                --artifact-dir "$tempdir" \
+                --domain "${DomainName}" \
+                --origin-domain "${OriginDomainName}" \
+                --app-user "${AppUser}" \
+                --caddy-version "${CaddyVersion}" \
+                --gomemlimit "${GoMemoryLimit}" \
+                --ptxt-addr "127.0.0.1:8080" \
+                --ptxt-db "/var/lib/ptxt-nstr/ptxt-nstr.sqlite" \
+                --ptxt-debug "${DebugEnabled}" \
+                --ptxt-event-retention "${EventRetention}" \
+                --ptxt-compact-on-start "${CompactOnStart}" \
+                --data-volume-id "${DataVolumeIdForInstall}"
+            - DataVolumeIdForInstall: !If
+                - CreateDataVolume
+                - !Ref DataVolume
+                - !Ref ExistingDataVolumeId
+
+  DataVolume:
+    Type: AWS::EC2::Volume
+    Condition: CreateDataVolume
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      Size: !Ref DataVolumeSizeGiB
+      VolumeType: !Ref DataVolumeType
+      Encrypted: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-data'
+
+  DataVolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      Device: /dev/sdf
+      InstanceId: !Ref AppInstance
+      VolumeId: !If [CreateDataVolume, !Ref DataVolume, !Ref ExistingDataVolumeId]
 
   ElasticIpAssociation:
     Type: AWS::EC2::EIPAssociation
@@ -234,12 +336,58 @@ Resources:
       AllocationId: !If [UseExistingEip, !Ref ExistingElasticIpAllocationId, !GetAtt ElasticIp.AllocationId]
       InstanceId: !Ref AppInstance
 
+  # Apex A record. Single resource that flips between a plain A pointing at
+  # the EIP (DirectToEip / legacy) and an alias to the CloudFront distribution
+  # (CloudFrontAlias). Route 53 handles the swap as an UPSERT, which avoids
+  # the create-before-delete ordering conflict that two separate conditional
+  # resources hit.
   DnsRecord:
     Type: AWS::Route53::RecordSet
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            # TTL + AliasTarget are mutually exclusive per record mode; this
+            # resource uses Fn::If so only one shape is active at a time.
+            - E3029
     DependsOn: ElasticIpAssociation
     Properties:
       HostedZoneId: !Ref HostedZoneId
       Name: !Ref DomainName
+      Type: A
+      TTL: !If [DnsDirectToEip, '60', !Ref 'AWS::NoValue']
+      ResourceRecords: !If
+        - DnsDirectToEip
+        - - !If [UseExistingEip, !Ref ExistingElasticIpAddress, !Ref ElasticIp]
+        - !Ref 'AWS::NoValue'
+      AliasTarget: !If
+        - DnsCloudFrontAlias
+        - DNSName: !Ref CloudFrontDistributionDomainName
+          HostedZoneId: Z2FDTNDATAQYW2
+          EvaluateTargetHealth: false
+        - !Ref 'AWS::NoValue'
+
+  # IPv6 alias only exists in CloudFront mode (the EIP is IPv4-only) so it is
+  # a brand-new resource that does not collide with anything in DirectToEip.
+  DnsRecordCloudFrontAAAA:
+    Type: AWS::Route53::RecordSet
+    Condition: DnsCloudFrontAlias
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: AAAA
+      AliasTarget:
+        DNSName: !Ref CloudFrontDistributionDomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+        EvaluateTargetHealth: false
+
+  OriginDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasOriginDomain
+    DependsOn: ElasticIpAssociation
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref OriginDomainName
       Type: A
       TTL: '60'
       ResourceRecords:
@@ -293,15 +441,35 @@ Resources:
       ComparisonOperator: GreaterThanThreshold
       TreatMissingData: notBreaching
 
-  HighDiskUsageAlarm:
+  HighRootDiskUsageAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
-      AlarmDescription: Root volume disk usage reported by the CloudWatch Agent.
+      AlarmDescription: Root volume (/) disk usage reported by the CloudWatch Agent.
       Namespace: CWAgent
       MetricName: disk_used_percent
       Dimensions:
         - Name: InstanceId
           Value: !Ref AppInstance
+        - Name: path
+          Value: /
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  HighDataDiskUsageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: App data volume (/var/lib/ptxt-nstr) disk usage reported by the CloudWatch Agent.
+      Namespace: CWAgent
+      MetricName: disk_used_percent
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref AppInstance
+        - Name: path
+          Value: /var/lib/ptxt-nstr
       Statistic: Average
       Period: 300
       EvaluationPeriods: 2
@@ -335,6 +503,11 @@ Outputs:
   InstanceId:
     Description: EC2 instance ID.
     Value: !Ref AppInstance
+  DataVolumeId:
+    Description: >
+      EBS volume ID backing /var/lib/ptxt-nstr. Retained on stack delete; pass
+      back via ExistingDataVolumeId if the stack is ever recreated.
+    Value: !If [CreateDataVolume, !Ref DataVolume, !Ref ExistingDataVolumeId]
   SsmSessionCommandHint:
     Description: Command for starting an SSM session to the instance.
     Value: !Sub 'aws ssm start-session --target ${AppInstance}'
