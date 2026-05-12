@@ -1,0 +1,513 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Single-instance CloudFormation deployment for ptxt-nstr on Amazon Linux 2023 ARM64.
+
+Parameters:
+  DomainName:
+    Type: String
+    Default: example.com
+    Description: Public hostname served by Caddy.
+  OriginDomainName:
+    Type: String
+    Default: ''
+    Description: >
+      Optional dedicated CloudFront origin hostname (e.g. origin.example.com).
+      When non-empty, an additional Route 53 A record is created pointing at the EIP
+      and Caddy is configured to also obtain a TLS certificate for this name.
+  ViewerDnsMode:
+    Type: String
+    Default: DirectToEip
+    AllowedValues:
+      - DirectToEip
+      - CloudFrontAlias
+    Description: >
+      Where the apex DNS record points. DirectToEip (default) is the legacy
+      behavior: Route 53 A record straight at the EIP. CloudFrontAlias points
+      apex A/AAAA alias records at the CloudFront distribution provided via
+      CloudFrontDistributionDomainName. Switching modes is the cutover step
+      for putting CloudFront in front of the origin.
+  CloudFrontDistributionDomainName:
+    Type: String
+    Default: ''
+    Description: >
+      CloudFront distribution domain (e.g. d123abc.cloudfront.net). Required
+      when ViewerDnsMode=CloudFrontAlias; obtained from the cloudfront stack's
+      DistributionDomainName output.
+  HostedZoneId:
+    Type: String
+    Description: Existing Route 53 hosted zone ID for the domain.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC that contains the public subnet for the instance.
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet where the instance will run.
+  AvailabilityZone:
+    Type: AWS::EC2::AvailabilityZone::Name
+    Description: >
+      Availability Zone of SubnetId. Required so the retained DataVolume can be
+      created in the same AZ as the instance without an Fn::GetAtt cycle from
+      AppInstance back to DataVolume. The deploy scripts auto-resolve this from
+      SubnetId.
+  AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+    Description: SSM parameter for the Amazon Linux 2023 ARM64 AMI.
+  InstanceType:
+    Type: String
+    Default: t4g.small
+    AllowedValues:
+      - t4g.micro
+      - t4g.small
+      - t4g.medium
+      - t4g.large
+    Description: Graviton instance type for the app host.
+  RootVolumeSizeGiB:
+    Type: Number
+    Default: 30
+    MinValue: 8
+    Description: Size in GiB of the gp3 root volume.
+  DataVolumeSizeGiB:
+    Type: Number
+    Default: 20
+    MinValue: 8
+    Description: >
+      Size in GiB of the dedicated EBS data volume mounted at /var/lib/ptxt-nstr.
+      The volume is created with DeletionPolicy/UpdateReplacePolicy Retain so
+      SQLite state survives instance replacement and stack delete.
+  DataVolumeType:
+    Type: String
+    Default: gp3
+    AllowedValues:
+      - gp3
+      - gp2
+    Description: EBS volume type for the data volume.
+  ExistingDataVolumeId:
+    Type: String
+    Default: ''
+    AllowedPattern: '^$|^vol-[0-9a-fA-F]+$'
+    ConstraintDescription: must be empty or a valid EBS volume ID (vol- plus hex, any case).
+    Description: >
+      Optional existing EBS volume ID to attach as the data volume (e.g. after a
+      previous stack was deleted while the volume was retained). When empty, a
+      new retained volume is created.
+  ArtifactBucket:
+    Type: String
+    Description: S3 bucket containing the deployment artifact.
+  ArtifactPrefix:
+    Type: String
+    Default: ptxt-nstr/deploy
+    Description: S3 key prefix containing deployment artifacts.
+  ArtifactKey:
+    Type: String
+    Description: S3 key of the deployment artifact tarball.
+  ArtifactVersion:
+    Type: String
+    Default: ''
+    Description: Optional S3 object version ID for immutable rollouts.
+  ExistingElasticIpAllocationId:
+    Type: String
+    Default: ''
+    Description: Optional existing Elastic IP allocation ID to associate.
+  ExistingElasticIpAddress:
+    Type: String
+    Default: ''
+    Description: Required when reusing an existing Elastic IP so Route 53 can point to it.
+  AppUser:
+    Type: String
+    Default: ptxt
+    Description: System user that runs the Go service.
+  CaddyVersion:
+    Type: String
+    Default: 2.9.1
+    Description: Caddy release version downloaded during bootstrap.
+  GoMemoryLimit:
+    Type: String
+    Default: 1GiB
+    Description: GOMEMLIMIT for the Go runtime.
+  EventRetention:
+    Type: Number
+    Default: 20000
+    MinValue: 1
+    Description: PTXT_EVENT_RETENTION value.
+  DebugEnabled:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: PTXT_DEBUG value.
+  CompactOnStart:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: PTXT_COMPACT_ON_START value.
+
+Conditions:
+  UseExistingEip: !Not [!Equals [!Ref ExistingElasticIpAllocationId, '']]
+  CreateElasticIp: !Equals [!Ref ExistingElasticIpAllocationId, '']
+  CreateDataVolume: !Equals [!Ref ExistingDataVolumeId, '']
+  HasOriginDomain: !Not [!Equals [!Ref OriginDomainName, '']]
+  DnsDirectToEip: !Equals [!Ref ViewerDnsMode, 'DirectToEip']
+  DnsCloudFrontAlias: !Equals [!Ref ViewerDnsMode, 'CloudFrontAlias']
+
+Resources:
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow HTTP and HTTPS to the ptxt-nstr instance.
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIpv6: ::/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIpv6: ::/0
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-sg'
+
+  AppRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+      Policies:
+        - PolicyName: !Sub '${AWS::StackName}-artifact-read'
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ArtifactPrefix}/*'
+        - PolicyName: !Sub '${AWS::StackName}-diagnostics-write'
+          PolicyDocument:
+            Version: '2012-10-17'
+            # Scoped to a diagnostics/ prefix only so the instance role can
+            # stash goroutine dumps / heap profiles during incident triage
+            # (see SSM workflow in README) without gaining write access to
+            # deploy artifacts.
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:AbortMultipartUpload
+                Resource: !Sub 'arn:${AWS::Partition}:s3:::${ArtifactBucket}/${ArtifactPrefix}/diagnostics/*'
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-role'
+
+  AppInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref AppRole
+
+  ElasticIp:
+    Type: AWS::EC2::EIP
+    Condition: CreateElasticIp
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-eip'
+
+  AppInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref AppInstanceProfile
+      CreditSpecification:
+        CPUCredits: standard
+      Monitoring: true
+      MetadataOptions:
+        HttpTokens: required
+        HttpPutResponseHopLimit: 2
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: '0'
+          GroupSet:
+            - !Ref AppSecurityGroup
+          SubnetId: !Ref SubnetId
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            DeleteOnTermination: true
+            Encrypted: true
+            VolumeSize: !Ref RootVolumeSizeGiB
+            VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-instance'
+      UserData:
+        Fn::Base64:
+          !Sub
+            - |
+              #!/bin/bash
+              set -euxo pipefail
+              exec > >(tee -a /var/log/user-data.log | logger -t user-data -s 2>/dev/console) 2>&1
+
+              tempdir="$(mktemp -d)"
+              trap 'rm -rf "$tempdir"' EXIT
+
+              if [[ -n "${ArtifactVersion}" ]]; then
+                aws s3api get-object \
+                  --bucket "${ArtifactBucket}" \
+                  --key "${ArtifactKey}" \
+                  --version-id "${ArtifactVersion}" \
+                  "$tempdir/ptxt-nstr-artifact.tar.gz"
+              else
+                aws s3api get-object \
+                  --bucket "${ArtifactBucket}" \
+                  --key "${ArtifactKey}" \
+                  "$tempdir/ptxt-nstr-artifact.tar.gz"
+              fi
+
+              tar -xzf "$tempdir/ptxt-nstr-artifact.tar.gz" -C "$tempdir"
+
+              bash "$tempdir/install.sh" \
+                --artifact-dir "$tempdir" \
+                --domain "${DomainName}" \
+                --origin-domain "${OriginDomainName}" \
+                --app-user "${AppUser}" \
+                --caddy-version "${CaddyVersion}" \
+                --gomemlimit "${GoMemoryLimit}" \
+                --ptxt-addr "127.0.0.1:8080" \
+                --ptxt-db "/var/lib/ptxt-nstr/ptxt-nstr.sqlite" \
+                --ptxt-debug "${DebugEnabled}" \
+                --ptxt-event-retention "${EventRetention}" \
+                --ptxt-compact-on-start "${CompactOnStart}" \
+                --data-volume-id "${DataVolumeIdForInstall}"
+            - DataVolumeIdForInstall: !If
+                - CreateDataVolume
+                - !Ref DataVolume
+                - !Ref ExistingDataVolumeId
+
+  DataVolume:
+    Type: AWS::EC2::Volume
+    Condition: CreateDataVolume
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      Size: !Ref DataVolumeSizeGiB
+      VolumeType: !Ref DataVolumeType
+      Encrypted: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-data'
+
+  DataVolumeAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      Device: /dev/sdf
+      InstanceId: !Ref AppInstance
+      VolumeId: !If [CreateDataVolume, !Ref DataVolume, !Ref ExistingDataVolumeId]
+
+  ElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !If [UseExistingEip, !Ref ExistingElasticIpAllocationId, !GetAtt ElasticIp.AllocationId]
+      InstanceId: !Ref AppInstance
+
+  # Apex A record. Single resource that flips between a plain A pointing at
+  # the EIP (DirectToEip / legacy) and an alias to the CloudFront distribution
+  # (CloudFrontAlias). Route 53 handles the swap as an UPSERT, which avoids
+  # the create-before-delete ordering conflict that two separate conditional
+  # resources hit.
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks:
+            # TTL + AliasTarget are mutually exclusive per record mode; this
+            # resource uses Fn::If so only one shape is active at a time.
+            - E3029
+    DependsOn: ElasticIpAssociation
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: A
+      TTL: !If [DnsDirectToEip, '60', !Ref 'AWS::NoValue']
+      ResourceRecords: !If
+        - DnsDirectToEip
+        - - !If [UseExistingEip, !Ref ExistingElasticIpAddress, !Ref ElasticIp]
+        - !Ref 'AWS::NoValue'
+      AliasTarget: !If
+        - DnsCloudFrontAlias
+        - DNSName: !Ref CloudFrontDistributionDomainName
+          HostedZoneId: Z2FDTNDATAQYW2
+          EvaluateTargetHealth: false
+        - !Ref 'AWS::NoValue'
+
+  # IPv6 alias only exists in CloudFront mode (the EIP is IPv4-only) so it is
+  # a brand-new resource that does not collide with anything in DirectToEip.
+  DnsRecordCloudFrontAAAA:
+    Type: AWS::Route53::RecordSet
+    Condition: DnsCloudFrontAlias
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref DomainName
+      Type: AAAA
+      AliasTarget:
+        DNSName: !Ref CloudFrontDistributionDomainName
+        HostedZoneId: Z2FDTNDATAQYW2
+        EvaluateTargetHealth: false
+
+  OriginDnsRecord:
+    Type: AWS::Route53::RecordSet
+    Condition: HasOriginDomain
+    DependsOn: ElasticIpAssociation
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Ref OriginDomainName
+      Type: A
+      TTL: '60'
+      ResourceRecords:
+        - !If [UseExistingEip, !Ref ExistingElasticIpAddress, !Ref ElasticIp]
+
+  CpuCreditBalanceAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Low CPU credit balance on the ptxt-nstr instance.
+      Namespace: AWS/EC2
+      MetricName: CPUCreditBalance
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref AppInstance
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+
+  HighCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Sustained high CPU utilization on the ptxt-nstr instance.
+      Namespace: AWS/EC2
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref AppInstance
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  HighMemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: High memory usage reported by the CloudWatch Agent.
+      Namespace: CWAgent
+      MetricName: mem_used_percent
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref AppInstance
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: 85
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  HighRootDiskUsageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Root volume (/) disk usage reported by the CloudWatch Agent.
+      Namespace: CWAgent
+      MetricName: disk_used_percent
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref AppInstance
+        - Name: path
+          Value: /
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  HighDataDiskUsageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: App data volume (/var/lib/ptxt-nstr) disk usage reported by the CloudWatch Agent.
+      Namespace: CWAgent
+      MetricName: disk_used_percent
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref AppInstance
+        - Name: path
+          Value: /var/lib/ptxt-nstr
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+
+  StatusCheckFailedAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmDescription: Instance status checks are failing.
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref AppInstance
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  ApplicationUrl:
+    Description: Public HTTPS URL for the app.
+    Value: !Sub 'https://${DomainName}/'
+  ElasticIp:
+    Description: Elastic IP serving the app.
+    Value: !If [UseExistingEip, !Ref ExistingElasticIpAddress, !Ref ElasticIp]
+  InstanceId:
+    Description: EC2 instance ID.
+    Value: !Ref AppInstance
+  DataVolumeId:
+    Description: >
+      EBS volume ID backing /var/lib/ptxt-nstr. Retained on stack delete; pass
+      back via ExistingDataVolumeId if the stack is ever recreated.
+    Value: !If [CreateDataVolume, !Ref DataVolume, !Ref ExistingDataVolumeId]
+  SsmSessionCommandHint:
+    Description: Command for starting an SSM session to the instance.
+    Value: !Sub 'aws ssm start-session --target ${AppInstance}'

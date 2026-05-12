@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Plaintext Nostr — Starting up</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #fff;
+      --fg: #151515;
+      --muted: #67645d;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #101010;
+        --fg: #efeee8;
+        --muted: #aaa69a;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem 1.25rem;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      font-size: 11pt;
+      line-height: 1.35;
+      text-align: center;
+    }
+    .logo-wrap {
+      margin-bottom: 1.5rem;
+    }
+    .logo-wrap img {
+      width: 88px;
+      height: 88px;
+      display: none;
+    }
+    @media (prefers-color-scheme: light), (prefers-color-scheme: no-preference) {
+      .logo-light { display: block; }
+    }
+    @media (prefers-color-scheme: dark) {
+      .logo-dark { display: block; }
+    }
+    h1 {
+      font-size: 1rem;
+      font-weight: 600;
+      margin: 0 0 0.5rem;
+      letter-spacing: 0.02em;
+    }
+    p {
+      margin: 0;
+      max-width: 22rem;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="logo-wrap" aria-hidden="true">
+    <img class="logo-light" src="/__ptxt_maintenance/ascritch_icon_black.png" width="88" height="88" alt="">
+    <img class="logo-dark" src="/__ptxt_maintenance/ascritch_icon_white.png" width="88" height="88" alt="">
+  </div>
+  <h1>Under maintenance</h1>
+  <p>The site is starting up after a deploy. Please check back in a few minutes.</p>
+</body>
+</html>

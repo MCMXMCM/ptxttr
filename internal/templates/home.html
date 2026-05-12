@@ -1,0 +1,99 @@
+{{define "home"}}
+{{template "document_start" .}}
+<div class="app-shell">
+  {{template "left_rail" .}}
+
+  <section class="feed-column">
+    <section id="feed-heading" data-feed-heading>
+      {{template "feed_heading" .}}
+    </section>
+
+    <button class="feed-new-notes" type="button" data-new-notes hidden>Show <span data-new-notes-count>0</span> new notes</button>
+
+    <section id="feed" class="feed" data-feed data-feed-snapshot-starter="{{if .FeedSnapshotStarter}}1{{else}}0{{end}}">
+      {{if and (not .Cursor) (eq (len .Feed) 0)}}
+        {{template "feed_loading_state" .}}
+      {{else}}
+        {{template "feed_items" .}}
+      {{end}}
+    </section>
+
+    {{/* Shell first paint has HasMore false but client hydrates via ?fragment=1; the button must exist so feed.js can bind infinite scroll. */}}
+    <button class="load-more" data-load-more data-feed-url="/feed" data-fragment="1" data-cursor="{{.Cursor}}" data-cursor-id="{{.CursorID}}" type="button"{{if not .HasMore}} hidden{{end}} data-has-more="{{if .HasMore}}1{{else}}0{{end}}">Load more</button>
+  </section>
+
+  {{template "right_rail" .}}
+</div>
+
+<script type="module" src="/static/js/feed.js"></script>
+<script type="module" src="/static/js/layout.js"></script>
+{{template "document_end" .}}
+{{end}}
+{{define "feed_loading_state"}}
+  <section class="feed-loader" data-feed-loader aria-busy="true">
+    <p class="muted feed-loader-status" data-feed-loader-status>gathering notes...</p>
+    <div class="text-skeleton-stack feed-loader-stack" aria-hidden="true">
+      <pre class="ascii-card text-skeleton-note feed-loader-card" data-feed-loader-card="0"></pre>
+      <pre class="ascii-card text-skeleton-note feed-loader-card" data-feed-loader-card="1"></pre>
+    </div>
+  </section>
+{{end}}
+{{define "feed_heading"}}
+<section class="page-heading">
+  <div class="ascii-border">{{asciiBorder}}</div>
+  
+    <div class="ascii-content">
+      <div class="feed-heading-top">
+        <div class="feed-heading-title-row">
+          <h1>Nostr Feed</h1>
+          <div class="feed-heading-controls">
+            <label class="feed-sort-label">Sort
+              <select data-feed-sort-select>
+                <option value="recent" {{if eq .FeedSort "recent"}}selected{{end}}>Chronological</option>
+                {{if .DefaultFeed}}
+                  <option value="trend7d" {{if eq .FeedSort "trend7d"}}selected{{end}}>7 Day Trend</option>
+                  <option value="trend24h" {{if eq .FeedSort "trend24h"}}selected{{end}}>1 Day Trend</option>
+                {{else}}
+                  <option value="trend24h" {{if eq .FeedSort "trend24h"}}selected{{end}}>1 Day Trend</option>
+                  <option value="trend7d" {{if eq .FeedSort "trend7d"}}selected{{end}}>7 Day Trend</option>
+                {{end}}
+              </select>
+            </label>
+            <button type="button" class="rail-post feed-heading-post" data-post-trigger>New Note</button>
+            {{if .WebOfTrustEnabled}}
+              <div class="feed-wot-quick" data-feed-wot-controls data-wot-depth="{{.WebOfTrustDepth}}">
+                <label class="feed-wot-quick-label" for="feed-wot-depth">WOT</label>
+                <select id="feed-wot-depth" class="feed-wot-depth-select" data-feed-wot-depth-select aria-label="Web of Trust depth">
+                  <option value="1" {{if eq .WebOfTrustDepth 1}}selected{{end}}>wot: 1°</option>
+                  <option value="2" {{if eq .WebOfTrustDepth 2}}selected{{end}}>wot: 2°</option>
+                  <option value="3" {{if eq .WebOfTrustDepth 3}}selected{{end}}>wot: 3°</option>
+                </select>
+              </div>
+            {{end}}
+          </div>
+        </div>
+        {{if .DefaultFeed}}
+          {{if eq .FeedSort "recent"}}
+            <p class="muted feed-heading-summary">{{if .WebOfTrustEnabled}}Showing chronological notes from within {{.WebOfTrustDepth}} degrees of separation seeded from {{.LoggedOutWOTSeedDisplayName}}'s following list.{{else}}Showing the latest notes from the cache server.{{end}} Login to use Web of Trust filtering with your own following list or change the seed profile in <a href="/settings">settings</a>.</p>
+          {{else if eq .FeedSort "trend24h"}}
+            <p class="muted feed-heading-summary">Showing 1-day trending notes and reposts.{{if .WebOfTrustEnabled}} Web of Trust is enabled and seeded from {{.LoggedOutWOTSeedDisplayName}}'s following list.{{end}} Login to use Web of Trust filtering with your own following list or change the seed profile in <a href="/settings">settings</a>.</p>
+          {{else}}
+            <p class="muted feed-heading-summary">Showing 7-day trending notes and reposts.{{if .WebOfTrustEnabled}} Web of Trust is enabled and seeded from {{.LoggedOutWOTSeedDisplayName}}'s following list.{{end}} Login to use Web of Trust filtering with your own following list or change the seed profile in <a href="/settings">settings</a>.</p>
+          {{end}}
+        {{else if .WebOfTrustEnabled}}
+          <p class="muted feed-heading-summary">Showing notes from within {{.WebOfTrustDepth}} degrees of separation in your follow graph.</p>
+        {{else}}
+          <p class="muted feed-heading-summary">Showing notes from your follow list.</p>
+        {{end}}
+      </div>
+    </div>
+  <div class="ascii-border">{{asciiBorder}}</div>
+</section>
+{{end}}
+{{define "feed_items"}}
+  {{range .Feed}}
+    {{template "note" dict "Event" . "Profiles" $.Profiles "Width" $.AsciiWidth "ReplyCount" (index $.ReplyCounts .ID) "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "ReferencedEvents" $.ReferencedEvents}}
+  {{else}}
+    {{if not $.Cursor}}<p class="muted">No notes found yet.</p>{{end}}
+  {{end}}
+{{end}}

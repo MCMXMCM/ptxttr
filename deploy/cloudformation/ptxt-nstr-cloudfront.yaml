@@ -1,0 +1,260 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  CloudFront distribution + ACM cert in front of the single-instance Caddy
+  origin. Must deploy in us-east-1 (CloudFront cert region requirement).
+  Session-heavy paths fall to the default no-cache behavior; anonymous
+  cache-friendly HTML uses UseOriginCacheControlHeaders-QueryStrings, static
+  surfaces and the immutable /api/event/* endpoint use CachingOptimized. A
+  CloudFront Function injects X-Forwarded-Host so the origin renders
+  canonical / OpenGraph URLs with the viewer hostname.
+
+Parameters:
+  ViewerDomainName:
+    Type: String
+    Description: Primary hostname clients use (e.g. example.com).
+  OriginDomainName:
+    Type: String
+    Description: >
+      Origin hostname only (e.g. origin.example.com). DNS A record must
+      target the same EIP as Caddy; Caddy must obtain a cert for this name.
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+    Description: >
+      Hosted zone for ViewerDomainName so ACM can create the DNS validation
+      records automatically.
+  PriceClass:
+    Type: String
+    Default: PriceClass_100
+    AllowedValues:
+      - PriceClass_All
+      - PriceClass_200
+      - PriceClass_100
+    Description: CloudFront edge footprint / cost tradeoff.
+
+# Managed policies (global IDs):
+#   CachingOptimized                      = 658327ea-f89d-4fab-a63d-7e88639e58f6
+#   UseOriginCacheControlHeaders-QStrings = 4cc15a8a-d715-48a4-82b8-cc0b614638fe
+#   CachingDisabled                       = 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+#   AllViewerExceptHostHeader             = b689b0a8-53d0-40ab-baf2-68738e2966ac
+# We forward everything except Host (Host is rewritten to OriginDomainName by
+# CloudFront so SNI/TLS to the origin works) and inject X-Forwarded-Host on the
+# edge so the origin can render the viewer hostname.
+
+Resources:
+  Certificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Ref ViewerDomainName
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Ref ViewerDomainName
+          HostedZoneId: !Ref HostedZoneId
+
+  ForwardedHostFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub '${AWS::StackName}-forwarded-host'
+      AutoPublish: true
+      FunctionConfig:
+        # Comment is capped at 128 chars by the CloudFront API.
+        Comment: Forward viewer Host as X-Forwarded-Host for the origin.
+        Runtime: cloudfront-js-2.0
+      # We only set X-Forwarded-Host; CloudFront's disallowed-headers list
+      # blocks functions from modifying X-Forwarded-Proto. The origin is
+      # reached over HTTPS (CustomOriginConfig OriginProtocolPolicy=https-only)
+      # so the Go app's r.TLS != nil branch in opengraph.go already produces
+      # the right scheme without an explicit header.
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var host = request.headers.host && request.headers.host.value;
+          if (host) {
+            request.headers['x-forwarded-host'] = { value: host };
+          }
+          return request;
+        }
+
+  Distribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Comment: !Sub '${AWS::StackName} ${ViewerDomainName}'
+        Enabled: true
+        HttpVersion: http2and3
+        IPV6Enabled: true
+        PriceClass: !Ref PriceClass
+        Aliases:
+          - !Ref ViewerDomainName
+        ViewerCertificate:
+          AcmCertificateArn: !Ref Certificate
+          MinimumProtocolVersion: TLSv1.2_2021
+          SslSupportMethod: sni-only
+        Origins:
+          - Id: ptxtOrigin
+            DomainName: !Ref OriginDomainName
+            CustomOriginConfig:
+              HTTPPort: 80
+              HTTPSPort: 443
+              OriginKeepaliveTimeout: 60
+              OriginProtocolPolicy: https-only
+              OriginReadTimeout: 60
+              OriginSSLProtocols:
+                - TLSv1.2
+        # Default: pass through with no caching (sessions, /feed, /api, POST, cookies).
+        DefaultCacheBehavior:
+          TargetOriginId: ptxtOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+            - PUT
+            - POST
+            - PATCH
+            - DELETE
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt ForwardedHostFunction.FunctionARN
+        CacheBehaviors:
+          # Static and mostly anonymous HTML/media surfaces honor origin Cache-Control (s-maxage).
+          - PathPattern: '/static/*'
+            TargetOriginId: ptxtOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt ForwardedHostFunction.FunctionARN
+          # Thread HTML and ?fragment=… partials must not share an edge cache key;
+          # CachingOptimized ignores query strings and can serve a headless fragment
+          # as the full document (broken CSS / duplicated shells).
+          - PathPattern: '/thread*'
+            TargetOriginId: ptxtOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            CachePolicyId: 4cc15a8a-d715-48a4-82b8-cc0b614638fe
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt ForwardedHostFunction.FunctionARN
+          - PathPattern: '/u/*'
+            TargetOriginId: ptxtOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            CachePolicyId: 4cc15a8a-d715-48a4-82b8-cc0b614638fe
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt ForwardedHostFunction.FunctionARN
+          - PathPattern: '/avatar/*'
+            TargetOriginId: ptxtOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt ForwardedHostFunction.FunctionARN
+          - PathPattern: '/og/*'
+            TargetOriginId: ptxtOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt ForwardedHostFunction.FunctionARN
+          - PathPattern: '/e/*'
+            TargetOriginId: ptxtOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            CachePolicyId: 4cc15a8a-d715-48a4-82b8-cc0b614638fe
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt ForwardedHostFunction.FunctionARN
+          # /api/event/<id> is fully content-addressed and immutable; the
+          # origin emits Cache-Control: max-age=31536000, immutable so
+          # CachingOptimized (id-only key, no query strings) is the right fit.
+          - PathPattern: '/api/event/*'
+            TargetOriginId: ptxtOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+            OriginRequestPolicyId: b689b0a8-53d0-40ab-baf2-68738e2966ac
+            FunctionAssociations:
+              - EventType: viewer-request
+                FunctionARN: !GetAtt ForwardedHostFunction.FunctionARN
+
+Outputs:
+  DistributionId:
+    Description: CloudFront distribution ID.
+    Value: !Ref Distribution
+  DistributionDomainName:
+    Description: CloudFront domain name; pass this as CloudFrontDistributionDomainName to the single-instance stack to alias viewer DNS at the distribution.
+    Value: !GetAtt Distribution.DomainName
+  CloudFrontHostedZoneId:
+    Description: Fixed Route 53 hosted zone ID for CloudFront alias targets.
+    Value: Z2FDTNDATAQYW2
+  CertificateArn:
+    Description: ACM certificate ARN (us-east-1) for ViewerDomainName.
+    Value: !Ref Certificate
+  ViewerUrl:
+    Description: HTTPS URL for viewers after DNS alias is configured.
+    Value: !Sub 'https://${ViewerDomainName}/'

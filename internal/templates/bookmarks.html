@@ -1,0 +1,39 @@
+{{define "bookmarks"}}
+{{template "document_start" .}}
+<div class="app-shell">
+  {{template "left_rail" .}}
+  {{template "bookmarks_main" .}}
+  {{template "right_rail_static" .}}
+</div>
+<script type="module" src="/static/js/feed.js"></script>
+<script type="module" src="/static/js/layout.js"></script>
+{{template "document_end" .}}
+{{end}}
+
+{{define "bookmarks_main"}}
+<section class="feed-column shell-main-top" data-shell-main>
+  <section class="page-heading">
+    <h1>Bookmarks</h1>
+    {{if .UserPubKey}}
+      <p class="muted">Showing your saved notes from NIP-51 bookmark list events (kind 10003).</p>
+    {{else}}
+      <p><a href="/login" data-relay-aware>Login to view bookmarks</a></p>
+    {{end}}
+  </section>
+  {{if .UserPubKey}}
+    <section class="feed" data-feed>
+      {{template "bookmarks_items" .}}
+    </section>
+  {{end}}
+</section>
+{{end}}
+
+{{define "bookmarks_items"}}
+  {{if .UserPubKey}}
+    {{range .Items}}
+      {{template "note" dict "Event" . "Profiles" $.Profiles "Width" $.AsciiWidth "ReplyCount" (index $.ReplyCounts .ID) "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "ReferencedEvents" $.ReferencedEvents}}
+    {{else}}
+      <p class="muted">No bookmarks yet.</p>
+    {{end}}
+  {{end}}
+{{end}}

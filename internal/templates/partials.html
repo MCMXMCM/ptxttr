@@ -1,0 +1,378 @@
+{{define "note"}}
+{{$event := .Event}}
+{{$profiles := .Profiles}}
+{{$selectedID := .SelectedID}}
+{{$width := .Width}}
+{{$author := asciiAuthor $width $profiles $event.PubKey}}
+{{$age := relTime $event.CreatedAt}}
+{{$replyCount := .ReplyCount}}
+{{$replyLabel := replyBadgeText $replyCount}}
+{{$referencedEvents := .ReferencedEvents}}
+{{$replyCounts := .ReplyCounts}}
+{{$referenceID := referencedEventID $event}}
+{{$reference := referenceEvent $referencedEvents $referenceID}}
+{{$hasReference := ne $reference.ID ""}}
+{{$referenceReplyCount := 0}}
+{{if $hasReference}}{{$referenceReplyCount = replyCountFor $replyCounts $reference.ID}}{{end}}
+{{$referenceReplyLabel := replyBadgeText $referenceReplyCount}}
+{{$isSimpleRepost := isSimpleRepost $event}}
+{{$isQuotePost := isQuotePost $event}}
+{{$content := asciiMentionContent $event.Content $profiles}}
+{{$mentionsJSON := asciiMentionsJSONFor $profiles $event.Content (or $reference.Content "")}}
+{{$rTot := reactionTotalFor .ReactionTotals $event.ID}}
+{{$rView := reactionViewerFor .ReactionViewers $event.ID}}
+{{$avatar := avatarSrc $profiles $event.PubKey}}
+<article class="note {{if eq $event.ID $selectedID}}is-focused{{end}}" id="note-{{$event.ID}}" data-created-at="{{$event.CreatedAt}}" data-ascii-kind="note" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$event.Kind}}" data-ascii-user-href="/u/{{$event.PubKey}}" data-ascii-thread-href="/thread/{{$event.ID}}" data-ascii-select-href="/thread/{{$event.ID}}" data-ascii-nevent="{{nevent $event.ID $event.PubKey}}" data-ascii-npub="{{npub $event.PubKey}}" data-ascii-relay="{{$event.RelayURL}}" data-ascii-ref-mode="{{if $isSimpleRepost}}repost{{else if $isQuotePost}}quote{{end}}" data-ascii-ref-author="{{if $hasReference}}{{asciiAuthor $width $profiles $reference.PubKey}}{{else if $referenceID}}{{short $referenceID}}{{end}}" data-ascii-ref-age="{{if $hasReference}}{{relTime $reference.CreatedAt}}{{else}}?{{end}}" data-ascii-ref-thread-href="{{if $hasReference}}/thread/{{$reference.ID}}{{else if $referenceID}}/thread/{{$referenceID}}{{end}}" data-ascii-ref-reply-label="{{$referenceReplyLabel}}" data-ascii-ref-reply-count="{{$referenceReplyCount}}" data-reply-root-id="{{$event.ID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}>
+{{if $isSimpleRepost}}<p class="note-feed-context note-feed-context--repost">{{repostContextHTML $profiles $event}}</p>{{end}}
+<template class="note-reply-context-tmpl">{{if replyContextVisible $event}}{{replyContextHTML $profiles $event}}{{end}}</template>
+<pre class="ascii-card"><a class="note-feed-avatar" href="/u/{{$event.PubKey}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{end}}</a><span class="ascii-line ascii-line-feed-header"><span >+--</span><span class="ascii-line-feed-header-tail"><a href="/u/{{$event.PubKey}}" data-relay-aware>{{$author}}</a> -- {{$age}} {{asciiFill $width "+--" $author " -- " $age " " "[...]" "+"}}<a href="/thread/{{$event.ID}}" data-relay-aware>[...]</a>+</span></span>
+<span class="ascii-line">{{asciiBoxLine $width ""}}</span>
+<span class="note-content"><span class="ascii-line">{{asciiBoxLine $width ""}}</span>
+{{range asciiBoxLines $width $content}}<span class="ascii-line">{{.}}</span>
+{{end}}<span class="ascii-line">{{asciiBoxLine $width ""}}</span></span><span class="ascii-line">{{asciiBoxLine $width ""}}</span>
+{{$rb := reactionBracketBlock $rTot $rView}}<span class="ascii-line">+-- {{$rb}} {{asciiNoteFooterFill $width $rb $replyLabel}}{{if $replyLabel}} {{$replyLabel}}{{end}} [<a href="/thread/{{$event.ID}}" data-relay-aware data-reply-action data-reply-root-id="{{$event.ID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}">reply</a>] ---+</span></pre>
+<template class="ascii-source">{{$content}}</template>
+<template class="ascii-reference-source">{{if $hasReference}}{{asciiMentionContent $reference.Content $profiles}}{{else if $referenceID}}[reposted note unavailable on current relays]{{end}}</template>
+{{template "note_media_drawer"}}
+</article>
+{{end}}
+
+{{define "note_media_drawer"}}<div class="note-media-drawer" data-note-image-mount hidden></div>{{end}}
+
+{{define "profile_header_modern"}}
+{{$avatar := avatarSrcURL .Profile.PubKey .Profile.Picture}}
+<section class="profile profile-modern">
+  <div class="profile-hero">
+    <a class="profile-back" href="/" data-relay-aware data-feed-home>&lt;-- back</a>
+    <div class="profile-avatar-wrap">
+      {{if $avatar}}<img class="profile-avatar" src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{else}}<div class="profile-avatar profile-avatar-fallback" aria-hidden="true">@</div>{{end}}
+    </div>
+    <h1 class="profile-display-name">{{if .Profile.Display}}{{.Profile.Display}}{{else if .Profile.Name}}{{.Profile.Name}}{{else}}{{short .Profile.PubKey}}{{end}}</h1>
+    <div class="profile-actions" data-profile-actions data-profile-pubkey="{{.Profile.PubKey}}">
+      <button type="button" class="profile-action-link profile-follow-toggle" data-follow-toggle data-pubkey="{{.Profile.PubKey}}" aria-pressed="false">Follow</button>
+      <a href="/profile/edit" class="profile-action-link" data-own-profile-edit hidden>Edit profile</a>
+      <button type="button" class="profile-action-link" data-own-profile-logout data-logout data-logout-redirect="/login" hidden>Log out</button>
+    </div>
+  </div>
+  <div class="profile-main">
+    <div class="profile-ident">
+      <p class="mono">{{npub .Profile.PubKey}}</p>
+      {{if .Profile.NIP05}}<p>{{.Profile.NIP05}}</p>{{end}}
+      {{if .Profile.About}}<p>{{bioLinkHTML .Profile.About}}</p>{{end}}
+      {{if .Profile.Event}}
+        <p class="muted">metadata from <a href="/thread/{{.Profile.Event.ID}}" data-relay-aware>{{short .Profile.Event.ID}}</a></p>
+      {{end}}
+    </div>
+  </div>
+</section>
+{{end}}
+
+{{define "comment"}}
+{{$node := .Node}}
+{{$profiles := .Profiles}}
+{{$selectedID := .SelectedID}}
+{{$rootID := .RootID}}
+{{$width := .Width}}
+{{$isLast := .IsLast}}
+{{$hasChildren := gt (len $node.Children) 0}}
+{{/* Show the rail in content/reply lines whenever this node has children
+     (the rail descends into them) OR when this node is not the last
+     sibling (the rail continues to the next sibling). Only the last leaf
+     in a branch drops the rail. */}}
+{{$showRail := or $hasChildren (not $isLast)}}
+{{$author := asciiAuthor $width $profiles $node.Event.PubKey}}
+{{$age := relTime $node.Event.CreatedAt}}
+{{$avatar := avatarSrc $profiles $node.Event.PubKey}}
+{{$replyCount := $node.ReplyCount}}
+{{with .ReplyCounts}}{{$replyCount = index . $node.Event.ID}}{{end}}
+{{$replyLabel := replyBadgeText $replyCount}}
+{{$content := asciiMentionContent $node.Event.Content $profiles}}
+{{$mentionsJSON := asciiMentionsJSON $node.Event.Content $profiles}}
+{{$rTot := reactionTotalFor .ReactionTotals $node.Event.ID}}
+{{$rView := reactionViewerFor .ReactionViewers $node.Event.ID}}
+<div id="note-{{$node.Event.ID}}" class="comment {{if eq $node.Event.ID $selectedID}}is-focused{{end}}" data-depth="{{$node.Depth}}" style="--depth: {{$node.Depth}}" data-ascii-kind="reply" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-is-last="{{$isLast}}" data-ascii-has-children="{{$hasChildren}}" data-ascii-selected="{{eq $node.Event.ID $selectedID}}" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$node.Event.Kind}}" data-ascii-user-href="/u/{{$node.Event.PubKey}}" data-ascii-select-href="/thread/{{$node.Event.ID}}" data-ascii-nevent="{{nevent $node.Event.ID $node.Event.PubKey}}" data-ascii-npub="{{npub $node.Event.PubKey}}" data-ascii-relay="{{$node.Event.RelayURL}}" data-reply-root-id="{{$rootID}}" data-reply-target-id="{{$node.Event.ID}}" data-reply-pubkey="{{$node.Event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}>
+<a class="comment-avatar" href="/u/{{$node.Event.PubKey}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{end}}</a>
+<pre class="ascii-reply"><span class="ascii-line"><a href="/u/{{$node.Event.PubKey}}" data-relay-aware>{{$author}}</a> -- {{$age}}</span>
+<span class="thread-reply-collapse"><span class="reply-content"><span class="ascii-line">{{if $showRail}}|    {{else}}     {{end}}{{asciiReplyPadLine $width}}</span>
+{{range asciiTextLines $content (replyTextWidth $width)}}<span class="ascii-line">{{if $showRail}}|    {{else}}     {{end}}{{.}}</span>
+{{end}}<span class="ascii-line">{{if $showRail}}|    {{else}}     {{end}}{{asciiReplyPadLine $width}}</span></span><span class="ascii-line">{{if $showRail}}|    {{else}}     {{end}}<a href="/thread/{{$node.Event.ID}}" data-relay-aware data-reply-action data-reply-root-id="{{$rootID}}" data-reply-target-id="{{$node.Event.ID}}" data-reply-pubkey="{{$node.Event.PubKey}}">reply</a>{{if $replyLabel}} {{$replyLabel}}{{end}}</span></span></pre>
+<template class="ascii-source">{{$content}}</template>
+{{template "note_media_drawer"}}
+{{if $node.Children}}
+<p class="continue-thread continue-thread-mobile"><a href="/thread/{{$node.Event.ID}}?back={{$rootID}}&back_note={{$node.Event.ID}}" data-relay-aware>continue thread</a></p>
+<p class="continue-thread continue-thread-desktop"><a href="/thread/{{$node.Event.ID}}?back={{$rootID}}&back_note={{$node.Event.ID}}" data-relay-aware>continue thread</a></p>
+<div class="comments">
+{{range $index, $child := $node.Children}}{{template "comment" dict "Node" $child "Profiles" $profiles "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "SelectedID" $selectedID "RootID" $rootID "Width" $width "IsLast" (isLastIndex $index (len $node.Children))}}{{end}}
+</div>
+{{end}}
+</div>
+{{end}}
+
+{{define "thread_focus_parent"}}
+{{$event := .Event}}
+{{$profiles := .Profiles}}
+{{$width := .Width}}
+{{$rootID := .RootID}}
+{{$author := asciiAuthor $width $profiles $event.PubKey}}
+{{$age := relTime $event.CreatedAt}}
+{{$avatar := avatarSrc $profiles $event.PubKey}}
+{{$replyCount := .ReplyCount}}
+{{with .ReplyCounts}}{{$replyCount = index . $event.ID}}{{end}}
+{{$replyLabel := replyBadgeText $replyCount}}
+{{$content := asciiMentionContent $event.Content $profiles}}
+{{$mentionsJSON := asciiMentionsJSON $event.Content $profiles}}
+{{$rTot := reactionTotalFor .ReactionTotals $event.ID}}
+{{$rView := reactionViewerFor .ReactionViewers $event.ID}}
+<div id="note-{{$event.ID}}" class="comment thread-focus-parent" data-depth="1" style="--depth: 1" data-ascii-kind="reply" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-is-last="false" data-ascii-has-children="true" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$event.Kind}}" data-ascii-user-href="/u/{{$event.PubKey}}" data-ascii-select-href="/thread/{{$event.ID}}" data-ascii-nevent="{{nevent $event.ID $event.PubKey}}" data-ascii-npub="{{npub $event.PubKey}}" data-ascii-relay="{{$event.RelayURL}}" data-reply-root-id="{{$rootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}>
+<a class="comment-avatar" href="/u/{{$event.PubKey}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{end}}</a>
+<pre class="ascii-reply"><span class="ascii-line"><a href="/u/{{$event.PubKey}}" data-relay-aware>{{$author}}</a> -- {{$age}}</span>
+<span class="thread-reply-collapse"><span class="reply-content"><span class="ascii-line">|    {{asciiReplyPadLine $width}}</span>
+{{range asciiTextLines $content (replyTextWidth $width)}}<span class="ascii-line">|    {{.}}</span>
+{{end}}<span class="ascii-line">|    {{asciiReplyPadLine $width}}</span></span><span class="ascii-line">|    <a href="/thread/{{$event.ID}}" data-relay-aware data-reply-action data-reply-root-id="{{$rootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}">reply</a>{{if $replyLabel}} {{$replyLabel}}{{end}}</span></span></pre>
+<template class="ascii-source">{{$content}}</template>
+{{template "note_media_drawer"}}
+</div>
+{{end}}
+
+{{define "thread_focus_selected"}}
+{{$event := .Event}}
+{{$profiles := .Profiles}}
+{{$width := .Width}}
+{{$replyCount := .ReplyCount}}
+{{$replyLabel := replyBadgeText $replyCount}}
+{{$author := asciiAuthor $width $profiles $event.PubKey}}
+{{$age := relTime $event.CreatedAt}}
+{{$avatar := avatarSrc $profiles $event.PubKey}}
+{{$content := asciiMentionContent $event.Content $profiles}}
+{{$mentionsJSON := asciiMentionsJSON $event.Content $profiles}}
+{{$rTot := reactionTotalFor .ReactionTotals $event.ID}}
+{{$rView := reactionViewerFor .ReactionViewers $event.ID}}
+<article class="note is-focused thread-focus-selected" id="note-{{$event.ID}}" data-depth="1" style="--depth: 1" data-created-at="{{$event.CreatedAt}}" data-ascii-kind="selected" data-ascii-selected="true" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$event.Kind}}" data-ascii-user-href="/u/{{$event.PubKey}}" data-ascii-thread-href="/thread/{{$event.ID}}" data-ascii-select-href="/thread/{{$event.ID}}" data-ascii-nevent="{{nevent $event.ID $event.PubKey}}" data-ascii-npub="{{npub $event.PubKey}}" data-ascii-relay="{{$event.RelayURL}}" data-reply-root-id="{{.RootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}>
+<a class="note-avatar" href="/u/{{$event.PubKey}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{end}}</a>
+<pre class="ascii-reply"><span class="ascii-line"><a href="/u/{{$event.PubKey}}" data-relay-aware>{{$author}}</a> -- {{$age}}</span>
+<span class="note-content"><span class="ascii-line">{{asciiReplyPadLine $width}}</span>
+{{range asciiTextLines $content (replyTextWidth $width)}}<span class="ascii-line">{{.}}</span>
+{{end}}<span class="ascii-line">{{asciiReplyPadLine $width}}</span></span><span class="ascii-line"><a href="/thread/{{$event.ID}}" data-relay-aware data-reply-action data-reply-root-id="{{.RootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}">reply</a>{{if gt $replyCount 0}} {{$replyLabel}}{{end}}</span></pre>
+<template class="ascii-source">{{$content}}</template>
+{{template "note_media_drawer"}}
+</article>
+{{end}}
+
+{{define "left_rail"}}
+<aside class="left-rail">
+  <a class="rail-brand" href="/" data-relay-aware data-feed-home>Plain Text Nostr</a>
+  <nav class="rail-nav" aria-label="Primary">
+    <a href="/" data-relay-aware data-feed-home data-main-menu-link {{if eq .Active "feed"}}aria-current="page"{{end}}><span class="rail-icon" aria-hidden="true">~</span><span class="rail-label">Home</span></a>
+    <a href="/reads" data-relay-aware data-session-reads-link data-main-menu-link {{if eq .Active "reads"}}aria-current="page"{{end}}><span class="rail-icon" aria-hidden="true">?</span><span class="rail-label">Reads</span></a>
+    <a href="/bookmarks" data-relay-aware data-session-bookmarks-link data-main-menu-link {{if eq .Active "bookmarks"}}aria-current="page"{{end}}><span class="rail-icon" aria-hidden="true">*</span><span class="rail-label">Bookmarks</span></a>
+    <a href="/notifications" data-relay-aware data-main-menu-link data-session-notifications-link {{if eq .Active "notifications"}}aria-current="page"{{end}}><span class="rail-icon" aria-hidden="true">!</span><span class="rail-label">Notifications</span></a>
+    <a href="/settings" data-relay-aware data-main-menu-link {{if eq .Active "settings"}}aria-current="page"{{end}}><span class="rail-icon" aria-hidden="true">=</span><span class="rail-label">Settings</span></a>
+    <a href="/about" data-relay-aware data-main-menu-link {{if eq .Active "about"}}aria-current="page"{{end}}><span class="rail-icon" aria-hidden="true">i</span><span class="rail-label">About</span></a>
+  </nav>
+  <button type="button" class="rail-post" data-post-trigger>Post</button>
+  <div class="rail-user">
+    <img src="" alt="" loading="lazy" decoding="async" data-session-avatar hidden>
+    <span class="rail-avatar-fallback" data-session-avatar-fallback>@</span>
+    <div class="rail-user-copy" data-session-user-copy hidden>
+      <strong data-session-display-name>Guest</strong>
+    </div>
+    <a href="/login" class="rail-login" data-session-cta>Login</a>
+  </div>
+</aside>
+{{end}}
+
+{{define "right_rail"}}
+<aside class="right-rail">
+  <form action="/search" method="get" class="rail-search">
+    <input type="search" name="q" placeholder="Search" value="{{.SearchQuery}}">
+  </form>
+  <section class="trending-panel">
+    <h2>Trending</h2>
+    <label class="trending-filter">Timeframe
+      <select data-trending-timeframe>
+        <option value="24h" {{if eq .TrendingTimeframe "24h"}}selected{{end}}>24hr</option>
+        <option value="1w" {{if eq .TrendingTimeframe "1w"}}selected{{end}}>1 Week</option>
+      </select>
+    </label>
+    <div data-trending-target>
+      {{template "trending_list" .}}
+    </div>
+  </section>
+</aside>
+{{end}}
+
+{{define "thread_right_rail"}}
+<aside class="right-rail" data-thread-fragment="participants">
+  <section class="thread-people-panel">
+    <h2>People in this thread</h2>
+    <ul class="thread-people">
+      {{range .Participants}}
+        {{$display := displayName $.Profiles .PubKey}}
+        {{$avatar := avatarSrc $.Profiles .PubKey}}
+        <li>
+          <a class="thread-person" href="/u/{{.PubKey}}" data-relay-aware>
+            {{if $avatar}}<img src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{else}}<span class="thread-person-avatar-fallback" aria-hidden="true">@</span>{{end}}
+            <div class="thread-person-meta">
+              <strong>{{$display}}</strong>
+              {{if .Profile.About}}<span class="muted thread-person-about">{{bioLinkHTML .Profile.About}}</span>{{end}}
+              <em class="muted">{{.Posts}} post{{if ne .Posts 1}}s{{end}}</em>
+            </div>
+          </a>
+        </li>
+      {{else}}
+        <li class="muted">No participants yet.</li>
+      {{end}}
+    </ul>
+  </section>
+</aside>
+{{end}}
+
+{{define "right_rail_static"}}
+<aside class="right-rail">
+  <form action="/search" method="get" class="rail-search">
+    <input type="search" name="q" placeholder="Search" value="{{.SearchQuery}}">
+  </form>
+  {{if not .HideTrendingRail}}
+  <section class="trending-panel">
+    <h2>Trending</h2>
+    <label class="trending-filter">Timeframe
+      <select disabled>
+        <option>24hr</option>
+        <option>1 Week</option>
+      </select>
+    </label>
+    <p class="muted">Trending placeholders appear here outside the feed page.</p>
+  </section>
+  {{end}}
+</aside>
+{{end}}
+
+{{define "login_right_rail"}}
+<aside class="right-rail login-right-rail">
+  <form action="/search" method="get" class="rail-search">
+    <input type="search" name="q" placeholder="Search">
+  </form>
+  <section class="trending-panel login-help-panel">
+    <h2>How login works</h2>
+    <p class="muted">Keys stay in your browser. The server only needs your public key for read paths.</p>
+    <ul class="login-help-list">
+      <li><strong>Npub Login:</strong> read-only browsing with a public key (<a href="https://github.com/nostr-protocol/nips/blob/master/19.md" target="_blank" rel="noopener noreferrer">NIP-19</a>).</li>
+      <li><strong>Browser Extension:</strong> connect an extension that exposes <code>window.nostr</code> (<a href="https://github.com/nostr-protocol/nips/blob/master/07.md" target="_blank" rel="noopener noreferrer">NIP-07</a>).</li>
+      <li><strong>Nsec Login:</strong> local private key usage for signing during this login; high risk.</li>
+      <li><strong>Ephemeral:</strong> create a throwaway key for temporary testing logins.</li>
+    </ul>
+  </section>
+</aside>
+{{end}}
+
+{{define "trending_list"}}
+<ol class="trending-list">
+  {{range .Trending}}
+    <li>
+      <a href="/thread/{{.Event.ID}}" data-relay-aware>
+        <strong>{{displayName $.Profiles .Event.PubKey}}</strong>
+        <span>{{.Event.Content}}</span>
+        <em>↳ {{replyCountText .ReplyCount}}</em>
+      </a>
+    </li>
+  {{else}}
+    <li class="muted">No trending notes yet.</li>
+  {{end}}
+</ol>
+{{end}}
+
+{{define "mobile_menu"}}
+<div class="mobile-menu" data-mobile-menu hidden aria-hidden="true">
+  <div class="mobile-menu-backdrop" data-mobile-menu-backdrop></div>
+  <div class="mobile-menu-panel" role="dialog" aria-modal="true" aria-label="Menu">
+    <div class="mobile-menu-header">
+      <div class="mobile-menu-title">
+        <span class="about-page-logo" aria-hidden="true">
+          <img src="/static/img/ascritch_icon_black.png" alt="" width="32" height="32" decoding="async" class="about-logo about-logo-light-scheme">
+          <img src="/static/img/ascritch_icon_white.png" alt="" width="32" height="32" decoding="async" class="about-logo about-logo-dark-scheme">
+        </span>
+        <strong>Plain Text Nostr</strong>
+      </div>
+    </div>
+    <section class="mobile-menu-intro" aria-label="Plain Text Nostr summary">
+      <p class="mobile-menu-intro-copy muted">A plain-text Nostr reader: relay aggregation, web of trust, local cache.</p>
+    </section>
+    <div class="mobile-menu-search">
+      <form action="/search" method="get" class="rail-search" role="search" aria-label="Search cached notes">
+        <input type="search" name="q" placeholder="Search" value="{{.SearchQuery}}" aria-label="Search cached notes">
+      </form>
+    </div>
+    <nav class="mobile-menu-nav" aria-label="Mobile menu">
+      <a href="/" data-relay-aware data-feed-home data-main-menu-link>Home</a>
+      <a href="/reads" data-relay-aware data-session-reads-link data-main-menu-link>Reads</a>
+      <a href="/bookmarks" data-relay-aware data-session-bookmarks-link data-main-menu-link>Bookmarks</a>
+      <a href="/notifications" data-relay-aware data-main-menu-link data-session-notifications-link>Notifications</a>
+      <a href="/settings" data-relay-aware data-main-menu-link>Settings</a>
+      <a href="/about" data-relay-aware data-main-menu-link>About</a>
+    </nav>
+    <button type="button" class="mobile-menu-close" data-mobile-menu-close>Close</button>
+  </div>
+</div>
+{{end}}
+
+{{define "post_placeholder_dialog"}}
+<dialog class="composer-dialog" data-composer-dialog>
+  <form method="dialog" class="composer-close-row">
+    <button type="submit" class="composer-close-button" data-close-composer aria-label="Close composer">X</button>
+  </form>
+  <h2 data-composer-title>Write a post</h2>
+  <p class="muted" data-composer-status>Sign in with a signing-capable method to publish.</p>
+  <form class="composer-form" data-composer-form>
+    <input type="hidden" name="mode" value="post" data-composer-mode>
+    <input type="hidden" name="root_id" data-composer-root-id>
+    <input type="hidden" name="reply_id" data-composer-reply-id>
+    <input type="hidden" name="reply_pubkey" data-composer-reply-pubkey>
+    <input type="hidden" name="repost_id" data-composer-repost-id>
+    <input type="hidden" name="repost_pubkey" data-composer-repost-pubkey>
+    <input type="hidden" name="repost_relay" data-composer-repost-relay>
+    <label class="composer-label" for="composer-content">Content</label>
+    <div class="composer-input-wrap" data-composer-input-wrap>
+      <pre class="composer-overlay" data-composer-overlay aria-hidden="true"></pre>
+      <textarea id="composer-content" name="content" rows="6" maxlength="64000" data-composer-content required></textarea>
+      <div class="composer-mention-menu" data-composer-mentions hidden>
+        <ul class="composer-mention-list" data-composer-mention-list role="listbox" aria-label="Mention suggestions"></ul>
+      </div>
+    </div>
+    <section class="composer-repost-preview" data-composer-preview hidden>
+      <p class="muted">Reposting</p>
+      <pre class="composer-repost-preview-content" data-composer-preview-content></pre>
+    </section>
+    <div class="toolbar">
+      <button type="submit" data-composer-submit>Publish</button>
+      <button type="button" data-composer-cancel>Cancel</button>
+    </div>
+  </form>
+</dialog>
+{{end}}
+
+{{define "error_panel"}}
+<section class="route-error-panel" role="status">
+  <div class="route-error-inner">
+    <div class="route-error-logo about-page-logo" aria-hidden="true">
+      <img src="/static/img/ascritch_icon_black.png" alt="" width="72" height="72" decoding="async" class="about-logo about-logo-light-scheme route-error-icon">
+      <img src="/static/img/ascritch_icon_white.png" alt="" width="72" height="72" decoding="async" class="about-logo about-logo-dark-scheme route-error-icon">
+    </div>
+    <h1 class="route-error-heading">{{if .Heading}}{{.Heading}}{{else}}Something went wrong{{end}}</h1>
+    {{if .Message}}<p class="route-error-message">{{.Message}}</p>{{end}}
+    {{if .Detail}}<p class="route-error-detail muted">{{.Detail}}</p>{{end}}
+  </div>
+</section>
+{{end}}
+
+{{define "shell_mobile_bar"}}
+<header class="mobile-bar">
+  <a href="/login" class="mobile-menu-trigger" data-session-user-link aria-label="Open profile">
+    <img src="" alt="" loading="lazy" decoding="async" data-session-avatar hidden>
+    <span class="mobile-trigger-fallback" data-session-avatar-fallback>@</span>
+  </a>
+  <a href="/" data-relay-aware class="mobile-brand" data-feed-home>Plain Text Nostr</a>
+  <button type="button" class="mobile-menu-trigger mobile-menu-bar-glyph" data-mobile-menu-trigger aria-label="Open menu">
+    <span class="mobile-menu-bar-icon" aria-hidden="true">≡</span>
+  </button>
+</header>
+{{end}}

@@ -1,0 +1,66 @@
+{{define "document_start"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <link rel="icon" href="/static/img/ascritch_icon_black.ico" type="image/x-icon" media="(prefers-color-scheme: light), (prefers-color-scheme: no-preference)">
+  <link rel="icon" href="/static/img/ascritch_icon_white.ico" type="image/x-icon" media="(prefers-color-scheme: dark)">
+  <link rel="icon" type="image/png" href="/static/img/ascritch_icon_black.png" media="(prefers-color-scheme: light), (prefers-color-scheme: no-preference)">
+  <link rel="icon" type="image/png" href="/static/img/ascritch_icon_white.png" media="(prefers-color-scheme: dark)">
+  <link rel="apple-touch-icon" href="/static/img/ascritch_icon_black.png" media="(prefers-color-scheme: light)">
+  <link rel="apple-touch-icon" href="/static/img/ascritch_icon_white.png" media="(prefers-color-scheme: dark)">
+  <link rel="apple-touch-icon" href="/static/img/ascritch_icon_black.png">
+  <title>{{if .Title}}{{.Title}} | {{end}}Plain Text Nostr</title>
+  {{if .OG.Title}}
+  <meta property="og:type" content="{{if .OG.Type}}{{.OG.Type}}{{else}}website{{end}}">
+  <meta property="og:title" content="{{.OG.Title}}">
+  {{if .OG.Description}}<meta property="og:description" content="{{.OG.Description}}">{{end}}
+  {{if .OG.URL}}<meta property="og:url" content="{{.OG.URL}}">{{end}}
+  {{if .OG.Image}}<meta property="og:image" content="{{.OG.Image}}">{{end}}
+  <meta property="og:site_name" content="{{if .OG.SiteName}}{{.OG.SiteName}}{{else}}Plain Text Nostr{{end}}">
+  {{if .OG.Author}}<meta property="article:author" content="{{.OG.Author}}">{{end}}
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="{{.OG.Title}}">
+  {{if .OG.Description}}<meta name="twitter:description" content="{{.OG.Description}}">{{end}}
+  {{if .OG.Image}}<meta name="twitter:image" content="{{.OG.Image}}">{{end}}
+  {{end}}
+  <link rel="stylesheet" href="/static/css/app.css?v=plain19">
+  <script type="module" src="/static/js/session.js"></script>
+  <script type="module" src="/static/js/navigation.js"></script>
+  <script type="module" src="/static/js/notes.js"></script>
+  <script type="module" src="/static/js/ascii.js"></script>
+</head>
+<body id="top"{{if .PageClass}} class="{{.PageClass}}"{{end}}>
+  {{if ne .PageClass "feed-shell"}}
+    <header class="site-header">
+      <div class="brand"><a href="/" data-relay-aware data-feed-home>Plain Text Nostr</a></div>
+      <nav aria-label="Primary">
+        <a href="/" data-relay-aware data-feed-home {{if eq .Active "feed"}}aria-current="page"{{end}}>Feed</a>
+        <a href="/login" data-relay-aware {{if eq .Active "login"}}aria-current="page"{{end}}>Login</a>
+        <a href="/relays" data-relay-aware {{if eq .Active "relays"}}aria-current="page"{{end}}>Relays</a>
+      </nav>
+    </header>
+  {{end}}
+  <main id="app-main" data-nav-root>
+{{if eq .PageClass "feed-shell"}}
+{{template "shell_mobile_bar" .}}
+<div data-route-outlet>
+{{end}}
+{{end}}
+{{define "document_end"}}
+{{if eq .PageClass "feed-shell"}}
+</div>
+{{template "mobile_menu" .}}
+{{template "post_placeholder_dialog" .}}
+{{end}}
+  </main>
+  {{if ne .PageClass "feed-shell"}}
+    <footer class="site-footer">
+      <a href="#top">Back to Top</a>
+      <span>Built plain first.</span>
+    </footer>
+  {{end}}
+</body>
+</html>
+{{end}}

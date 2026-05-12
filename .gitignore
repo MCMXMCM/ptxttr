@@ -1,0 +1,26 @@
+# Cursor IDE (local rules; do not publish)
+.cursor/
+
+# Go build cache (GOCACHE); never commit — paths look like .gocache/build/<hex>
+.gocache
+.gocache/
+
+data/*.sqlite
+data/*.sqlite-*
+data/profile-debug/
+tmp/
+dist/
+deploy/environments/*.env
+!deploy/environments/*.example
+
+# Local profiling output (pprof, runtime snapshots)
+profiles/
+
+# Local Apple signing / notarization (see scripts/desktop/signing.env.example)
+scripts/desktop/signing.env
+
+# Wails desktop build outputs (see scripts/desktop/build-mac.sh).
+# Track cmd/desktop/build/darwin/*.plist and entitlements; ignore generated bin + icons.
+cmd/desktop/build/*
+!cmd/desktop/build/darwin/
+!cmd/desktop/build/darwin/**

@@ -1,0 +1,105 @@
+{{define "reads"}}
+{{template "document_start" .}}
+<div class="app-shell reads-shell">
+  {{template "left_rail" .}}
+  <section class="feed-column reads-column">
+    <section id="reads-heading" data-reads-heading>
+      {{template "reads_heading" .}}
+    </section>
+    <section id="reads-list" class="reads-list" data-reads>
+      {{template "reads_items" .}}
+    </section>
+    {{if .HasMore}}
+      <p class="reads-more">
+        <a href="{{readsLoadMoreURL .}}" data-relay-aware>Load more reads</a>
+      </p>
+    {{end}}
+  </section>
+  {{template "reads_right_rail" .}}
+</div>
+<script type="module" src="/static/js/layout.js"></script>
+{{template "document_end" .}}
+{{end}}
+
+{{define "reads_right_rail"}}
+<aside class="right-rail reads-right-rail">
+  <form action="/search" method="get" class="rail-search">
+    <input type="search" name="q" placeholder="Search reads" value="{{.SearchQuery}}">
+  </form>
+  <section class="trending-panel">
+    <h2>Trending Reads</h2>
+    <label class="trending-filter">Timeframe
+      <select data-reads-trending-timeframe>
+        <option value="24h" {{if eq .ReadsTrendingTimeframe "24h"}}selected{{end}}>24hr</option>
+        <option value="1w" {{if eq .ReadsTrendingTimeframe "1w"}}selected{{end}}>1 Week</option>
+      </select>
+    </label>
+    <ol class="trending-list">
+      {{range .Trending}}
+        <li>
+          <a href="/thread/{{.Event.ID}}" data-relay-aware>
+            <strong>{{displayName $.Profiles .Event.PubKey}}</strong>
+            <span>{{.Event.Content}}</span>
+            <em>↳ {{replyCountText .ReplyCount}}</em>
+          </a>
+        </li>
+      {{else}}
+        <li class="muted">No trending reads yet.</li>
+      {{end}}
+    </ol>
+  </section>
+</aside>
+{{end}}
+
+{{define "reads_heading"}}
+<section class="page-heading">
+  <div class="ascii-border">{{asciiBorder}}</div>
+  <div class="ascii-content">
+    <div class="feed-heading-top">
+      <div class="feed-heading-title-row">
+        <h1>Reads</h1>
+        <label class="feed-sort-label">Sort
+          <select data-reads-sort-select>
+            <option value="recent" {{if eq .ReadsSort "recent"}}selected{{end}}>Chronological</option>
+            <option value="trend24h" {{if eq .ReadsSort "trend24h"}}selected{{end}}>1 Day Trend</option>
+            <option value="trend7d" {{if eq .ReadsSort "trend7d"}}selected{{end}}>7 Day Trend</option>
+          </select>
+        </label>
+      </div>
+    </div>
+    <p class="muted">NIP-23 long-form notes in a simple preview feed.{{if .WebOfTrustEnabled}} {{if .LoggedOutWOTSeedDisplayName}}Filtering to authors within {{.WebOfTrustDepth}} degrees of {{.LoggedOutWOTSeedDisplayName}}'s follow graph.{{else}}Filtering to authors within {{.WebOfTrustDepth}} degrees of your follow graph.{{end}}{{end}}</p>
+  </div>
+  <div class="ascii-border">{{asciiBorder}}</div>
+</section>
+{{end}}
+
+{{define "reads_items"}}
+  {{range .Items}}
+    <article class="read-article" id="read-{{.Event.ID}}">
+      <div class="ascii-border">{{asciiBorder}}</div>
+      <div class="ascii-row read-ascii-row">
+        <span class="ascii-edge">|</span>
+        <div class="ascii-content read-ascii-content">
+      <header class="read-meta">
+        <div class="read-meta-copy">
+          <h2><a href="/reads/{{.Event.ID}}" data-relay-aware>{{.Title}}</a></h2>
+          <p class="muted"><a href="/u/{{.Event.PubKey}}" data-relay-aware>{{displayName $.Profiles .Event.PubKey}}</a> · <span class="mono">{{formatDate .PublishedAt}}</span></p>
+          {{if .Summary}}<p class="read-summary">{{.Summary}}</p>{{end}}
+        </div>
+        {{if .ImageURL}}
+          <a class="read-thumb" href="/reads/{{.Event.ID}}" data-relay-aware>
+            <img src="{{.ImageURL}}" alt="" loading="lazy" decoding="async">
+          </a>
+        {{end}}
+      </header>
+      <section class="read-body">{{renderMarkdown .Event.Content}}</section>
+      <p class="reads-actions"><a href="/reads/{{.Event.ID}}" data-relay-aware>Open article</a></p>
+        </div>
+        <span class="ascii-edge">|</span>
+      </div>
+      <div class="ascii-border">{{asciiBorder}}</div>
+    </article>
+  {{else}}
+    {{if not $.Cursor}}<p class="muted">No long-form reads found yet.</p>{{end}}
+  {{end}}
+{{end}}

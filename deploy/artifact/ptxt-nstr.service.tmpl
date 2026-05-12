@@ -1,0 +1,20 @@
+[Unit]
+Description=Plain Text Nostr Go server
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=__DATA_DIR__
+
+[Service]
+Type=simple
+User=__APP_USER__
+Group=__APP_USER__
+WorkingDirectory=__APP_DIR__
+EnvironmentFile=/etc/ptxt-nstr/ptxt-nstr.env
+ExecStart=__APP_DIR__/bin/ptxt-nstr
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/ptxt-nstr/app.log
+StandardError=append:/var/log/ptxt-nstr/app.log
+
+[Install]
+WantedBy=multi-user.target
