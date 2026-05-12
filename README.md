@@ -4,7 +4,9 @@ A small Go Nostr web app built around server-side relay aggregation, a SQLite ev
 
 The server fans out to a bounded set of relays, persists every raw event into SQLite, projects derived state (profiles, follow lists, relay hints, reply counts, trending, bookmarks, reads) into typed tables, expands web-of-trust reachability from the `follow_edges` projection inside SQLite, and wraps each resolved author set in a small bloom filter for cheap negative membership checks before exact lookups. Hot projection reads also use a bounded in-process LRU (relay hints, profiles, reply stats) with hit/miss counters on `/debug/metrics`. Pages render from local cache first; relay traffic warms the cache in the background.
 
-**Easiest path for most people:** run the **macOS desktop app** (or the same stack in a terminal with Go). Hosted AWS / CloudFront deployment is optional and documented separately below.
+**Try it in the browser:** open [plaintextnostr.com](https://plaintextnostr.com) for a quick look. The hosted site runs the same server-side aggregation and cache as this repo; you are **trusting that server** to connect to relays and aggregate notes on your behalf. If you want relay traffic and SQLite aggregation to stay **on your own machine**, use the **macOS desktop app** below (or run `go run ./cmd/server` locally).
+
+**Operators:** hosted AWS / CloudFront deployment is optional and documented in [`deploy/README.md`](deploy/README.md).
 
 ## Try it (macOS desktop)
 
