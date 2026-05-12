@@ -2,6 +2,8 @@
 
 This repo includes a single-instance CloudFormation deployment for `ptxt-nstr`:
 
+- **macOS desktop releases** (codesign, notarize, GitHub assets): maintainer notes in [`deploy/desktop/README.md`](desktop/README.md)
+
 - template: `deploy/cloudformation/ptxt-nstr-single-instance.yaml`
 - artifact templates: `deploy/artifact/`
 - helper scripts: `scripts/build-cfn-artifact.sh`, `scripts/upload-cfn-artifact.sh`, `scripts/reapply-cfn-artifact.sh`, `scripts/deploy-cfn.sh`, `scripts/deploy-cloudfront-cfn.sh`, `scripts/caddy-traffic-snapshot.sh`, `scripts/grow-prod-volume.sh`, `scripts/grow-prod-data-volume.sh`

@@ -8,22 +8,18 @@ The server fans out to a bounded set of relays, persists every raw event into SQ
 
 ## Try it (macOS desktop)
 
-**Developer ID + notarized** builds are produced on your Mac (`make desktop-build`, `make desktop-sign`, `make desktop-package`), then attached to a **GitHub Release** manually (or with `gh release upload`).
+**Download a build:** open [GitHub Releases](https://github.com/MCMXMCM/ptxttr/releases) and download the latest **`ptxt-nstr-desktop-mac-*.dmg`**, then install from the disk image as usual.
 
-To build locally on a Mac:
+**Build from source** on a Mac:
 
-1. Install [Wails v2](https://wails.io/) (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0`) and Xcode Command Line Tools.
-2. From the repo root:
+1. Install [Wails v2](https://wails.io/) (for example `go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0`) and Xcode Command Line Tools.
+2. Clone this repository and from the repo root run:
 
 ```sh
-make desktop-build
-# optional: make desktop-sign      # codesign + notarize + staple (scripts/desktop/sign-mac.sh; secrets in scripts/desktop/signing.env — copy signing.env.example)
-# optional: make desktop-package     # DMG under dist/ — run *after* sign so the bundle stays signed (desktop-package does not rebuild). Filename: dist/ptxt-nstr-desktop-mac-<version>.dmg; set PTXT_NSTR_DESKTOP (or in signing.env), or bump productVersion in cmd/desktop/wails.json
+make build-desktop
 ```
 
-**Ship a signed build on GitHub:** after `make desktop-sign`, create a release from a tag (GitHub **Releases → Draft** or `gh release create v0.1.0 --generate-notes`), then attach either `dist/*.dmg` from `make desktop-package` or a zip of the `.app` created with `ditto -c -k --sequesterRsrc --keepParent` from `cmd/desktop/build/bin/` (plain `zip` can break code signatures). Users download the asset from the release page; you do not commit the signed binary to `git`.
-
-`scripts/desktop/build-mac.sh` invokes `wails build` with `-skipbindings` because the shell does not expose Go methods to the embedded splash (the UI is the loopback `httpx` app only).
+The app bundle is written to `cmd/desktop/build/bin/ptxt-nstr.app`. Open that folder in Finder and double-click the app, or run it from the terminal.
 
 The desktop build embeds a short splash, then starts the same HTTP server as `cmd/server` on a random `127.0.0.1` port and opens it in a native window. Your database defaults to `~/Library/Application Support/ptxt-nstr/ptxt-nstr.sqlite` (override with `PTXT_DB`). The desktop preset also sets `PTXT_DESKTOP_MODE=1` (external links open in the default browser). First-launch compaction is off by default (`PTXT_COMPACT_ON_START=false`) so the window stays responsive; optional `pprof` on `127.0.0.1:6060` is off by default in the desktop preset (`PTXT_PPROF_ADDR=off`) to avoid clashing with a dev server.
 
@@ -259,7 +255,7 @@ go test ./...
 PTXT_DEBUG=1 go run ./cmd/server
 ```
 
-After `make desktop-build` on macOS, open `cmd/desktop/build/bin/ptxt-nstr.app` once to confirm the splash hands off to the loopback UI (or run `cd cmd/desktop && wails dev` while iterating on the shell).
+After `make build-desktop` on macOS, open `cmd/desktop/build/bin/ptxt-nstr.app` once to confirm the splash hands off to the loopback UI (or run `cd cmd/desktop && wails dev` while iterating on the shell).
 
 With debug enabled:
 
