@@ -213,6 +213,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/og/", s.handleOGImage)
 	mux.HandleFunc("/services/oembed", s.handleOEmbed)
 	mux.HandleFunc(avatarPathPrefix, s.handleAvatar)
+	if s.cfg.DesktopMode {
+		mux.HandleFunc(desktopOpenExternalPath, s.handleDesktopOpenExternal)
+	}
 	coalesce := newCoalesceMiddleware(coalesceConfig{
 		Enabled: s.cfg.CoalesceEnabled,
 		Buckets: s.cfg.CoalesceBuckets,

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "ptxt-nstr",
+  "outputfilename": "ptxt-nstr",
+  "wailsjsdir": "frontend",
+  "author": {
+    "name": "Plain Text Nostr",
+    "email": ""
+  },
+  "info": {
+    "companyName": "Plain Text Nostr",
+    "productName": "Plain Text Nostr",
+    "productVersion": "0.1.0",
+    "copyright": "Plain Text Nostr contributors",
+    "comments": "Local Nostr reader / writer (desktop build)"
+  }
+}

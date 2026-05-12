@@ -130,7 +130,7 @@ The infra deploy script:
 2. calls `scripts/reapply-cfn-artifact.sh`
 3. uses SSM to re-run the install flow on the instance so artifact updates apply cleanly
 
-To sanity-check templates locally (requires AWS credentials for `cloudformation:ValidateTemplate`), run `make validate-cfn` from the repo root. CI runs [`cfn-lint`](https://github.com/aws-cloudformation/cfn-lint) on pull requests that touch [`deploy/cloudformation/`](cloudformation/).
+To sanity-check templates locally (requires AWS credentials for `cloudformation:ValidateTemplate`), run `make validate-cfn` from the repo root. You can also run [`cfn-lint`](https://github.com/aws-cloudformation/cfn-lint) on the YAML under `deploy/cloudformation/` if you install it (`pip install cfn-lint`).
 
 The stack grants the instance read access to the configured artifact prefix
 rather than a single object key, so app-only deploys can fetch newly uploaded

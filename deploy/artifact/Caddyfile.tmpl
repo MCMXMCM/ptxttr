@@ -6,6 +6,24 @@ __DOMAIN_NAME____ORIGIN_DOMAIN_NAME_SUFFIX__ {
 		format json
 	}
 
+	# Static assets for maintenance splashes; strip prefix then serve from
+	# /etc/caddy/maintenance so logo URLs do not recurse through reverse_proxy.
+	handle_path /__ptxt_maintenance/* {
+		root * /etc/caddy/maintenance
+		header Cache-Control "public, max-age=3600"
+		file_server
+	}
+
+	# Friendly splash for proxy errors (e.g. 502 when the Go listener is not up yet) and
+	# internal 503s. Upstream HTTP 503 responses are handled in reverse_proxy via handle_response.
+	handle_errors 502 503 {
+		header Cache-Control "no-store"
+		header X-Robots-Tag "noindex, nofollow"
+		root * /etc/caddy/maintenance
+		rewrite * /{err.status_code}.html
+		file_server
+	}
+
 	# AI / SEO crawlers hammering /?pubkey=… and deep content/media URLs bypass
 	# guest feed cache and each request can do full WoT + SQLite + relay work.
 	# Short-circuit here (home/feed): AI preview bots plus high-volume SEO/link bots.
@@ -44,8 +62,25 @@ __DOMAIN_NAME____ORIGIN_DOMAIN_NAME_SUFFIX__ {
 	handle @xfh {
 		reverse_proxy 127.0.0.1:8080 {
 			header_up X-Forwarded-Host {http.request.header.X-Forwarded-Host}
+			@upstream503xfh status 503
+			handle_response @upstream503xfh {
+				header Cache-Control "no-store"
+				header X-Robots-Tag "noindex, nofollow"
+				root * /etc/caddy/maintenance
+				rewrite * /503.html
+				file_server
+			}
 		}
 	}
 
-	reverse_proxy 127.0.0.1:8080
+	reverse_proxy 127.0.0.1:8080 {
+		@upstream503 status 503
+		handle_response @upstream503 {
+			header Cache-Control "no-store"
+			header X-Robots-Tag "noindex, nofollow"
+			root * /etc/caddy/maintenance
+			rewrite * /503.html
+			file_server
+		}
+	}
 }

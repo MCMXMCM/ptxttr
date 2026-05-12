@@ -1,4 +1,4 @@
-.PHONY: run test fmt tidy vet lint check build-cfn-artifact upload-cfn-artifact deploy deploy-infra deploy-cloudfront grow-prod-volume grow-prod-data-volume validate-cfn
+.PHONY: run test fmt tidy vet lint check build-cfn-artifact upload-cfn-artifact deploy deploy-infra deploy-cloudfront grow-prod-volume grow-prod-data-volume validate-cfn desktop-build desktop-package desktop-sign
 
 ARTIFACT_BUCKET ?= your-artifact-bucket
 
@@ -49,3 +49,15 @@ grow-prod-volume:
 
 grow-prod-data-volume:
 	./scripts/grow-prod-data-volume.sh
+
+# macOS desktop (Wails). Requires: wails CLI, Xcode CLT; run from a Mac for darwin/universal.
+desktop-build:
+	./scripts/desktop/build-mac.sh
+
+# Packages whatever .app is already at cmd/desktop/build/bin/ (build first;
+# for signed releases run desktop-build → desktop-sign → desktop-package).
+desktop-package:
+	./scripts/desktop/package-mac.sh
+
+desktop-sign:
+	./scripts/desktop/sign-mac.sh

@@ -333,6 +333,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		data.BasePageData = s.basePageData(r, "Search", "search", "feed-shell")
 		data.ScopeNetworkURL = s.searchScopeURL(r, req, searchScopeNetwork)
 		data.ScopeAllURL = s.searchScopeURL(r, req, searchScopeAll)
+		data.HideTrendingRail = true
 	}
 	s.renderSearchPage(w, r, status, data)
 }
@@ -346,6 +347,7 @@ func (s *Server) newSearchPageData(r *http.Request, req searchRequest, query, sc
 	data.BasePageData = s.basePageData(r, "Search", "search", "feed-shell")
 	data.ScopeNetworkURL = s.searchScopeURL(r, req, searchScopeNetwork)
 	data.ScopeAllURL = s.searchScopeURL(r, req, searchScopeAll)
+	data.HideTrendingRail = true
 	return data
 }
 

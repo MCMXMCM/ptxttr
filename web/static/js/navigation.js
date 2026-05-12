@@ -557,7 +557,7 @@ function renderShell(route, url) {
           </section>
         </section>
       `,
-      rightRail: staticRightRail(url.searchParams.get("q") || ""),
+      rightRail: staticRightRail(url.searchParams.get("q") || "", { trending: false }),
     }));
     return;
   }

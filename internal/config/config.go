@@ -117,6 +117,9 @@ type Config struct {
 	// from on-host triage (SSM/SSH) without flipping Debug. Set empty to
 	// disable. Bind to a non-loopback address only behind explicit auth.
 	PprofAddr string
+	// DesktopMode is true when running inside the Wails desktop shell (PTXT_DESKTOP_MODE).
+	// Enables loopback-only helpers such as opening http(s) links in the system browser.
+	DesktopMode bool
 }
 
 func Load() Config {
@@ -178,6 +181,7 @@ func Load() Config {
 		HealthProbeTimeout:              durationEnv("PTXT_HEALTH_PROBE_TIMEOUT_MS", 12_000*time.Millisecond),
 		HealthProbeDegradedThreshold:    intEnv("PTXT_HEALTH_PROBE_DEGRADED_THRESHOLD", 3),
 		PprofAddr:                       pprofAddrEnv("PTXT_PPROF_ADDR", "127.0.0.1:6060"),
+		DesktopMode:                     boolEnv("PTXT_DESKTOP_MODE", false),
 	}
 
 	slog.Info(
@@ -226,6 +230,7 @@ func Load() Config {
 		"health_probe_timeout", cfg.HealthProbeTimeout,
 		"health_probe_degraded_threshold", cfg.HealthProbeDegradedThreshold,
 		"pprof_addr", cfg.PprofAddr,
+		"desktop_mode", cfg.DesktopMode,
 	)
 
 	return cfg

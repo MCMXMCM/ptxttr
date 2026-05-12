@@ -75,12 +75,24 @@ function buildReactionDraft(noteEl, polarity) {
   };
 }
 
+/** Same note in multiple shells: max total, last +/- viewer in document order (see shellsForReactionTarget). */
+function aggregateReactionShellState(shells) {
+  let total = 0;
+  let prev = "";
+  for (const shell of shells) {
+    const parsed = Number.parseInt(String(shell.dataset.asciiReactionTotal || "0"), 10);
+    if (Number.isFinite(parsed) && parsed > total) total = parsed;
+    const v = String(shell.dataset.asciiReactionViewer || "").trim();
+    if (v === "+" || v === "-") prev = v;
+  }
+  return { total, prev };
+}
+
 function optimisticBump(noteEl, nextPolarity) {
   const shells = shellsForReactionTarget(noteEl);
   if (!shells.length) return;
-  const primary = shells[0];
-  const prev = (primary.dataset.asciiReactionViewer || "").trim();
-  let total = Number.parseInt(primary.dataset.asciiReactionTotal || "0", 10) || 0;
+  const { total: baseTotal, prev } = aggregateReactionShellState(shells);
+  let total = baseTotal;
   if (prev === "" && (nextPolarity === "+" || nextPolarity === "-")) total += 1;
   for (const shell of shells) {
     shell.dataset.asciiReactionViewer = nextPolarity;

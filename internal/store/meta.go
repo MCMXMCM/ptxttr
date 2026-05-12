@@ -3,7 +3,11 @@ package store
 import (
 	"context"
 	"database/sql"
+	"log/slog"
 )
+
+const trendingCacheSchemaVersionKey = "trending_cache.schema_version"
+const trendingCacheSchemaVersion = "2"
 
 func (s *Store) AppMeta(ctx context.Context, key string) (string, bool, error) {
 	if s == nil || s.db == nil || key == "" {
@@ -60,4 +64,29 @@ func (s *Store) SetAppMetaBatch(ctx context.Context, values map[string]string) e
 		}
 	}
 	return tx.Commit()
+}
+
+// EnsureTrendingCacheSchemaVersion clears persisted trending rows when the stored
+// schema version disagrees with this binary, then records the current version.
+func (s *Store) EnsureTrendingCacheSchemaVersion(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	version, ok, err := s.AppMeta(ctx, trendingCacheSchemaVersionKey)
+	if err != nil {
+		slog.Warn("startup trending cache version check failed", "err", err)
+		return
+	}
+	if ok && version == trendingCacheSchemaVersion {
+		return
+	}
+	if ok && version != "" {
+		if err := s.ClearTrendingCache(ctx, "", ""); err != nil {
+			slog.Warn("startup trending cache clear failed; continuing", "err", err)
+			return
+		}
+	}
+	if err := s.SetAppMeta(ctx, trendingCacheSchemaVersionKey, trendingCacheSchemaVersion); err != nil {
+		slog.Warn("startup trending cache version write failed", "err", err)
+	}
 }

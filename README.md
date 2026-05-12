@@ -4,13 +4,44 @@ A small Go Nostr web app built around server-side relay aggregation, a SQLite ev
 
 The server fans out to a bounded set of relays, persists every raw event into SQLite, projects derived state (profiles, follow lists, relay hints, reply counts, trending, bookmarks, reads) into typed tables, expands web-of-trust reachability from the `follow_edges` projection inside SQLite, and wraps each resolved author set in a small bloom filter for cheap negative membership checks before exact lookups. Hot projection reads also use a bounded in-process LRU (relay hints, profiles, reply stats) with hit/miss counters on `/debug/metrics`. Pages render from local cache first; relay traffic warms the cache in the background.
 
-## Run
+**Easiest path for most people:** run the **macOS desktop app** (or the same stack in a terminal with Go). Hosted AWS / CloudFront deployment is optional and documented separately below.
+
+## Try it (macOS desktop)
+
+**Developer ID + notarized** builds are produced on your Mac (`make desktop-build`, `make desktop-sign`, `make desktop-package`), then attached to a **GitHub Release** manually (or with `gh release upload`).
+
+To build locally on a Mac:
+
+1. Install [Wails v2](https://wails.io/) (`go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0`) and Xcode Command Line Tools.
+2. From the repo root:
+
+```sh
+make desktop-build
+# optional: make desktop-sign      # codesign + notarize + staple (scripts/desktop/sign-mac.sh; secrets in scripts/desktop/signing.env — copy signing.env.example)
+# optional: make desktop-package     # DMG under dist/ — run *after* sign so the bundle stays signed (desktop-package does not rebuild). Filename: dist/ptxt-nstr-desktop-mac-<version>.dmg; set PTXT_NSTR_DESKTOP (or in signing.env), or bump productVersion in cmd/desktop/wails.json
+```
+
+**Ship a signed build on GitHub:** after `make desktop-sign`, create a release from a tag (GitHub **Releases → Draft** or `gh release create v0.1.0 --generate-notes`), then attach either `dist/*.dmg` from `make desktop-package` or a zip of the `.app` created with `ditto -c -k --sequesterRsrc --keepParent` from `cmd/desktop/build/bin/` (plain `zip` can break code signatures). Users download the asset from the release page; you do not commit the signed binary to `git`.
+
+`scripts/desktop/build-mac.sh` invokes `wails build` with `-skipbindings` because the shell does not expose Go methods to the embedded splash (the UI is the loopback `httpx` app only).
+
+The desktop build embeds a short splash, then starts the same HTTP server as `cmd/server` on a random `127.0.0.1` port and opens it in a native window. Your database defaults to `~/Library/Application Support/ptxt-nstr/ptxt-nstr.sqlite` (override with `PTXT_DB`). The desktop preset also sets `PTXT_DESKTOP_MODE=1` (external links open in the default browser). First-launch compaction is off by default (`PTXT_COMPACT_ON_START=false`) so the window stays responsive; optional `pprof` on `127.0.0.1:6060` is off by default in the desktop preset (`PTXT_PPROF_ADDR=off`) to avoid clashing with a dev server.
+
+**Desktop vs hosted URLs:** OpenGraph and canonical links use the request host. Behind CloudFront, `X-Forwarded-Host` supplies your public domain; in the desktop app the host is `127.0.0.1:<port>`, which is fine for local use.
+
+**WebKit note:** the desktop shell uses the system webview. Browser extensions (NIP-07) may behave differently than in Chrome or Safari; read-only and remote-signer flows are the most reliable in embedded WebKit.
+
+**Links:** `http`/`https` links are opened in your **default browser** (not inside the app). Same-origin app links on `127.0.0.1` / `localhost` stay in the window.
+
+**Navigation:** use the **ptxt → Back / Forward** menu (or ⌘[ / ⌘]) for history. Native **two-finger swipe to go back** is not enabled by Wails’ macOS WKWebView wrapper today; that would need an upstream Wails change (`allowsBackForwardNavigationGestures`) or a custom fork.
+
+## Run from source (CLI server)
 
 ```sh
 go run ./cmd/server
 ```
 
-Open `http://127.0.0.1:8080`.
+Open `http://127.0.0.1:8080` (or the address in `PTXT_ADDR`). Use the same environment variables as production; defaults keep the database under `data/ptxt-nstr.sqlite` relative to the process working directory.
 
 ## Architecture
 
@@ -24,7 +55,8 @@ One durable database file lives under `data/` by default:
 
 ### Top-level packages
 
-- `cmd/server` — entrypoint. Applies the runtime memory limit, opens SQLite, builds the `nostrx.Client`, wires the HTTP server, runs startup compaction, and shuts down gracefully on SIGINT/SIGTERM.
+- `cmd/server` — CLI entrypoint. Applies the runtime memory limit, opens SQLite, builds the `nostrx.Client`, wires the HTTP server, runs startup compaction, and shuts down gracefully on SIGINT/SIGTERM.
+- `cmd/desktop` — macOS Wails wrapper around the same `internal/httpx` stack: loopback HTTP server + native window (see **Try it (macOS desktop)** above).
 - `internal/config` — environment loading, defaults, and the canonical relay list.
 - `internal/nostrx` — typed Nostr events, NIP-19 helpers, NIP-27 mention parsing, websocket relay client with optional NIP-77 negentropy (when the SQLite cache is wired), per-relay metrics, and a backoff penalty box.
 - `internal/store` — SQLite schema, migrations, projections, retention/compaction, hydration target queues, trending cache, WoT reachability over `follow_edges`, and bounded sidecar LRU caches.
@@ -159,11 +191,14 @@ The logged-out feed is seeded from a curated whitelist in `data/curated_pubkeys.
 
 ## Configuration
 
+The **desktop** preset (`cmd/desktop`) sets `PTXT_DB` under the per-user config directory, `PTXT_DESKTOP_MODE=1`, `PTXT_COMPACT_ON_START=false`, `PTXT_ACTIVE_VIEWER_TRENDING=false`, and `PTXT_PPROF_ADDR=off` when those keys are unset so first launch stays snappy and does not collide with a dev `pprof` listener.
+
 Useful environment variables (all optional):
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `PTXT_ADDR` | `:8080` | Listen address. |
+| `PTXT_DESKTOP_MODE` | `false` | Set automatically by `cmd/desktop` for the Wails build. Registers the loopback-only `/__ptxt/desktop/open-external` helper so external links open in the system browser. Do not enable on a publicly reachable `cmd/server` unless you understand the tradeoffs. |
 | `PTXT_DB` | `data/ptxt-nstr.sqlite` | SQLite path. |
 | `PTXT_RELAYS` | `wss://relay.primal.net,wss://relay.damus.io,wss://nos.lol` | Default relay set. |
 | `PTXT_METADATA_RELAYS` | `PTXT_RELAYS` | Preferred relays for profile / follow / relay-list hydration. |
@@ -224,6 +259,8 @@ go test ./...
 PTXT_DEBUG=1 go run ./cmd/server
 ```
 
+After `make desktop-build` on macOS, open `cmd/desktop/build/bin/ptxt-nstr.app` once to confirm the splash hands off to the loopback UI (or run `cd cmd/desktop && wails dev` while iterating on the shell).
+
 With debug enabled:
 
 - `/debug/cache` — event, tag, relay-sighting, relay-status, and projection counts.
@@ -264,6 +301,6 @@ PTXT_DB="$(mktemp -t ptxt-nstr.XXXXXX.sqlite)" PTXT_DEBUG=1 PTXT_REQUEST_TIMEOUT
 
 Then repeatedly load `/`, `/feed`, `/relays`, a known `/u/<npub-or-hex>`, and a known `/thread/<eventid>` while watching structured logs plus `/debug/cache` and `/debug/metrics`. Relay fan-out should stay bounded by `MaxRelays`, profile/feed pagination should advance with timestamp + id cursors, repeated requests should grow cache hits, the hydration and trending sweepers should tick on idle gates, and relay failures should not block the whole page.
 
-## CloudFormation deploy
+## Hosted deployment (advanced)
 
-For a single-instance AWS deployment, see `deploy/README.md`.
+For a single-instance AWS deployment, TLS, optional CloudFront in front of the origin, and operational runbooks, see [`deploy/README.md`](deploy/README.md). This path is aimed at operators who want a public site, not at someone who only wants to try the app locally.

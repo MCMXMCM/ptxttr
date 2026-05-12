@@ -159,6 +159,10 @@ need_file "$ARTIFACT_DIR/ptxt-nstr.service.tmpl"
 need_file "$ARTIFACT_DIR/Caddyfile.tmpl"
 need_file "$ARTIFACT_DIR/caddy.service.tmpl"
 need_file "$ARTIFACT_DIR/amazon-cloudwatch-agent.json.tmpl"
+need_file "$ARTIFACT_DIR/maintenance/502.html"
+need_file "$ARTIFACT_DIR/maintenance/503.html"
+need_file "$ARTIFACT_DIR/maintenance/ascritch_icon_black.png"
+need_file "$ARTIFACT_DIR/maintenance/ascritch_icon_white.png"
 
 dnf install -y tar gzip shadow-utils unzip amazon-cloudwatch-agent xfsprogs util-linux
 
@@ -263,7 +267,11 @@ mount_data_volume() {
 
 mount_data_volume "$DATA_VOLUME_ID"
 
-install -d -m 0755 "$APP_DIR/bin" "$DATA_DIR" /etc/ptxt-nstr /etc/caddy /var/log/ptxt-nstr /var/log/caddy
+install -d -m 0755 "$APP_DIR/bin" "$DATA_DIR" /etc/ptxt-nstr /etc/caddy /etc/caddy/maintenance /var/log/ptxt-nstr /var/log/caddy
+install -m 0644 "$ARTIFACT_DIR/maintenance/502.html" /etc/caddy/maintenance/502.html
+install -m 0644 "$ARTIFACT_DIR/maintenance/503.html" /etc/caddy/maintenance/503.html
+install -m 0644 "$ARTIFACT_DIR/maintenance/ascritch_icon_black.png" /etc/caddy/maintenance/ascritch_icon_black.png
+install -m 0644 "$ARTIFACT_DIR/maintenance/ascritch_icon_white.png" /etc/caddy/maintenance/ascritch_icon_white.png
 chown -R "$APP_USER:$APP_USER" "$APP_DIR" "$DATA_DIR" /var/log/ptxt-nstr
 chown -R root:root /etc/ptxt-nstr /etc/caddy /var/log/caddy
 touch /var/log/ptxt-nstr/app.log /var/log/caddy/access.log

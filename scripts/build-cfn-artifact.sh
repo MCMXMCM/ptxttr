@@ -31,6 +31,12 @@ cp "${REPO_ROOT}/deploy/artifact/Caddyfile.tmpl" "${STAGING_DIR}/Caddyfile.tmpl"
 cp "${REPO_ROOT}/deploy/artifact/caddy.service.tmpl" "${STAGING_DIR}/caddy.service.tmpl"
 cp "${REPO_ROOT}/deploy/artifact/amazon-cloudwatch-agent.json.tmpl" "${STAGING_DIR}/amazon-cloudwatch-agent.json.tmpl"
 
+mkdir -p "${STAGING_DIR}/maintenance"
+cp "${REPO_ROOT}/deploy/artifact/maintenance/502.html" "${STAGING_DIR}/maintenance/502.html"
+cp "${REPO_ROOT}/deploy/artifact/maintenance/503.html" "${STAGING_DIR}/maintenance/503.html"
+cp "${REPO_ROOT}/web/static/img/ascritch_icon_black.png" "${STAGING_DIR}/maintenance/ascritch_icon_black.png"
+cp "${REPO_ROOT}/web/static/img/ascritch_icon_white.png" "${STAGING_DIR}/maintenance/ascritch_icon_white.png"
+
 chmod 0755 "${STAGING_DIR}/install.sh" "${STAGING_DIR}/ptxt-nstr"
 
 tar -C "${STAGING_DIR}" -czf "${OUTPUT_DIR}/${ARTIFACT_NAME}" .
