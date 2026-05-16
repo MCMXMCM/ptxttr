@@ -59,7 +59,7 @@ func validateHTTPAPIIngestShape(event Event) error {
 		return errors.New("signed event payload is required")
 	}
 	switch event.Kind {
-	case KindTextNote, KindComment, KindRepost, KindProfileMetadata, KindFollowList, KindBookmarkList, KindRelayListMetadata:
+	case KindTextNote, KindComment, KindRepost, KindProfileMetadata, KindFollowList, KindMuteList, KindBookmarkList, KindRelayListMetadata:
 	case KindReaction:
 		if err := ValidateReactionHTTPAPIShape(event); err != nil {
 			return err
@@ -78,6 +78,27 @@ func validateHTTPAPIIngestShape(event Event) error {
 	}
 	if event.Kind == KindRelayListMetadata {
 		return validateRelayListMetadataForPublish(event)
+	}
+	if event.Kind == KindMuteList {
+		return validateMuteListForPublish(event)
+	}
+	return nil
+}
+
+func validateMuteListForPublish(event Event) error {
+	if len(event.Tags) > MaxMuteListTagRows {
+		return fmt.Errorf("kind %d tag list is too large (max %d)", KindMuteList, MaxMuteListTagRows)
+	}
+	for _, tag := range event.Tags {
+		if len(tag) < 2 {
+			continue
+		}
+		if tag[0] != "p" {
+			continue
+		}
+		if _, err := NormalizePubKey(tag[1]); err != nil {
+			return fmt.Errorf("kind %d p tag has invalid pubkey", KindMuteList)
+		}
 	}
 	return nil
 }

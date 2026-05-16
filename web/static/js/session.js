@@ -42,7 +42,7 @@ const LOGIN_METHOD_META = {
   readonly: { label: "Npub Login", canSign: false, readOnly: true, needsExtension: false, needsRemoteSigner: false },
   nip07: { label: "Browser Extension", canSign: true, readOnly: false, needsExtension: true, needsRemoteSigner: false },
   yolo: { label: "Nsec Login", canSign: true, readOnly: false, needsExtension: false, needsRemoteSigner: false },
-  ephemeral: { label: "Ephemeral Login", canSign: true, readOnly: false, needsExtension: false, needsRemoteSigner: false },
+  ephemeral: { label: "Sign up", canSign: true, readOnly: false, needsExtension: false, needsRemoteSigner: false },
   nip46: { label: "Remote Signer", canSign: false, readOnly: false, needsExtension: false, needsRemoteSigner: true },
 };
 
@@ -53,6 +53,25 @@ function invalidateSessionCache() {
   sessionCacheRaw = null;
   sessionCacheValue = {};
 }
+
+export function shortPubkey(pubkey) {
+  if (!pubkey) return "";
+  if (pubkey.length <= 12) return pubkey;
+  return `${pubkey.slice(0, 8)}…${pubkey.slice(-4)}`;
+}
+
+/** Shared with settings publish: mirrors server `nostrx.DisplayName` (display_name, then name, then short hex). */
+export function sessionAuthorLabelFromMetadata(meta, pubkeyHex) {
+  const display = String(meta?.display_name ?? "").trim();
+  const name = String(meta?.name ?? "").trim();
+  if (display) return display;
+  if (name) return name;
+  return shortPubkey(pubkeyHex);
+}
+
+let viewerProfileLabelFetch = null;
+/** When `/api/profile` returned no display_name/name for this pubkey, skip repeat fetches until pubkey changes. */
+let viewerProfileEmptyResultPubkey = "";
 
 export function getSession() {
   const raw = localStorage.getItem(KEY) || "";
@@ -351,8 +370,11 @@ export function withRelayParams(href) {
 export function updateSessionLinks() {
   const session = getSession();
   const pubkey = normalizedPubkey(session);
+  if (!pubkey) viewerProfileEmptyResultPubkey = "";
   const methodLabel = loginMethodLabel(session);
   const short = pubkey ? shortPubkey(pubkey) : "";
+  const sessionProfileLabel = String(session.profileLabel || "").trim();
+  const displayLabel = pubkey ? sessionProfileLabel || short : "Guest";
   const feedURL = sessionFeedURL();
   const readsURL = sessionReadsURL();
   document.querySelectorAll("[data-session-feed-link]").forEach((link) => {
@@ -379,10 +401,10 @@ export function updateSessionLinks() {
     if (link instanceof HTMLAnchorElement) link.href = withRelayParams("/notifications");
   });
   document.querySelectorAll("[data-session-label]").forEach((node) => {
-    node.textContent = pubkey ? `Logged in via ${methodLabel} as ${short}` : "Not logged in";
+    node.textContent = pubkey ? `Logged in via ${methodLabel} as ${displayLabel}` : "Not logged in";
   });
   document.querySelectorAll("[data-session-display-name]").forEach((node) => {
-    node.textContent = pubkey ? shortPubkey(pubkey) : "Guest";
+    node.textContent = displayLabel;
   });
   document.querySelectorAll("[data-session-cta]").forEach((node) => {
     if (pubkey) {
@@ -424,7 +446,16 @@ export function updateSessionLinks() {
   document.querySelectorAll("[data-session-user-copy]").forEach((node) => {
     node.hidden = !pubkey;
   });
+  document.querySelectorAll("[data-session-logout-wrap]").forEach((node) => {
+    node.hidden = !pubkey;
+  });
   document.querySelectorAll(".rail-user").forEach((node) => {
+    node.dataset.loggedIn = pubkey ? "1" : "0";
+  });
+  document.querySelectorAll(".mobile-menu-header").forEach((node) => {
+    node.dataset.loggedIn = pubkey ? "1" : "0";
+  });
+  document.querySelectorAll(".mobile-menu-profile").forEach((node) => {
     node.dataset.loggedIn = pubkey ? "1" : "0";
   });
   document.querySelectorAll("[data-profile-edit-section]").forEach((node) => {
@@ -436,19 +467,66 @@ export function updateSessionLinks() {
   document.querySelectorAll("[data-profile-actions]").forEach((node) => {
     const profilePubkey = String(node.getAttribute("data-profile-pubkey") || "");
     const isOwnProfile = Boolean(pubkey) && profilePubkey === pubkey;
-    const followButton = node.querySelector("[data-follow-toggle]");
-    if (followButton) followButton.hidden = isOwnProfile;
+    const followMute = node.querySelector("[data-profile-follow-mute]");
+    if (followMute) followMute.hidden = isOwnProfile;
     const editLink = node.querySelector("[data-own-profile-edit]");
     if (editLink) editLink.hidden = !isOwnProfile;
     const logoutButton = node.querySelector("[data-own-profile-logout]");
     if (logoutButton) logoutButton.hidden = !isOwnProfile;
   });
+  syncProfileFollowGuestAria(document);
+  if (pubkey && !sessionProfileLabel && viewerProfileEmptyResultPubkey !== pubkey) {
+    void fetchAndPersistViewerProfileLabel(pubkey);
+  }
 }
 
-function shortPubkey(pubkey) {
-  if (!pubkey) return "";
-  if (pubkey.length <= 12) return pubkey;
-  return `${pubkey.slice(0, 8)}…${pubkey.slice(-4)}`;
+async function fetchAndPersistViewerProfileLabel(expectedPubkey) {
+  const wantPub = normalizePubkey(expectedPubkey);
+  if (viewerProfileLabelFetch) {
+    await viewerProfileLabelFetch.catch(() => {});
+    if (String(getSession().profileLabel || "").trim()) return;
+    if (viewerProfileEmptyResultPubkey === wantPub) return;
+  }
+  if (viewerProfileEmptyResultPubkey === wantPub) return;
+
+  const promise = (async () => {
+    try {
+      const response = await fetchWithSession("/api/profile");
+      if (!response.ok) return;
+      const data = await response.json();
+      const rowPub = normalizePubkey(data?.pubkey);
+      if (!rowPub || rowPub !== wantPub) return;
+      if (normalizedPubkey() !== rowPub) return;
+      const display = String(data.display_name ?? "").trim();
+      const name = String(data.name ?? "").trim();
+      if (!display && !name) {
+        viewerProfileEmptyResultPubkey = rowPub;
+        return;
+      }
+      const label = display || name;
+      const current = getSession();
+      if (normalizePubkey(current.pubkey) !== rowPub) return;
+      if (String(current.profileLabel || "").trim()) return;
+      setSession({ ...current, profileLabel: label });
+    } catch {
+      // keep short-hex fallback; allow retry on next navigation
+    } finally {
+      if (viewerProfileLabelFetch === promise) viewerProfileLabelFetch = null;
+    }
+  })();
+  viewerProfileLabelFetch = promise;
+  await promise;
+}
+
+/** Profile follow guest chrome; also invoked from `updateSessionLinks` and after SPA subtree inject. */
+export function syncProfileFollowGuestAria(root = document) {
+  const guest = !normalizedPubkey();
+  root.querySelectorAll("[data-profile-actions]").forEach((node) => {
+    const followToggle = node.querySelector("[data-profile-follow-mute] [data-follow-toggle]");
+    if (!(followToggle instanceof HTMLButtonElement)) return;
+    if (guest) followToggle.setAttribute("aria-disabled", "true");
+    else followToggle.removeAttribute("aria-disabled");
+  });
 }
 
 export function updateRelayAwareLinks() {
@@ -479,24 +557,6 @@ document.addEventListener("submit", (event) => {
   const form = event.target.closest("form[method='get']");
   if (!form) return;
   form.querySelector("input[name='relays']")?.remove();
-});
-
-document.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-fill-session-pubkey]");
-  if (!button) return;
-  const input = document.querySelector("[data-pubkey-input]");
-  if (input) input.value = normalizedPubkey();
-});
-
-document.addEventListener("click", (event) => {
-  const button = event.target.closest("[data-load-session-feed]");
-  if (!button) return;
-  const pubkey = normalizedPubkey();
-  if (!pubkey) {
-    window.location.href = "/login";
-    return;
-  }
-  window.location.href = sessionFeedURL();
 });
 
 document.addEventListener("click", (event) => {
@@ -535,7 +595,10 @@ function normalizeSessionState(value) {
   const npub = String(value.npub || "").trim();
   const bunker = String(value.bunker || "").trim();
   if (!method && !pubkey && !npub && !bunker) return {};
-  return {
+  let profileLabel = String(value.profileLabel || "").trim();
+  if (profileLabel.length > 128) profileLabel = profileLabel.slice(0, 128);
+  if (!pubkey) profileLabel = "";
+  const out = {
     ...value,
     method,
     pubkey,
@@ -546,9 +609,12 @@ function normalizeSessionState(value) {
     needsExtension: Boolean(value.needsExtension ?? meta.needsExtension),
     needsRemoteSigner: Boolean(value.needsRemoteSigner ?? meta.needsRemoteSigner),
   };
+  if (profileLabel) out.profileLabel = profileLabel;
+  else delete out.profileLabel;
+  return out;
 }
 
-function normalizePubkey(pubkey) {
+export function normalizePubkey(pubkey) {
   const value = String(pubkey || "").trim();
   if (!value) return "";
   if (/^[0-9a-fA-F]{64}$/.test(value)) return value.toLowerCase();

@@ -40,6 +40,21 @@ func TestValidateIngestEventHTTPAPI_RejectsInvalidRelayListMetadata(t *testing.T
 	}
 }
 
+func TestValidateIngestEventHTTPAPI_AcceptsMuteList(t *testing.T) {
+	pk := strings.Repeat("c", 64)
+	ev := signedTestEvent(t, KindMuteList, "", [][]string{{"p", pk}, {"t", "nsfw"}})
+	if err := ValidateIngestEvent(IngestFromHTTPAPI, ev); err != nil {
+		t.Fatalf("ValidateIngestEvent() = %v", err)
+	}
+}
+
+func TestValidateIngestEventHTTPAPI_RejectsMuteListInvalidPTag(t *testing.T) {
+	ev := signedTestEvent(t, KindMuteList, "", [][]string{{"p", "bad"}})
+	if err := ValidateIngestEvent(IngestFromHTTPAPI, ev); err == nil {
+		t.Fatal("expected error for invalid mute list p tag")
+	}
+}
+
 func TestValidateIngestEventRelay_SkipsKindAllowlist(t *testing.T) {
 	ev := signedTestEvent(t, 9999, "x", nil)
 	ev.RelayURL = "wss://relay.example.com"

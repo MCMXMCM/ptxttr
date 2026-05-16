@@ -5,7 +5,15 @@ import {
   stripViewerPrefSearchParams,
 } from "./session.js";
 import { initMutations, viewerHasAtLeastOneFollow } from "./mutations.js";
+import { activeSignerState } from "./signer.js";
 import {
+  BLOSSOM_DEFAULT_SERVER_URLS,
+  getBlossomPresetIdForURLs,
+  getBlossomServerURLs,
+  normalizeBlossomBaseUrl,
+  resetBlossomServerURLsToDefaults,
+  setBlossomPreset,
+  setBlossomServerURLs,
   WEB_OF_TRUST_SEED_PRESETS,
   getEffectiveLoggedOutWebOfTrustSeed,
   getImageModePref,
@@ -26,6 +34,7 @@ import {
 let initialized = false;
 let mobileMenuEscapeBound = false;
 let mobileAppNavHeightBound = false;
+let blossomVisibilityBound = false;
 
 /** Matches `app.css` @media (max-width: 700px) feed-shell layout. */
 const mobileShellLayoutQuery = window.matchMedia("(max-width: 700px)");
@@ -144,7 +153,7 @@ export function wireAvatarImageFallbacks(root = document) {
   root.querySelectorAll(".profile-avatar-wrap > img.profile-avatar").forEach((img) => {
     bindAvatarImgOnce(img, () => {
       const div = document.createElement("div");
-      div.className = "profile-avatar profile-avatar-fallback";
+      div.className = "profile-avatar-fallback";
       div.setAttribute("aria-hidden", "true");
       div.textContent = "@";
       img.replaceWith(div);
@@ -224,6 +233,12 @@ export function initLayoutUI(root = document) {
   bindReadsSortSelect(root);
   bindReadsTrendingTimeframe(root);
   bindImageModeToggle(root);
+  syncBlossomSettingsVisibility(root);
+  bindBlossomSettings(root);
+  if (!blossomVisibilityBound) {
+    blossomVisibilityBound = true;
+    window.addEventListener("ptxt:session", () => syncBlossomSettingsVisibility(document));
+  }
   bindWebOfTrustControls(root);
   bindFeedWebOfTrustControls(root);
   syncStoredWebOfTrustAwareLinks(root);
@@ -407,6 +422,73 @@ export function syncLocationFromStoredPrefs() {
   stripViewerPrefSearchParams(url);
   const next = `${url.pathname}${url.search}${url.hash}`;
   if (next !== current) history.replaceState({}, "", next);
+}
+
+function syncBlossomSettingsVisibility(root) {
+  const section = root.querySelector("[data-blossom-settings-section]");
+  if (!section) return;
+  const signer = activeSignerState();
+  section.hidden = !(signer.isLoggedIn && signer.canSign);
+}
+
+function bindBlossomSettings(root) {
+  const wrap = root.querySelector("[data-blossom-settings]");
+  if (!wrap || wrap._ptxtBlossomBound) return;
+  wrap._ptxtBlossomBound = true;
+  const radios = Array.from(wrap.querySelectorAll("input[data-blossom-preset]"));
+  const customInput = wrap.querySelector("[data-blossom-custom-url]");
+  const resetBtn = wrap.querySelector("[data-blossom-reset]");
+
+  const syncFromStorage = () => {
+    const urls = getBlossomServerURLs();
+    const preset = getBlossomPresetIdForURLs(urls);
+    radios.forEach((r) => {
+      if (r instanceof HTMLInputElement) {
+        r.checked = r.dataset.blossomPreset === preset;
+      }
+    });
+    if (customInput instanceof HTMLInputElement) {
+      const isCustom = preset === "custom";
+      customInput.disabled = !isCustom;
+      if (isCustom) {
+        customInput.value = urls[0] || "";
+      }
+    }
+  };
+
+  radios.forEach((r) => {
+    r.addEventListener("change", () => {
+      if (!(r instanceof HTMLInputElement) || !r.checked) return;
+      const id = r.dataset.blossomPreset || "";
+      if (id === "custom") {
+        if (customInput instanceof HTMLInputElement) {
+          customInput.disabled = false;
+          const urls = getBlossomServerURLs();
+          customInput.value = urls[0] || "";
+          customInput.focus();
+        }
+        return;
+      }
+      setBlossomPreset(id === "nostr_build" ? "nostr_build" : "primal");
+      syncFromStorage();
+    });
+  });
+
+  customInput?.addEventListener("change", () => {
+    if (!(customInput instanceof HTMLInputElement) || customInput.disabled) return;
+    const v = normalizeBlossomBaseUrl(customInput.value);
+    if (!v) return;
+    const rest = BLOSSOM_DEFAULT_SERVER_URLS.filter((x) => x !== v);
+    setBlossomServerURLs([v, ...rest]);
+    syncFromStorage();
+  });
+
+  resetBtn?.addEventListener("click", () => {
+    resetBlossomServerURLsToDefaults();
+    syncFromStorage();
+  });
+
+  syncFromStorage();
 }
 
 function bindImageModeToggle(root) {

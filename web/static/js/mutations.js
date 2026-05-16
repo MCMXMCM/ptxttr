@@ -1,13 +1,33 @@
-import { fetchWithSession, getSession, normalizedPubkey, normalizeRelayURL, saveSelectedRelays, selectedRelays, withRelayParams } from "./session.js";
+import { positionPopoverNearAnchor } from "./popover_anchor.js";
+import {
+  fetchWithSession,
+  getSession,
+  normalizedPubkey,
+  normalizePubkey,
+  normalizeRelayURL,
+  saveSelectedRelays,
+  selectedRelays,
+  sessionAuthorLabelFromMetadata,
+  setSession,
+  shortPubkey,
+  syncProfileFollowGuestAria,
+  withRelayParams,
+} from "./session.js";
 import { activeSignerState, signEventDraft } from "./signer.js";
 import { initBookmarks, publishSignedEvent } from "./bookmarks.js";
+import { blossomUploadBlob } from "./blossom.js";
+import { getBlossomServerURLs } from "./sort-prefs.js";
 import { MENTION_TOKEN_RE, mentionPubKey } from "./nip27.js";
 
 const MENTION_LIMIT = 12;
 const MENTION_CACHE_LIMIT = 24;
 const MENTION_MENU_DEBOUNCE_MS = 30;
 const FOLLOW_CONTACT_LIMIT = 600;
+// Must match nostrx.MaxMuteListTagRows (Go publish + store cap).
+const MUTE_TAG_LIMIT = 2000;
 const MENTION_MENU_GAP_PX = 6;
+/** Must match `THREAD_INLINE_REPLY_PENDING_KEY` in web/static/js/thread.js */
+const THREAD_INLINE_REPLY_PENDING_KEY = "ptxt-inline-reply-v1";
 const CARET_STYLE_KEYS = [
   "borderBottomWidth",
   "borderLeftWidth",
@@ -28,6 +48,7 @@ const CARET_STYLE_KEYS = [
 ];
 const mentionCandidateCache = new Map();
 const followStateCache = new Map();
+const muteStateCache = new Map();
 
 function composeState(root) {
   const dialog = root.querySelector("[data-composer-dialog]");
@@ -65,11 +86,28 @@ function composeState(root) {
     caretMirror: null,
     backdropPointerDown: false,
     backdropPointerUp: false,
+    mediaRow: dialog.querySelector("[data-composer-media-row]"),
+    imageInput: dialog.querySelector("[data-composer-image-input]"),
+    addImageBtn: dialog.querySelector("[data-composer-add-image]"),
+    attachmentStrip: dialog.querySelector("[data-composer-attachments]"),
+    blossomAttachments: [],
   };
+}
+
+const COMPOSER_PLACEHOLDER_PREV = "ptxtPrevPlaceholder";
+
+function inlineReplyStatusMirrorText(host, message) {
+  const to = host?.dataset?.inlineReplyingTo;
+  const tail = message || "";
+  if (to) return `replying to @${to}\n${tail}`;
+  return tail;
 }
 
 function setStatus(state, message) {
   if (state?.status) state.status.textContent = message;
+  const inlineHost = state?.form?.closest(".thread-inline-reply");
+  const mirror = inlineHost?.querySelector("[data-inline-composer-status]");
+  if (mirror) mirror.textContent = inlineReplyStatusMirrorText(inlineHost, message);
 }
 
 function clearComposeContext(state) {
@@ -86,6 +124,70 @@ function clearRepostContext(state) {
   if (state.repostRelay) state.repostRelay.value = "";
   if (state.previewContent) state.previewContent.textContent = "";
   if (state.previewWrap) state.previewWrap.hidden = true;
+}
+
+function clearBlossomComposer(state) {
+  if (!state) return;
+  state.blossomAttachments = [];
+  if (state.attachmentStrip) state.attachmentStrip.innerHTML = "";
+  if (state.imageInput) state.imageInput.value = "";
+}
+
+/** Shared content/attachment merge and publish validation rules for composer UI + submit. */
+function composerPublishContent(state) {
+  const rawContent = state?.content instanceof HTMLTextAreaElement ? state.content.value.trim() : "";
+  const mode = state.mode?.value || "post";
+  const atts = state.blossomAttachments || [];
+  const blossomLines = atts.map((a) => a.descriptor?.url).filter(Boolean).join("\n");
+  const mergedRaw = [rawContent, blossomLines].filter(Boolean).join("\n").trim();
+  let validityMsg = "";
+  if (mode === "repost" && !rawContent && atts.length > 0) {
+    validityMsg = "Remove attached images for a pure repost, or add text for a quote post.";
+  } else if (mode !== "repost" && !mergedRaw) {
+    validityMsg = "Content or at least one image is required.";
+  }
+  return { rawContent, mode, atts, mergedRaw, validityMsg };
+}
+
+/** HTML5 constraint validation for publish (supports image-only posts; mirrors submit rules). */
+function syncComposerPublishValidity(state, signer = activeSignerState()) {
+  const ta = state?.content;
+  const form = state?.form;
+  if (!(ta instanceof HTMLTextAreaElement) || !(form instanceof HTMLFormElement)) return;
+  const { validityMsg } = composerPublishContent(state);
+  ta.setCustomValidity(validityMsg);
+  const canSign = signer.isLoggedIn && signer.canSign;
+  if (state.submit instanceof HTMLButtonElement) {
+    state.submit.disabled = !canSign || !form.checkValidity();
+  }
+}
+
+function syncComposerMediaRow(state, signer = activeSignerState()) {
+  if (!state?.mediaRow) return;
+  const can = signer.isLoggedIn && signer.canSign;
+  const mode = state.mode?.value || "post";
+  const repost = mode === "repost";
+  const quote = repost && Boolean((state.content?.value || "").trim());
+  state.mediaRow.hidden = !can || (repost && !quote);
+}
+
+function syncComposerControls(state) {
+  const signer = activeSignerState();
+  syncComposerMediaRow(state, signer);
+  syncComposerPublishValidity(state, signer);
+}
+
+function renderComposerAttachments(state) {
+  if (!state?.attachmentStrip) return;
+  state.attachmentStrip.innerHTML = (state.blossomAttachments || [])
+    .map(
+      (att, index) => `<li class="composer-attachment-item">
+      <span class="composer-attachment-label">${escapeHTML(att.name || "image")}</span>
+      <button type="button" class="link-button" data-composer-remove-attachment="${index}">remove</button>
+    </li>`,
+    )
+    .join("");
+  syncComposerPublishValidity(state);
 }
 
 function buildReferenceTags(kind, targetID, targetPubKey, targetRelay) {
@@ -124,6 +226,46 @@ function normalizeFollowCandidate(raw) {
 function setFollowButtonState(button, following) {
   button.setAttribute("aria-pressed", following ? "true" : "false");
   button.textContent = following ? "Following" : "Follow";
+}
+
+let loginRequiredFollowPopover = null;
+let loginRequiredFollowPopoverOutsideWired = false;
+let followClickDelegateBound = false;
+
+function ensureLoginRequiredFollowPopover() {
+  if (loginRequiredFollowPopover) return loginRequiredFollowPopover;
+  loginRequiredFollowPopover = document.createElement("div");
+  loginRequiredFollowPopover.id = "ptxt-login-required-popover";
+  loginRequiredFollowPopover.textContent = "Login required";
+  loginRequiredFollowPopover.setAttribute("role", "status");
+  loginRequiredFollowPopover.setAttribute("aria-live", "polite");
+  loginRequiredFollowPopover.hidden = true;
+  document.body.appendChild(loginRequiredFollowPopover);
+  return loginRequiredFollowPopover;
+}
+
+function wireLoginRequiredFollowPopoverOutsideClose() {
+  if (loginRequiredFollowPopoverOutsideWired) return;
+  loginRequiredFollowPopoverOutsideWired = true;
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      const p = ensureLoginRequiredFollowPopover();
+      if (p.hidden) return;
+      const t = event.target;
+      if (t && (p === t || p.contains(t))) return;
+      if (t && t.closest?.("[data-follow-toggle][data-pubkey]")) return;
+      p.hidden = true;
+    },
+    true,
+  );
+}
+
+function showLoginRequiredFollowPopover(anchor) {
+  const pop = ensureLoginRequiredFollowPopover();
+  positionPopoverNearAnchor(anchor, pop, { maxWidth: 320, fallbackHeight: 48 });
+  pop.hidden = false;
+  wireLoginRequiredFollowPopoverOutsideClose();
 }
 
 function followStateFor(viewer) {
@@ -205,12 +347,196 @@ function refreshFollowButtons(root, state) {
 
 function bindFollowActions(root) {
   const viewer = normalizedPubkey();
-  if (!viewer) return;
-  void loadFollowState(viewer).then((state) => refreshFollowButtons(root, state));
-  if (root._ptxtFollowDelegateBound) return;
-  root._ptxtFollowDelegateBound = true;
-  root.addEventListener("click", (event) => {
+  if (viewer) {
+    void loadFollowState(viewer).then((state) => refreshFollowButtons(root, state));
+  }
+  syncProfileFollowGuestAria(root);
+  if (followClickDelegateBound) return;
+  followClickDelegateBound = true;
+  document.addEventListener("click", (event) => {
     const button = event.target.closest?.("[data-follow-toggle][data-pubkey]");
+    if (!(button instanceof HTMLButtonElement)) return;
+    event.preventDefault();
+    const target = String(button.getAttribute("data-pubkey") || "").toLowerCase();
+    if (!target) return;
+    const signer = activeSignerState();
+    if (!signer.isLoggedIn) {
+      showLoginRequiredFollowPopover(button);
+      return;
+    }
+    if (button.dataset.loading === "1") return;
+    const currentViewer = normalizedPubkey();
+    if (!currentViewer || target === currentViewer) return;
+    if (!signer.canSign) {
+      button.dataset.error = "1";
+      button.title = "A signing-capable login is required.";
+      return;
+    }
+    button.dataset.loading = "1";
+    button.classList.add("is-pressed");
+    button.disabled = true;
+    void loadFollowState(currentViewer)
+      .then(async (state) => {
+        const nextFollowing = new Set(state.following);
+        const isFollowing = nextFollowing.has(target);
+        if (isFollowing) nextFollowing.delete(target);
+        else nextFollowing.add(target);
+        await publishFollowList(currentViewer, nextFollowing, state.relayHints);
+        state.following = nextFollowing;
+        refreshFollowButtons(document, state);
+      })
+      .catch((error) => {
+        console.warn("follow: publish failed", error);
+      })
+      .finally(() => {
+        delete button.dataset.loading;
+        button.classList.remove("is-pressed");
+        button.disabled = false;
+      });
+  });
+}
+
+function muteStateFor(viewer) {
+  if (!viewer) return { muted: new Set(), loaded: false, loading: null };
+  const cached = muteStateCache.get(viewer);
+  if (cached) return cached;
+  const state = { muted: new Set(), loaded: false, loading: null };
+  muteStateCache.set(viewer, state);
+  return state;
+}
+
+/** Kind-10000 `p` tags from the muted set (sorted hex). Over-cap uses the first MUTE_TAG_LIMIT pubkeys in sort order. */
+function tagsFromMutedPubkeys(mutedSet) {
+  const keys = [...mutedSet].sort();
+  const sliced = keys.slice(0, MUTE_TAG_LIMIT);
+  return sliced.map((pk) => ["p", pk]);
+}
+
+function ensureMuteSessionListener() {
+  if (ensureMuteSessionListener.done) return;
+  ensureMuteSessionListener.done = true;
+  window.addEventListener("ptxt:session", () => {
+    muteStateCache.clear();
+    const viewer = normalizedPubkey();
+    if (!viewer) return;
+    refreshMuteButtonsAfterLoad(viewer, document);
+  });
+}
+
+function refreshMuteButtonsAfterLoad(viewer, root) {
+  if (!viewer) return;
+  void loadMuteState(viewer).then((state) => refreshMuteButtons(root, state));
+}
+
+async function loadMuteState(viewer) {
+  if (!viewer) return muteStateFor("");
+  const state = muteStateFor(viewer);
+  if (state.loaded || state.loading) {
+    if (state.loading) await state.loading;
+    return state;
+  }
+  state.loading = (async () => {
+    try {
+      const response = await fetchWithSession("/api/mute-list");
+      if (!response.ok) {
+        console.warn("mute: /api/mute-list HTTP", response.status);
+        muteStateCache.delete(viewer);
+        return;
+      }
+      const payload = await response.json();
+      if (!Array.isArray(payload?.muted_pubkeys)) {
+        console.warn("mute: /api/mute-list missing or invalid muted_pubkeys");
+        muteStateCache.delete(viewer);
+        return;
+      }
+      const respHex = normalizePubkey(payload?.pubkey);
+      const viewerHex = normalizePubkey(viewer);
+      if (!respHex || !viewerHex || respHex !== viewerHex) {
+        console.warn("mute: /api/mute-list pubkey mismatch");
+        muteStateCache.delete(viewer);
+        return;
+      }
+      const rawList = payload.muted_pubkeys;
+      state.muted = new Set();
+      for (const pk of rawList) {
+        const h = String(pk || "").toLowerCase();
+        if (h) state.muted.add(h);
+      }
+      state.loaded = true;
+    } catch (error) {
+      console.warn("mute: /api/mute-list request failed", error);
+      muteStateCache.delete(viewer);
+    } finally {
+      state.loading = null;
+    }
+  })();
+  await state.loading;
+  return state;
+}
+
+function setMuteButtonState(button, muted) {
+  button.setAttribute("aria-pressed", muted ? "true" : "false");
+  if (button.hasAttribute("data-mute-bracket-labels")) {
+    button.textContent = muted ? "[unmute]" : "[mute]";
+  } else {
+    button.textContent = muted ? "Unmute" : "Mute";
+  }
+}
+
+/** Hide or show note/reply shells whose `data-reply-pubkey` matches (linear layout / feed). */
+function setReplyPubkeyElementsHidden(pubkeyHex, hidden) {
+  const target = normalizePubkey(pubkeyHex) || String(pubkeyHex || "").trim().toLowerCase();
+  if (!target) return;
+  document.querySelectorAll("[data-reply-pubkey]").forEach((el) => {
+    const pk = normalizePubkey(el.getAttribute("data-reply-pubkey") || "");
+    if (pk !== target) return;
+    el.toggleAttribute("hidden", hidden);
+  });
+}
+
+export function syncMuteToggleButtons(root = document) {
+  const viewer = normalizedPubkey();
+  if (!viewer) {
+    root.querySelectorAll("[data-mute-toggle][data-pubkey]").forEach((node) => {
+      if (node instanceof HTMLElement) node.hidden = true;
+    });
+    return;
+  }
+  refreshMuteButtonsAfterLoad(viewer, root);
+}
+
+async function publishMuteList(tags, content) {
+  const tagRows = (tags || []).map((row) => (Array.isArray(row) ? row.slice() : row));
+  const draft = {
+    kind: 10000,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: tagRows.length > MUTE_TAG_LIMIT ? tagRows.slice(0, MUTE_TAG_LIMIT) : tagRows,
+    content: String(content ?? ""),
+  };
+  const signed = await signEventDraft(draft, getSession());
+  await publishSignedEvent(signed);
+}
+
+function refreshMuteButtons(root, state) {
+  const viewer = normalizedPubkey();
+  root.querySelectorAll("[data-mute-toggle][data-pubkey]").forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) return;
+    const target = String(button.getAttribute("data-pubkey") || "").toLowerCase();
+    if (!target) return;
+    button.hidden = !viewer || target === viewer;
+    if (state.loaded) setMuteButtonState(button, state.muted.has(target));
+  });
+}
+
+function bindMuteActions(root) {
+  ensureMuteSessionListener();
+  const viewer = normalizedPubkey();
+  if (!viewer) return;
+  refreshMuteButtonsAfterLoad(viewer, root);
+  if (root._ptxtMuteDelegateBound) return;
+  root._ptxtMuteDelegateBound = true;
+  root.addEventListener("click", (event) => {
+    const button = event.target.closest?.("[data-mute-toggle][data-pubkey]");
     if (!(button instanceof HTMLButtonElement)) return;
     event.preventDefault();
     if (button.dataset.loading === "1") return;
@@ -230,18 +556,33 @@ function bindFollowActions(root) {
     button.dataset.loading = "1";
     button.classList.add("is-pressed");
     button.disabled = true;
-    void loadFollowState(currentViewer)
+    void loadMuteState(currentViewer)
       .then(async (state) => {
-        const nextFollowing = new Set(state.following);
-        const isFollowing = nextFollowing.has(target);
-        if (isFollowing) nextFollowing.delete(target);
-        else nextFollowing.add(target);
-        await publishFollowList(currentViewer, nextFollowing, state.relayHints);
-        state.following = nextFollowing;
-        refreshFollowButtons(root, state);
+        const shouldMute = !state.muted.has(target);
+        const nextMuted = new Set(state.muted);
+        if (shouldMute) {
+          if (nextMuted.size >= MUTE_TAG_LIMIT) {
+            throw new Error("mute list exceeds tag limit");
+          }
+          nextMuted.add(target);
+        } else {
+          nextMuted.delete(target);
+        }
+        const nextTags = tagsFromMutedPubkeys(nextMuted);
+        if (
+          !window.confirm(
+            "Publish this mute list as public hex pubkeys only (p tags). Other fields on your kind 10000 event from other clients (for example encrypted entries) will be removed. Continue?",
+          )
+        ) {
+          return;
+        }
+        await publishMuteList(nextTags, "");
+        state.muted = nextMuted;
+        refreshMuteButtons(root, state);
+        setReplyPubkeyElementsHidden(target, shouldMute);
       })
       .catch((error) => {
-        console.warn("follow: publish failed", error);
+        console.warn("mute: publish failed", error);
       })
       .finally(() => {
         delete button.dataset.loading;
@@ -577,6 +918,7 @@ function insertMentionAtTrigger(state, candidate) {
   state.mentionByName.set(candidate.name.toLowerCase(), candidate);
   closeMentionMenu(state);
   renderComposerOverlay(state);
+  syncComposerPublishValidity(state);
 }
 
 function updateMentionMenu(state) {
@@ -601,29 +943,324 @@ function scheduleMentionMenuUpdate(state) {
   }, MENTION_MENU_DEBOUNCE_MS);
 }
 
+/** Clears document-level Escape listener for the thread inline composer (at most one). */
+let threadInlineEscTeardown = null;
+
+/** ResizeObserver + textarea listener for the thread inline reply rail column. */
+let threadInlineRailTeardown = null;
+
+/**
+ * True when this draft sits among other direct replies to the same parent (show a full
+ * descending rail beside the form). False for a lone direct reply (short connector above
+ * the avatar only).
+ */
+function threadInlineHasSiblingBranch(anchorEl) {
+  if (!(anchorEl instanceof Element)) return false;
+  const replyRoot = document.getElementById("thread-replies");
+  if (!replyRoot) return false;
+  if (anchorEl.matches?.("article.note")) {
+    return replyRoot.querySelectorAll(":scope > .comment").length >= 1;
+  }
+  if (anchorEl.classList?.contains?.("comment")) {
+    const parent = anchorEl.parentElement;
+    if (parent?.matches?.(".comments")) {
+      return parent.querySelectorAll(":scope > .comment").length >= 2;
+    }
+  }
+  return false;
+}
+
+function syncThreadInlineRailGlyphs(host) {
+  if (host?.dataset?.inlineRailMode !== "branch") return;
+  const pre = host?.querySelector?.(".thread-inline-reply__rail-pre");
+  const row = host?.querySelector?.(".thread-inline-reply__rail-row");
+  if (!(pre instanceof HTMLElement) || !(row instanceof HTMLElement)) return;
+  const h = row.clientHeight;
+  const cs = getComputedStyle(pre);
+  const fs = parseFloat(cs.fontSize) || 16;
+  const lhRaw = cs.lineHeight;
+  const lhParsed = parseFloat(lhRaw);
+  const linePx = Number.isFinite(lhParsed) && lhParsed > 0 ? lhParsed : fs * 1.25;
+  let lines = Math.ceil(h / linePx) + 4;
+  if (!Number.isFinite(lines) || lines < 12) lines = 12;
+  lines = Math.min(lines, 400);
+  pre.textContent = Array.from({ length: lines }, () => "|").join("\n");
+}
+
+function bindThreadInlineRailSync(host, state) {
+  threadInlineRailTeardown?.();
+  threadInlineRailTeardown = null;
+  const preClear = host.querySelector(".thread-inline-reply__rail-pre");
+  if (host.dataset.inlineRailMode !== "branch") {
+    if (preClear) preClear.textContent = "";
+    return;
+  }
+  const row = host.querySelector(".thread-inline-reply__rail-row");
+  const sync = () => {
+    if (!host.isConnected) return;
+    syncThreadInlineRailGlyphs(host);
+  };
+  let ro;
+  if (row && typeof ResizeObserver !== "undefined") {
+    ro = new ResizeObserver(() => {
+      sync();
+    });
+    ro.observe(row);
+  }
+  state.content?.addEventListener("input", sync);
+  threadInlineRailTeardown = () => {
+    ro?.disconnect();
+    state.content?.removeEventListener("input", sync);
+    threadInlineRailTeardown = null;
+  };
+  queueMicrotask(() => {
+    sync();
+    requestAnimationFrame(sync);
+  });
+}
+
+function restoreComposerFormToDialog(state) {
+  if (!state?.form || !state.dialog) return;
+  const status = state.status;
+  if (status?.parentNode === state.dialog) {
+    status.insertAdjacentElement("afterend", state.form);
+  } else {
+    state.dialog.append(state.form);
+  }
+}
+
+function dismissInlineComposerUI(state) {
+  if (!state?.form) return;
+  const host = state.form.closest(".thread-inline-reply");
+  if (!host) return;
+  threadInlineRailTeardown?.();
+  threadInlineRailTeardown = null;
+  threadInlineEscTeardown?.();
+  threadInlineEscTeardown = null;
+  if (state.content && Object.prototype.hasOwnProperty.call(state.content.dataset, COMPOSER_PLACEHOLDER_PREV)) {
+    state.content.placeholder = state.content.dataset[COMPOSER_PLACEHOLDER_PREV] || "";
+    delete state.content.dataset[COMPOSER_PLACEHOLDER_PREV];
+  }
+  restoreComposerFormToDialog(state);
+  host.remove();
+  state.form.classList.remove("composer-form--thread-inline");
+}
+
+async function refreshComposerMentionsAndOverlay(root, state, mentionRootId) {
+  await loadMentionCandidates(root, state, mentionRootId || "");
+  renderComposerOverlay(state);
+  closeMentionMenu(state);
+}
+
+function applyComposerReadyStatus(state, mode) {
+  const signer = activeSignerState();
+  if (!signer.isLoggedIn) {
+    setStatus(state, "Log in first to publish.");
+  } else if (!signer.canSign) {
+    setStatus(state, "Use Browser Extension, Nsec login, or Sign up to sign events.");
+  } else if (mode === "repost") {
+    setStatus(state, "Leave content blank for a repost, or add text for a quote post.");
+  } else {
+    setStatus(state, mode === "reply" ? "Publishing a signed reply event." : "Publishing a signed kind 1 note.");
+  }
+}
+
+/**
+ * Opens the reply composer docked under a thread note (ASCII-style shell).
+ * Reuses the shared composer form; restores it to the dialog on cancel/submit/close.
+ */
+export async function openThreadInlineComposer(root, opts) {
+  const state = composeState(root);
+  if (!state?.form || !opts?.anchorEl) return;
+  dismissInlineComposerUI(state);
+  clearBlossomComposer(state);
+  if (state.mode) state.mode.value = "reply";
+  if (state.title) state.title.textContent = "Write a reply";
+  state.rootID.value = opts.rootID || opts.targetID || "";
+  state.replyID.value = opts.targetID || "";
+  state.replyPubKey.value = opts.pubkey || "";
+  clearRepostContext(state);
+  if (state.previewWrap) state.previewWrap.hidden = true;
+  if (state.previewContent) state.previewContent.textContent = "";
+  await refreshComposerMentionsAndOverlay(root, state, state.rootID.value);
+  applyComposerReadyStatus(state, "reply");
+  syncComposerControls(state);
+  state.form.classList.add("composer-form--thread-inline");
+  const host = buildThreadInlineComposerHost(state, opts);
+  host.querySelector("[data-inline-composer-upload]")?.addEventListener("click", () => {
+    state.addImageBtn?.click();
+  });
+  host.querySelector("[data-inline-composer-cancel]")?.addEventListener("click", () => {
+    closeComposer(state);
+  });
+  host.querySelector("[data-inline-composer-publish]")?.addEventListener("click", () => {
+    state.form.requestSubmit();
+  });
+  const mirror = host.querySelector("[data-inline-composer-status]");
+  if (mirror && state.status) {
+    mirror.textContent = inlineReplyStatusMirrorText(host, state.status.textContent);
+  }
+  if (state.content) {
+    if (!Object.prototype.hasOwnProperty.call(state.content.dataset, COMPOSER_PLACEHOLDER_PREV)) {
+      state.content.dataset[COMPOSER_PLACEHOLDER_PREV] = state.content.getAttribute("placeholder") || "";
+    }
+    state.content.placeholder = "type your reply here";
+  }
+  threadInlineEscTeardown?.();
+  const escHandler = (e) => {
+    if (e.key !== "Escape") return;
+    if (!state.form.isConnected || !state.form.closest(".thread-inline-reply")) {
+      threadInlineEscTeardown?.();
+      threadInlineEscTeardown = null;
+      return;
+    }
+    closeComposer(state);
+  };
+  document.addEventListener("keydown", escHandler, true);
+  threadInlineEscTeardown = () => {
+    document.removeEventListener("keydown", escHandler, true);
+    threadInlineEscTeardown = null;
+  };
+  bindThreadInlineRailSync(host, state);
+  closeComposerDialogShell(state);
+  const focusSigner = activeSignerState();
+  if (state.content && focusSigner.isLoggedIn && focusSigner.canSign) {
+    queueMicrotask(() => state.content.focus());
+  }
+}
+
+function closeComposerDialogShell(state) {
+  if (!state?.dialog) return;
+  if (typeof state.dialog.close === "function") {
+    if (state.dialog.open) state.dialog.close();
+  } else if (state.dialog.hasAttribute("open")) {
+    state.dialog.removeAttribute("open");
+  }
+}
+
+function buildThreadInlineComposerHost(state, opts) {
+  const { anchorEl, replyingToLabel = "" } = opts;
+  const host = document.createElement("section");
+  host.className = "thread-inline-reply";
+  host.setAttribute("role", "region");
+  host.setAttribute("aria-label", "Reply composer");
+  const depthRaw =
+    anchorEl.getAttribute?.("data-depth") ||
+    (anchorEl.dataset && anchorEl.dataset.depth) ||
+    anchorEl.closest?.("[data-depth]")?.getAttribute("data-depth") ||
+    "";
+  let anchorDepth = Number.parseInt(String(depthRaw), 10);
+  if (!Number.isFinite(anchorDepth)) {
+    anchorDepth = anchorEl.matches?.("article.note") ? 0 : 1;
+  }
+  /* Depth for `.thread-inline-reply` margin must match where the rail column sits:
+     - Focused selected note is an `article`, not `.comment`: it has no comment margins, but
+       still carries `data-depth="1"`. Using anchorDepth+1 would add a spurious 1ch indent.
+     - Real child comments nest in another `.comments`; the inline composer is a sibling after
+       the anchor, so for anchor depth ≥ 2 use anchorDepth (not +1) to stay under the same rail.
+     - Otherwise mirror a child comment: anchorDepth+1. */
+  let composeDepth;
+  if (anchorEl.matches?.("article.thread-focus-selected")) {
+    composeDepth = 1;
+  } else if (anchorEl.classList?.contains?.("comment") && anchorDepth >= 2) {
+    composeDepth = Math.min(Math.max(anchorDepth, 1), 20);
+  } else {
+    composeDepth = Math.min(Math.max(anchorDepth + 1, 1), 20);
+  }
+  host.dataset.depth = String(composeDepth);
+  host.style.setProperty("--depth", String(composeDepth));
+  host.dataset.inlineRailMode = threadInlineHasSiblingBranch(anchorEl) ? "branch" : "leaf";
+
+  const displayName =
+    document.querySelector("[data-session-display-name]")?.textContent?.trim() || "you";
+  const profileHref =
+    document.querySelector("a[data-session-user-link]")?.getAttribute("href") || "/settings";
+
+  const railImg = document.querySelector(".rail-user img[data-session-avatar]");
+  const showRailAvatar = railImg instanceof HTMLImageElement && railImg.src && !railImg.hidden;
+  host.innerHTML = `
+    <a class="comment-avatar thread-inline-reply__avatar" href="${escapeHTML(profileHref)}" data-relay-aware aria-hidden="true" tabindex="-1"></a>
+    <div class="thread-inline-reply__card">
+      <div class="thread-inline-reply__header">
+        <strong class="thread-inline-reply__header-name" data-inline-composer-display-name></strong>
+        <span class="thread-inline-reply__header-age muted"> -- now</span>
+        <span class="thread-inline-reply__header-pad" aria-hidden="true"></span>
+        <span class="thread-inline-reply__header-dots muted">[...] +</span>
+      </div>
+      <div class="thread-inline-reply__rail-row">
+        <div class="thread-inline-reply__rail-track" aria-hidden="true">
+          <pre class="thread-inline-reply__rail-pre"></pre>
+        </div>
+        <div class="thread-inline-reply__form-col">
+          <div class="thread-inline-reply__form-host" data-inline-composer-form-host></div>
+          <p class="thread-inline-reply__status muted" data-inline-composer-status></p>
+          <div class="thread-inline-reply__footer">
+            <button type="button" class="link-button thread-inline-reply__bracket-btn" data-inline-composer-upload>[upload]</button>
+            <span class="thread-inline-reply__footer-rule" aria-hidden="true"></span>
+            <span class="thread-inline-reply__footer-actions">
+              <button type="button" class="link-button thread-inline-reply__bracket-btn" data-inline-composer-cancel>[cancel]</button>
+              <button type="button" class="link-button thread-inline-reply__bracket-btn" data-inline-composer-publish>[publish]</button>
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  const nameEl = host.querySelector("[data-inline-composer-display-name]");
+  if (nameEl) nameEl.textContent = displayName;
+  const av = host.querySelector(".thread-inline-reply__avatar");
+  if (showRailAvatar) {
+    const img = document.createElement("img");
+    img.src = railImg.src;
+    img.alt = "";
+    img.loading = "lazy";
+    img.decoding = "async";
+    av?.replaceChildren(img);
+  } else if (av) {
+    av.textContent = "";
+  }
+  const cleaned = String(replyingToLabel || "").replace(/^@+/, "").trim();
+  if (cleaned) {
+    host.dataset.inlineReplyingTo = cleaned;
+  } else {
+    delete host.dataset.inlineReplyingTo;
+  }
+  const formHost = host.querySelector("[data-inline-composer-form-host]");
+  formHost.append(state.form);
+  anchorEl.insertAdjacentElement("afterend", host);
+  return host;
+}
+
 async function openComposer(root, state, mode, context = {}) {
   if (!state) return;
-  const signer = activeSignerState();
-  const canSign = signer.isLoggedIn && signer.canSign;
+  if (mode === "reply") {
+    const targetID = context.targetID || "";
+    const anchor = targetID ? document.getElementById(`note-${targetID}`) : null;
+    if (document.getElementById("thread-summary") && anchor) {
+      await openThreadInlineComposer(root, {
+        anchorEl: anchor,
+        rootID: context.rootID || targetID || "",
+        targetID,
+        pubkey: context.pubkey || "",
+        replyingToLabel: context.replyingTo || "",
+      });
+      return;
+    }
+    return;
+  }
+  dismissInlineComposerUI(state);
+  clearBlossomComposer(state);
   if (state.mode) {
-    state.mode.value = mode === "reply" || mode === "repost" ? mode : "post";
+    state.mode.value = mode === "repost" ? "repost" : "post";
   }
   if (state.title) {
-    if (mode === "reply") {
-      state.title.textContent = "Write a reply";
-    } else if (mode === "repost") {
+    if (mode === "repost") {
       state.title.textContent = "Repost";
     } else {
       state.title.textContent = "Write a post";
     }
   }
-  state.content.required = mode !== "repost";
-  if (mode === "reply") {
-    state.rootID.value = context.rootID || context.targetID || "";
-    state.replyID.value = context.targetID || "";
-    state.replyPubKey.value = context.pubkey || "";
-    clearRepostContext(state);
-  } else if (mode === "repost") {
+  if (mode === "repost") {
     clearComposeContext(state);
     if (state.content) state.content.value = "";
     if (state.repostID) state.repostID.value = context.targetID || "";
@@ -635,25 +1272,16 @@ async function openComposer(root, state, mode, context = {}) {
     clearComposeContext(state);
     clearRepostContext(state);
   }
-  await loadMentionCandidates(root, state, mode === "reply" ? state.rootID.value : "");
-  renderComposerOverlay(state);
-  closeMentionMenu(state);
-  state.submit.disabled = !canSign;
-  if (!signer.isLoggedIn) {
-    setStatus(state, "Log in first to publish.");
-  } else if (!signer.canSign) {
-    setStatus(state, "Switch to Browser Extension, Nsec, or Ephemeral login to sign events.");
-  } else if (mode === "repost") {
-    setStatus(state, "Leave content blank for a repost, or add text for a quote post.");
-  } else {
-    setStatus(state, mode === "reply" ? "Publishing a signed reply event." : "Publishing a signed kind 1 note.");
-  }
+  await refreshComposerMentionsAndOverlay(root, state, "");
+  applyComposerReadyStatus(state, mode);
+  syncComposerControls(state);
   if (typeof state.dialog.showModal === "function") {
     state.dialog.showModal();
   } else {
     state.dialog.setAttribute("open", "");
   }
-  if (state.content && canSign) {
+  const focusSigner = activeSignerState();
+  if (state.content && focusSigner.isLoggedIn && focusSigner.canSign) {
     queueMicrotask(() => state.content.focus());
   }
 }
@@ -661,11 +1289,9 @@ async function openComposer(root, state, mode, context = {}) {
 function closeComposer(state) {
   if (!state) return;
   closeMentionMenu(state);
-  if (typeof state.dialog.close === "function") {
-    state.dialog.close();
-  } else {
-    state.dialog.removeAttribute("open");
-  }
+  clearBlossomComposer(state);
+  dismissInlineComposerUI(state);
+  closeComposerDialogShell(state);
 }
 
 function buildReplyTags(rootID, replyID, replyPubKey) {
@@ -684,6 +1310,16 @@ function bindPostTriggers(root, state) {
       void openComposer(root, state, "post");
     });
   });
+}
+
+function hrefForThreadInlineReplyNavigation(rootId, targetId) {
+  const pathId = rootId || targetId;
+  if (!pathId) return "";
+  const cur = new URL(window.location.href);
+  const next = new URL(`/thread/${pathId}`, cur.origin);
+  next.search = cur.search;
+  if (targetId) next.hash = `#note-${targetId}`;
+  return next.toString();
 }
 
 function bindReplyActions(root) {
@@ -708,12 +1344,41 @@ function bindReplyActions(root) {
     }
     const linkText = (link.textContent || "").trim().toLowerCase();
     if (!link.hasAttribute("data-reply-action") && !linkText.startsWith("reply")) return;
+    const rootID = link.getAttribute("data-reply-root-id") || inReplyContainer.getAttribute("data-reply-root-id") || "";
+    const targetID = link.getAttribute("data-reply-target-id") || inReplyContainer.getAttribute("data-reply-target-id") || "";
+    const pubkey = link.getAttribute("data-reply-pubkey") || inReplyContainer.getAttribute("data-reply-pubkey") || "";
     event.preventDefault();
-    void openComposer(root, state, "reply", {
-      rootID: link.getAttribute("data-reply-root-id") || inReplyContainer.getAttribute("data-reply-root-id") || "",
-      targetID: link.getAttribute("data-reply-target-id") || inReplyContainer.getAttribute("data-reply-target-id") || "",
-      pubkey: link.getAttribute("data-reply-pubkey") || inReplyContainer.getAttribute("data-reply-pubkey") || "",
-    });
+    const replyingTo = inReplyContainer.getAttribute("data-ascii-author") || "";
+    if (!document.getElementById("thread-summary") && targetID) {
+      try {
+        sessionStorage.setItem(
+          THREAD_INLINE_REPLY_PENDING_KEY,
+          JSON.stringify({
+            targetID,
+            rootID,
+            pubkey,
+            replyingTo,
+          }),
+        );
+      } catch {
+        /* ignore */
+      }
+      const href = hrefForThreadInlineReplyNavigation(rootID, targetID);
+      if (href) {
+        window.dispatchEvent(new CustomEvent("ptxt:navigate", { detail: { href } }));
+      }
+      return;
+    }
+    const anchor = targetID ? document.getElementById(`note-${targetID}`) : null;
+    if (anchor) {
+      void openThreadInlineComposer(root, {
+        anchorEl: anchor,
+        rootID,
+        targetID,
+        pubkey,
+        replyingToLabel: replyingTo,
+      });
+    }
   });
 }
 
@@ -765,6 +1430,7 @@ function bindComposer(root) {
     state.content.addEventListener("input", () => {
       renderComposerOverlay(state);
       scheduleMentionMenuUpdate(state);
+      syncComposerControls(state);
     });
     state.content.addEventListener("scroll", () => syncComposerScroll(state));
     state.content.addEventListener("click", () => scheduleMentionMenuUpdate(state));
@@ -801,6 +1467,48 @@ function bindComposer(root) {
       if (!state.mentionMenu?.hidden) requestMentionMenuPosition(state);
     });
   }
+  if (!state.form._ptxtBlossomUiBound) {
+    state.form._ptxtBlossomUiBound = true;
+    state.addImageBtn?.addEventListener("click", () => state.imageInput?.click());
+    state.imageInput?.addEventListener("change", async () => {
+      const input = state.imageInput;
+      if (!(input instanceof HTMLInputElement) || !input.files?.length) return;
+      const files = [...input.files];
+      input.value = "";
+      const signer = activeSignerState();
+      if (!signer.isLoggedIn || !signer.canSign) {
+        setStatus(state, "Login required to upload.");
+        return;
+      }
+      const servers = getBlossomServerURLs();
+      let uploadFailed = false;
+      for (const file of files) {
+        if (!file.type.startsWith("image/")) continue;
+        try {
+          setStatus(state, "Uploading image…");
+          const { descriptor, imetaTag } = await blossomUploadBlob(file, { servers });
+          state.blossomAttachments.push({ descriptor, imetaTag, name: file.name });
+          renderComposerAttachments(state);
+        } catch (err) {
+          uploadFailed = true;
+          setStatus(state, err instanceof Error ? err.message : "Upload failed.");
+          break;
+        }
+      }
+      if (!uploadFailed) {
+        setStatus(state, "Ready to publish.");
+      }
+      syncComposerMediaRow(state);
+    });
+    state.attachmentStrip?.addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-composer-remove-attachment]");
+      if (!(btn instanceof HTMLElement)) return;
+      const idx = Number.parseInt(btn.getAttribute("data-composer-remove-attachment") || "", 10);
+      if (!Number.isFinite(idx)) return;
+      state.blossomAttachments.splice(idx, 1);
+      renderComposerAttachments(state);
+    });
+  }
   renderComposerOverlay(state);
   if (state.form._ptxtComposerFormBound) return;
   state.form._ptxtComposerFormBound = true;
@@ -811,13 +1519,12 @@ function bindComposer(root) {
       setStatus(state, "A signing-capable login is required.");
       return;
     }
-    const rawContent = state.content.value.trim();
-    const mode = state.mode?.value || "post";
-    if (mode !== "repost" && !rawContent) {
-      setStatus(state, "Content is required.");
+    const { mode, atts, mergedRaw, validityMsg } = composerPublishContent(state);
+    if (validityMsg) {
+      setStatus(state, validityMsg);
       return;
     }
-    const content = expandMentionsForPublish(state, rawContent);
+    const content = expandMentionsForPublish(state, mergedRaw);
     const repostID = state.repostID?.value || "";
     const repostPubKey = state.repostPubKey?.value || "";
     const repostRelay = state.repostRelay?.value || "";
@@ -828,7 +1535,7 @@ function bindComposer(root) {
     const createdAt = Math.floor(Date.now() / 1000);
     const isReply = mode === "reply" && Boolean(state.replyID.value);
     const isRepost = mode === "repost";
-    const isQuote = isRepost && Boolean(content);
+    const isQuote = isRepost && mergedRaw.length > 0;
     const draftKind = isRepost && !isQuote ? 6 : 1;
     let tags = [];
     if (isReply) {
@@ -836,6 +1543,9 @@ function bindComposer(root) {
     } else if (isRepost) {
       tags = buildReferenceTags(isQuote ? "quote" : "repost", repostID, repostPubKey, repostRelay);
     }
+    atts.forEach((a) => {
+      if (Array.isArray(a.imetaTag)) tags.push(a.imetaTag);
+    });
     extractMentionPubKeys(content).forEach((pubkey) => tags.push(["p", pubkey]));
     tags = dedupeTags(tags);
     const draft = {
@@ -861,7 +1571,7 @@ function bindComposer(root) {
     } catch (error) {
       setStatus(state, error instanceof Error ? error.message : "Failed to publish event.");
     } finally {
-      state.submit.disabled = false;
+      syncComposerPublishValidity(state);
     }
   });
 }
@@ -889,6 +1599,11 @@ async function loadProfileMetadata(form, statusNode) {
     assignIfEmpty(form, "picture", metadata.picture);
     assignIfEmpty(form, "website", metadata.website);
     assignIfEmpty(form, "nip05", metadata.nip05);
+    const pk = normalizedPubkey();
+    if (pk) {
+      const nextLabel = sessionAuthorLabelFromMetadata(metadata, pk);
+      if (nextLabel !== shortPubkey(pk)) setSession({ ...getSession(), profileLabel: nextLabel });
+    }
     if (statusNode) statusNode.textContent = "Profile metadata loaded. Publish to update relays.";
   } catch {
     if (statusNode) statusNode.textContent = "Could not load cached profile metadata.";
@@ -1165,6 +1880,17 @@ function bindProfileMetadataForm(root) {
       if (statusNode) statusNode.textContent = "Publishing metadata...";
       await publishSignedEvent(signed);
       if (statusNode) statusNode.textContent = "Profile metadata published.";
+      try {
+        const meta = JSON.parse(signed.content || "{}");
+        const pk = normalizedPubkey();
+        const display = String(meta.display_name ?? "").trim();
+        const name = String(meta.name ?? "").trim();
+        if (pk && (display || name)) {
+          setSession({ ...getSession(), profileLabel: display || name });
+        }
+      } catch {
+        /* ignore */
+      }
     } catch (error) {
       if (statusNode) statusNode.textContent = error instanceof Error ? error.message : "Metadata publish failed.";
     } finally {
@@ -1178,5 +1904,6 @@ export function initMutations(root = document) {
   bindProfileMetadataForm(root);
   bindRelayPreferences(root);
   bindFollowActions(root);
+  bindMuteActions(root);
   initBookmarks(root);
 }

@@ -467,6 +467,45 @@ func TestBioLinkHTMLHashtagAnchors(t *testing.T) {
 	}
 }
 
+func TestNpubGridHTMLCheckerboardAndRows(t *testing.T) {
+	const pk = "fa984bd7dbb282f07e16e7ae87b26a2a7b9b90b7246a44771f0cf5ae58018f52"
+	got := string(npubGridHTML(pk))
+	if nostrx.EncodeNPub(pk) == "" {
+		t.Fatal("EncodeNPub returned empty")
+	}
+	if !strings.Contains(got, `class="profile-npub-grid"`) {
+		t.Fatalf("missing grid: %s", got)
+	}
+	rowOpen := strings.Count(got, `class="profile-npub-grid-row"`)
+	if rowOpen != 4 {
+		t.Fatalf("want 4 rows for standard npub, got %d: %s", rowOpen, got)
+	}
+	if !strings.Contains(got, `profile-npub-cell--emph">npub`) {
+		t.Fatalf("first quartet should be emphasized: %s", got)
+	}
+	if !strings.Contains(got, `</span><span class="profile-npub-cell">`) || !strings.Contains(got, `npub</span><span class="profile-npub-cell">`) {
+		t.Fatalf("second quartet should follow npub with non-emphasized cell: %s", got)
+	}
+	if strings.Count(got, "profile-npub-cell--emph") != 8 {
+		t.Fatalf("want 8 emphasized cells in 4x4 checkerboard, got %d: %s",
+			strings.Count(got, "profile-npub-cell--emph"), got)
+	}
+}
+
+func TestHexGridHTMLRowsAndCheckerboard(t *testing.T) {
+	const pk = "fa984bd7dbb282f07e16e7ae87b26a2a7b9b90b7246a44771f0cf5ae58018f52"
+	got := string(hexGridHTML(pk))
+	if !strings.Contains(got, `class="profile-npub-grid"`) {
+		t.Fatalf("missing grid: %s", got)
+	}
+	if strings.Count(got, `class="profile-npub-grid-row"`) != 4 {
+		t.Fatalf("want 4 rows for 64-char hex: %s", got)
+	}
+	if !strings.Contains(got, `profile-npub-cell--emph">fa98`) {
+		t.Fatalf("first quartet should be emphasized: %s", got)
+	}
+}
+
 func timeNowForTest() int64 {
 	return time.Now().Unix()
 }

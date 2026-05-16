@@ -538,9 +538,99 @@ func mutationTestServer(t *testing.T) (*Server, *store.Store) {
 	})
 }
 
-func signedMutationEvent(t *testing.T, kind int, content string, tags [][]string) nostrx.Event {
+func assertMuteListPrivateNoStore(t *testing.T, rec *httptest.ResponseRecorder) {
 	t.Helper()
+	cc := rec.Header().Get("Cache-Control")
+	if !strings.Contains(cc, "no-store") || !strings.Contains(cc, "private") {
+		t.Fatalf("Cache-Control = %q, want private and no-store", cc)
+	}
+}
+
+func TestHandleMuteListAPI_BadRequestWithoutViewer(t *testing.T) {
+	srv, _ := mutationTestServer(t)
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/api/mute-list", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	assertMuteListPrivateNoStore(t, rec)
+}
+
+func TestHandleMuteListAPI_OKMutedPubkeysOnly(t *testing.T) {
+	srv, st := mutationTestServer(t)
+	ctx := context.Background()
 	secret := fnostr.Generate()
+	target := strings.Repeat("d", 64)
+	muteEv := signNostrEvent(t, secret, nostrx.KindMuteList, "privdata", [][]string{{"p", target}})
+	url := "http://example.com/api/mute-list?pubkey=" + muteEv.PubKey
+	if err := st.SaveEvent(ctx, muteEv); err != nil {
+		t.Fatalf("SaveEvent: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, url, nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	assertMuteListPrivateNoStore(t, rec)
+	if strings.Contains(rec.Body.String(), "privdata") {
+		t.Fatal("response must not include mute list event content")
+	}
+	var payload struct {
+		Pubkey        string   `json:"pubkey"`
+		MutedPubkeys  []string `json:"muted_pubkeys"`
+		Tags          [][]string
+		Content       string
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Pubkey != muteEv.PubKey {
+		t.Fatalf("pubkey %q want %q", payload.Pubkey, muteEv.PubKey)
+	}
+	if len(payload.MutedPubkeys) != 1 || payload.MutedPubkeys[0] != target {
+		t.Fatalf("muted_pubkeys = %#v, want [%q]", payload.MutedPubkeys, target)
+	}
+	if len(payload.Tags) != 0 || payload.Content != "" {
+		t.Fatalf("unexpected tags/content in response: tags=%#v content=%q", payload.Tags, payload.Content)
+	}
+}
+
+func TestHandleMuteListAPI_OKWithViewerHeader(t *testing.T) {
+	srv, st := mutationTestServer(t)
+	ctx := context.Background()
+	secret := fnostr.Generate()
+	target := strings.Repeat("c", 64)
+	muteEv := signNostrEvent(t, secret, nostrx.KindMuteList, "privdata", [][]string{{"p", target}})
+	if err := st.SaveEvent(ctx, muteEv); err != nil {
+		t.Fatalf("SaveEvent: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/api/mute-list", nil)
+	req.Header.Set(headerViewerPubkey, muteEv.PubKey)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	assertMuteListPrivateNoStore(t, rec)
+	var payload struct {
+		Pubkey       string   `json:"pubkey"`
+		MutedPubkeys []string `json:"muted_pubkeys"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.Pubkey != muteEv.PubKey {
+		t.Fatalf("pubkey %q want %q", payload.Pubkey, muteEv.PubKey)
+	}
+	if len(payload.MutedPubkeys) != 1 || payload.MutedPubkeys[0] != target {
+		t.Fatalf("muted_pubkeys = %#v, want [%q]", payload.MutedPubkeys, target)
+	}
+}
+
+func signNostrEvent(t *testing.T, secret fnostr.SecretKey, kind int, content string, tags [][]string) nostrx.Event {
+	t.Helper()
 	external := fnostr.Event{
 		CreatedAt: fnostr.Now(),
 		Kind:      fnostr.Kind(kind),
@@ -551,17 +641,14 @@ func signedMutationEvent(t *testing.T, kind int, content string, tags [][]string
 		external.Tags = append(external.Tags, fnostr.Tag(tag))
 	}
 	if err := external.Sign(secret); err != nil {
-		t.Fatalf("Sign() error = %v", err)
+		t.Fatalf("Sign: %v", err)
 	}
-	return nostrx.Event{
-		ID:        external.ID.Hex(),
-		PubKey:    external.PubKey.Hex(),
-		CreatedAt: int64(external.CreatedAt),
-		Kind:      int(external.Kind),
-		Tags:      tags,
-		Content:   external.Content,
-		Sig:       fmt.Sprintf("%x", external.Sig[:]),
-	}
+	return fnostrToNostrxEvent(external)
+}
+
+func signedMutationEvent(t *testing.T, kind int, content string, tags [][]string) nostrx.Event {
+	t.Helper()
+	return signNostrEvent(t, fnostr.Generate(), kind, content, tags)
 }
 
 func mutationRelayServer(t *testing.T, accepted bool, message string) *httptest.Server {

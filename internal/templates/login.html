@@ -12,58 +12,84 @@
     </section>
 
     <section class="login-intro">
-      <p class="muted">Choose a login method tab, then complete the single flow shown below.</p>
+      <p class="muted">Log in with an existing key or extension, or sign up to create a new keypair in your browser.</p>
     </section>
 
-    <div class="user-tabs profile-tabs login-tabs">
-      <nav class="user-tab-nav" aria-label="Login methods">
-        <label class="user-tab-label" for="login-tab-readonly">Npub Login</label>
-        <span class="user-tab-sep" aria-hidden="true">·</span>
-        <label class="user-tab-label" for="login-tab-nip07">Browser Extension</label>
-        <span class="user-tab-sep" aria-hidden="true">·</span>
-        <label class="user-tab-label" for="login-tab-yolo">Nsec Login</label>
-        <span class="user-tab-sep" aria-hidden="true">·</span>
-        <label class="user-tab-label" for="login-tab-ephemeral">Ephemeral</label>
-      </nav>
+    <div class="login-split">
+      <div class="login-split-column login-split-column--signin">
+        <div class="user-tabs profile-tabs login-tabs">
+          <nav class="user-tab-nav" aria-label="Login methods">
+            <label class="user-tab-label" for="login-tab-readonly">Public Key</label>
+            <span class="user-tab-sep" aria-hidden="true">·</span>
+            <label class="user-tab-label" for="login-tab-nip07">Browser Extension</label>
+            <span class="user-tab-sep" aria-hidden="true">·</span>
+            <label class="user-tab-label" for="login-tab-yolo">Private Key</label>
+          </nav>
 
-      <input type="radio" name="login-tab" id="login-tab-readonly" class="user-tab-state" checked>
-      <section class="user-tab-panel login-tab-panel" aria-label="Npub login">
-        <h2>Npub Login (read-only)</h2>
-        <p class="muted">Browse notes as any account using a public key. This does not enable signing or posting.</p>
-        <form data-login-readonly>
-          <input name="pubkey" data-pubkey-input placeholder="npub or hex public key" required>
-          <button type="submit">Use public key</button>
-        </form>
-        <p class="login-tab-actions toolbar">
-          <button type="button" data-fill-session-pubkey>Use logged in key</button>
-          <button type="button" data-load-session-feed>Open logged in feed</button>
-          <span class="muted" data-session-label>Not logged in</span>
-        </p>
-      </section>
+          <input type="radio" name="login-tab" id="login-tab-readonly" class="user-tab-state" checked>
+          <section class="user-tab-panel login-tab-panel" aria-label="Npub login">
+            <h2>Npub Login (read-only)</h2>
+            <p class="muted">Browse notes as any account using a public key. This does not enable signing or posting.</p>
+            <form data-login-readonly class="login-tab-stacked-form">
+              <input name="pubkey" data-pubkey-input placeholder="npub or hex public key" required>
+              <div class="login-tab-panel-actions">
+                <button type="submit">Use public key</button>
+              </div>
+            </form>
+          </section>
 
-      <input type="radio" name="login-tab" id="login-tab-nip07" class="user-tab-state">
-      <section class="user-tab-panel login-tab-panel" aria-label="Browser extension login">
-        <h2>Browser Extension (NIP-07)</h2>
-        <p class="muted">Use a browser extension that exposes <code>window.nostr</code> to connect your account.</p>
-        <button type="button" data-login-nip07>Connect extension</button>
-      </section>
+          <input type="radio" name="login-tab" id="login-tab-nip07" class="user-tab-state">
+          <section class="user-tab-panel login-tab-panel" aria-label="Browser extension login">
+            <h2>Browser Extension (NIP-07)</h2>
+            <p class="muted">Use a browser extension that exposes <code>window.nostr</code> to connect your account.</p>
+            <div class="login-tab-panel-actions">
+              <button type="button" data-login-nip07>Connect extension</button>
+            </div>
+          </section>
 
-      <input type="radio" name="login-tab" id="login-tab-yolo" class="user-tab-state">
-      <section class="user-tab-panel login-tab-panel login-tab-panel-danger" aria-label="Nsec login">
-        <h2>Nsec Login (Private key YOLO)</h2>
-        <p class="muted">Dangerous: your private key is handled in browser JavaScript and stored for this login only.</p>
-        <form data-login-yolo>
-          <input name="secret" placeholder="nsec or hex private key" autocomplete="off">
-          <button type="submit">Use login key</button>
-        </form>
-      </section>
+          <input type="radio" name="login-tab" id="login-tab-yolo" class="user-tab-state">
+          <section class="user-tab-panel login-tab-panel login-tab-panel-danger" aria-label="Nsec login">
+            <h2>Nsec Login (Private key YOLO)</h2>
+            <p class="muted">Dangerous: your private key is handled in browser JavaScript and stored for this login only.</p>
+            <form data-login-yolo class="login-tab-stacked-form">
+              <input name="secret" placeholder="nsec or hex private key" autocomplete="off">
+              <div class="login-tab-panel-actions">
+                <button type="submit">Use login key</button>
+              </div>
+            </form>
+          </section>
+        </div>
+      </div>
 
-      <input type="radio" name="login-tab" id="login-tab-ephemeral" class="user-tab-state">
-      <section class="user-tab-panel login-tab-panel" aria-label="Ephemeral login">
-        <h2>Ephemeral key</h2>
-        <p class="muted">Generate a throwaway key in-browser for testing temporary logins.</p>
-        <button type="button" data-login-ephemeral>Generate ephemeral key</button>
-      </section>
+      <div class="login-split-column login-split-column--signup">
+        <h2 class="login-split-heading">Sign up</h2>
+        <section class="login-signup-panel login-tab-panel login-tab-panel-danger" aria-label="Sign up">
+          <p class="muted" data-signup-intro>Create a new Nostr identity. Your browser generates a keypair; keys never leave this device until you copy them.</p>
+          <div class="login-tab-panel-actions" data-signup-intro-actions>
+            <button type="button" data-signup-generate>Create account</button>
+          </div>
+          <div class="login-signup-credentials" data-signup-credentials hidden>
+            <p class="muted"><strong>Save these now.</strong> Your private key (<code>nsec</code>) cannot be recovered if you lose it. Anyone with your <code>nsec</code> can post as you.</p>
+            <div class="login-signup-secret-row">
+              <label class="login-signup-field-label" for="signup-nsec-display">nsec (private)</label>
+              <div class="login-signup-field-row">
+                <input id="signup-nsec-display" class="login-signup-secret-input" type="text" readonly autocomplete="off" spellcheck="false" data-signup-nsec-input>
+                <button type="button" data-signup-copy-nsec>Copy</button>
+              </div>
+            </div>
+            <div class="login-signup-secret-row">
+              <label class="login-signup-field-label" for="signup-npub-display">npub (public)</label>
+              <div class="login-signup-field-row">
+                <input id="signup-npub-display" type="text" readonly autocomplete="off" spellcheck="false" data-signup-npub-input>
+                <button type="button" data-signup-copy-npub>Copy</button>
+              </div>
+            </div>
+            <p class="login-signup-continue-wrap">
+              <button type="button" data-signup-continue>Continue to feed</button>
+            </p>
+          </div>
+        </section>
+      </div>
     </div>
 
     <section class="session-panel">
@@ -74,7 +100,9 @@
           <a data-session-feed-link data-relay-aware href="/">Open feed</a>
           <a data-session-user-link data-relay-aware href="/login">Open profile</a>
         </p>
-        <button type="button" data-logout>Log out</button>
+        <div class="login-tab-panel-actions" data-session-logout-wrap hidden>
+          <button type="button" data-logout>Log out</button>
+        </div>
       <div class="ascii-border">{{asciiBorder}}</div>
     </section>
   </section>

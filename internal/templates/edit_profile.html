@@ -10,99 +10,114 @@
 {{end}}
 
 {{define "edit_profile_main"}}
-<section class="feed-column shell-center settings-profile-panel" data-shell-main>
+<section class="feed-column shell-main-top settings-profile-panel" data-shell-main>
   <section class="page-heading">
     <h1>Edit profile</h1>
   </section>
   <div data-profile-edit-section hidden>
-    <p class="muted">Profile metadata updates publish as signed kind 0 events through your selected relays.</p>
-    <section class="settings-card">
-      <form class="settings-form" data-profile-metadata-form>
-        <div class="settings-grid">
-          <label>Display name
-            <input type="text" name="display_name" maxlength="128" placeholder="display name">
-          </label>
-          <label>Name
-            <input type="text" name="name" maxlength="128" placeholder="name">
-          </label>
-        </div>
-        <label>About
-          <textarea name="about" rows="4" maxlength="2048" placeholder="short bio"></textarea>
-        </label>
-        <label>Picture URL
-          <input type="url" name="picture" maxlength="1024" placeholder="https://...">
-        </label>
-        <div class="settings-grid">
-          <label>Website
-            <input type="url" name="website" maxlength="1024" placeholder="https://...">
-          </label>
-          <label>NIP-05
-            <input type="text" name="nip05" maxlength="255" placeholder="name@domain.com">
-          </label>
-        </div>
-        <p class="muted" data-profile-metadata-status>Load your session to edit profile metadata.</p>
-        <div class="toolbar">
-          <button type="submit" data-profile-metadata-submit>Publish metadata</button>
-          <button type="button" data-logout data-logout-redirect="/login">Log out</button>
-        </div>
-      </form>
-    </section>
-    <section class="settings-card">
-      <h2>Relay insight and preferences</h2>
-      <p class="muted">Publish kind 10002 relay hints so your notes and replies target your preferred outbox relays first.</p>
-      <p class="muted" data-relay-insight-status>Load your session to inspect and publish relay preferences.</p>
-      <div class="settings-grid">
-        <section>
-          <h3>Published (kind 10002)</h3>
-          <ul class="relay-list" data-relay-insight-published>
-            <li class="muted">No published relay preferences yet.</li>
-          </ul>
+    <div class="user-tabs profile-tabs edit-profile-tabs">
+      <nav class="user-tab-nav" aria-label="Edit profile sections">
+        <label class="user-tab-label" for="edit-profile-tab-metadata">Metadata</label>
+        <span class="user-tab-sep" aria-hidden="true">·</span>
+        <label class="user-tab-label" for="edit-profile-tab-relays">Relay preferences</label>
+      </nav>
+
+      <input type="radio" name="edit-profile-tab" id="edit-profile-tab-metadata" class="user-tab-state" checked>
+      <section class="user-tab-panel" id="edit-profile-panel-metadata" aria-label="Profile metadata">
+        <p class="muted">Profile metadata updates publish as signed kind 0 events through your selected relays.</p>
+        <section class="settings-card">
+          <form class="settings-form" data-profile-metadata-form>
+            <div class="settings-grid">
+              <label>Display name
+                <input type="text" name="display_name" maxlength="128" placeholder="display name">
+              </label>
+              <label>Name
+                <input type="text" name="name" maxlength="128" placeholder="name">
+              </label>
+            </div>
+            <label>About
+              <textarea name="about" rows="4" maxlength="2048" placeholder="short bio"></textarea>
+            </label>
+            <label>Picture URL
+              <input type="url" name="picture" maxlength="1024" placeholder="https://...">
+            </label>
+            <div class="settings-grid">
+              <label>Website
+                <input type="url" name="website" maxlength="1024" placeholder="https://...">
+              </label>
+              <label>NIP-05
+                <input type="text" name="nip05" maxlength="255" placeholder="name@domain.com">
+              </label>
+            </div>
+            <p class="muted" data-profile-metadata-status>Load your session to edit profile metadata.</p>
+            <div class="toolbar dialog-actions">
+              <button type="button" class="profile-action-link" data-logout data-logout-redirect="/login">Log out</button>
+              <button type="submit" class="profile-action-link" data-profile-metadata-submit>Publish Metadata</button>
+            </div>
+          </form>
         </section>
-        <section>
-          <h3>Session relays</h3>
-          <ul class="relay-list" data-relay-insight-session>
-            <li class="muted">No selected session relays.</li>
-          </ul>
+      </section>
+
+      <input type="radio" name="edit-profile-tab" id="edit-profile-tab-relays" class="user-tab-state">
+      <section class="user-tab-panel" id="edit-profile-panel-relays" aria-label="Relay preferences">
+        <section class="settings-card">
+          <h2>Relay insight and preferences</h2>
+          <p class="muted">Publish kind 10002 relay hints so your notes and replies target your preferred outbox relays first.</p>
+          <p class="muted" data-relay-insight-status>Load your session to inspect and publish relay preferences.</p>
+          <div class="settings-grid">
+            <section>
+              <h3>Published (kind 10002)</h3>
+              <ul class="relay-list" data-relay-insight-published>
+                <li class="muted">No published relay preferences yet.</li>
+              </ul>
+            </section>
+            <section>
+              <h3>Session relays</h3>
+              <ul class="relay-list" data-relay-insight-session>
+                <li class="muted">No selected session relays.</li>
+              </ul>
+            </section>
+          </div>
+          <div class="settings-grid">
+            <section>
+              <h3>Discovered relay hints</h3>
+              <ul class="relay-list" data-relay-insight-discovered>
+                <li class="muted">No discovered relay hints yet.</li>
+              </ul>
+            </section>
+            <section>
+              <h3>Backend recommendations</h3>
+              <ul class="relay-list" data-relay-insight-recommended>
+                <li class="muted">No recommendations available yet.</li>
+              </ul>
+            </section>
+          </div>
+          <form class="settings-form" data-relay-preferences-form>
+            <label>Relay URL
+              <input type="text" name="relay" data-relay-preference-input placeholder="wss://relay.example.com">
+            </label>
+            <label>Usage
+              <select name="usage" data-relay-preference-usage>
+                <option value="any">Read + write</option>
+                <option value="write">Write only</option>
+                <option value="read">Read only</option>
+              </select>
+            </label>
+            <div class="toolbar dialog-actions">
+              <button type="button" data-relay-preference-add>Add relay</button>
+              <button type="button" data-relay-preference-use-session>Use session relays</button>
+              <button type="button" data-relay-preference-use-recommended>Use recommendations</button>
+            </div>
+            <ul class="relay-list" data-relay-preferences-list>
+              <li class="muted">Add relay preferences, then publish kind 10002.</li>
+            </ul>
+            <div class="toolbar dialog-actions">
+              <button type="submit" data-relay-preferences-submit>Publish relay preferences</button>
+            </div>
+          </form>
         </section>
-      </div>
-      <div class="settings-grid">
-        <section>
-          <h3>Discovered relay hints</h3>
-          <ul class="relay-list" data-relay-insight-discovered>
-            <li class="muted">No discovered relay hints yet.</li>
-          </ul>
-        </section>
-        <section>
-          <h3>Backend recommendations</h3>
-          <ul class="relay-list" data-relay-insight-recommended>
-            <li class="muted">No recommendations available yet.</li>
-          </ul>
-        </section>
-      </div>
-      <form class="settings-form" data-relay-preferences-form>
-        <label>Relay URL
-          <input type="text" name="relay" data-relay-preference-input placeholder="wss://relay.example.com">
-        </label>
-        <label>Usage
-          <select name="usage" data-relay-preference-usage>
-            <option value="any">Read + write</option>
-            <option value="write">Write only</option>
-            <option value="read">Read only</option>
-          </select>
-        </label>
-        <div class="toolbar">
-          <button type="button" data-relay-preference-add>Add relay</button>
-          <button type="button" data-relay-preference-use-session>Use session relays</button>
-          <button type="button" data-relay-preference-use-recommended>Use recommendations</button>
-        </div>
-        <ul class="relay-list" data-relay-preferences-list>
-          <li class="muted">Add relay preferences, then publish kind 10002.</li>
-        </ul>
-        <div class="toolbar">
-          <button type="submit" data-relay-preferences-submit>Publish relay preferences</button>
-        </div>
-      </form>
-    </section>
+      </section>
+    </div>
   </div>
   <p class="muted" data-profile-edit-guest-note>
     Log in with a signing-capable method to edit profile metadata.

@@ -22,7 +22,7 @@
 {{$rTot := reactionTotalFor .ReactionTotals $event.ID}}
 {{$rView := reactionViewerFor .ReactionViewers $event.ID}}
 {{$avatar := avatarSrc $profiles $event.PubKey}}
-<article class="note {{if eq $event.ID $selectedID}}is-focused{{end}}" id="note-{{$event.ID}}" data-created-at="{{$event.CreatedAt}}" data-ascii-kind="note" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$event.Kind}}" data-ascii-user-href="/u/{{$event.PubKey}}" data-ascii-thread-href="/thread/{{$event.ID}}" data-ascii-select-href="/thread/{{$event.ID}}" data-ascii-nevent="{{nevent $event.ID $event.PubKey}}" data-ascii-npub="{{npub $event.PubKey}}" data-ascii-relay="{{$event.RelayURL}}" data-ascii-ref-mode="{{if $isSimpleRepost}}repost{{else if $isQuotePost}}quote{{end}}" data-ascii-ref-author="{{if $hasReference}}{{asciiAuthor $width $profiles $reference.PubKey}}{{else if $referenceID}}{{short $referenceID}}{{end}}" data-ascii-ref-age="{{if $hasReference}}{{relTime $reference.CreatedAt}}{{else}}?{{end}}" data-ascii-ref-thread-href="{{if $hasReference}}/thread/{{$reference.ID}}{{else if $referenceID}}/thread/{{$referenceID}}{{end}}" data-ascii-ref-reply-label="{{$referenceReplyLabel}}" data-ascii-ref-reply-count="{{$referenceReplyCount}}" data-reply-root-id="{{$event.ID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}>
+<article class="note {{if eq $event.ID $selectedID}}is-focused{{end}}" id="note-{{$event.ID}}" data-created-at="{{$event.CreatedAt}}" data-ascii-kind="note" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$event.Kind}}" data-ascii-user-href="/u/{{$event.PubKey}}" data-ascii-thread-href="/thread/{{$event.ID}}" data-ascii-select-href="/thread/{{$event.ID}}" data-ascii-nevent="{{nevent $event.ID $event.PubKey}}" data-ascii-npub="{{npub $event.PubKey}}" data-ascii-relay="{{$event.RelayURL}}" data-ascii-ref-mode="{{if $isSimpleRepost}}repost{{else if $isQuotePost}}quote{{end}}" data-ascii-ref-author="{{if $hasReference}}{{asciiAuthor $width $profiles $reference.PubKey}}{{else if $referenceID}}{{short $referenceID}}{{end}}" data-ascii-ref-age="{{if $hasReference}}{{relTime $reference.CreatedAt}}{{else}}?{{end}}" data-ascii-ref-thread-href="{{if $hasReference}}/thread/{{$reference.ID}}{{else if $referenceID}}/thread/{{$referenceID}}{{end}}" data-ascii-ref-reply-label="{{$referenceReplyLabel}}" data-ascii-ref-reply-count="{{$referenceReplyCount}}" data-reply-root-id="{{$event.ID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}{{with imetaMediaItemsJSON $event.Tags}} data-ascii-imeta-media="{{.}}"{{end}}>
 {{if $isSimpleRepost}}<p class="note-feed-context note-feed-context--repost">{{repostContextHTML $profiles $event}}</p>{{end}}
 <template class="note-reply-context-tmpl">{{if replyContextVisible $event}}{{replyContextHTML $profiles $event}}{{end}}</template>
 <pre class="ascii-card"><a class="note-feed-avatar" href="/u/{{$event.PubKey}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{end}}</a><span class="ascii-line ascii-line-feed-header"><span >+--</span><span class="ascii-line-feed-header-tail"><a href="/u/{{$event.PubKey}}" data-relay-aware>{{$author}}</a> -- {{$age}} {{asciiFill $width "+--" $author " -- " $age " " "[...]" "+"}}<a href="/thread/{{$event.ID}}" data-relay-aware>[...]</a>+</span></span>
@@ -43,20 +43,39 @@
 {{$avatar := avatarSrcURL .Profile.PubKey .Profile.Picture}}
 <section class="profile profile-modern">
   <div class="profile-hero">
-    <a class="profile-back" href="/" data-relay-aware data-feed-home>&lt;-- back</a>
-    <div class="profile-avatar-wrap">
-      {{if $avatar}}<img class="profile-avatar" src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{else}}<div class="profile-avatar profile-avatar-fallback" aria-hidden="true">@</div>{{end}}
+    <div class="profile-hero-top">
+      <a class="profile-back" href="/" data-relay-aware data-feed-home>&lt;-- Back</a>
+      <span class="ascii-action-menu profile-stats-menu profile-hero-options-menu" data-profile-stats-menu>
+        <button type="button" class="profile-hero-options-trigger profile-stats-menu-trigger" aria-haspopup="true" aria-expanded="false" aria-label="Profile options">...</button>
+        <span class="ascii-action-menu-list" role="menu">
+          <a role="menuitem" href="/" data-relay-aware>view feed</a>
+          <button type="button" role="menuitem" class="link-button" data-profile-tab="user-tab-identifiers">Identities</button>
+        </span>
+      </span>
     </div>
-    <h1 class="profile-display-name">{{if .Profile.Display}}{{.Profile.Display}}{{else if .Profile.Name}}{{.Profile.Name}}{{else}}{{short .Profile.PubKey}}{{end}}</h1>
-    <div class="profile-actions" data-profile-actions data-profile-pubkey="{{.Profile.PubKey}}">
-      <button type="button" class="profile-action-link profile-follow-toggle" data-follow-toggle data-pubkey="{{.Profile.PubKey}}" aria-pressed="false">Follow</button>
-      <a href="/profile/edit" class="profile-action-link" data-own-profile-edit hidden>Edit profile</a>
-      <button type="button" class="profile-action-link" data-own-profile-logout data-logout data-logout-redirect="/login" hidden>Log out</button>
+    <div class="profile-hero-body">
+      <div class="profile-avatar-wrap">
+        {{if $avatar}}<img class="profile-avatar" src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{else}}<div class="profile-avatar-fallback" aria-hidden="true">@</div>{{end}}
+      </div>
+      <div class="profile-hero-text">
+        <h1 class="profile-display-name">{{if .Profile.Display}}{{.Profile.Display}}{{else if .Profile.Name}}{{.Profile.Name}}{{else}}{{short .Profile.PubKey}}{{end}}</h1>
+        <div class="profile-actions" data-profile-actions data-profile-pubkey="{{.Profile.PubKey}}">
+          <span class="profile-follow-mute" data-profile-follow-mute>
+            <button type="button" class="profile-follow-mute-link profile-follow-toggle" data-follow-toggle data-pubkey="{{.Profile.PubKey}}" aria-pressed="false">Follow</button>
+            <button type="button" class="profile-follow-mute-link profile-mute-toggle" data-mute-toggle data-pubkey="{{.Profile.PubKey}}" aria-pressed="false" hidden>Mute</button>
+          </span>
+          <a href="/profile/edit" class="profile-action-link" data-own-profile-edit hidden>Edit profile</a>
+          <button type="button" class="profile-action-link" data-own-profile-logout data-logout data-logout-redirect="/login" hidden>Log out</button>
+        </div>
+        <div class="profile-npub-block profile-npub-block--header profile-npub-copy" data-profile-npub-copy data-npub="{{npub .Profile.PubKey}}" role="button" tabindex="0" aria-label="Copy npub to clipboard">
+          <span class="profile-npub-copy-toast" data-profile-npub-copy-status role="status" aria-live="polite" hidden></span>
+          {{npubGridHTML .Profile.PubKey}}
+        </div>
+      </div>
     </div>
   </div>
   <div class="profile-main">
     <div class="profile-ident">
-      <p class="mono">{{npub .Profile.PubKey}}</p>
       {{if .Profile.NIP05}}<p>{{.Profile.NIP05}}</p>{{end}}
       {{if .Profile.About}}<p>{{bioLinkHTML .Profile.About}}</p>{{end}}
       {{if .Profile.Event}}
@@ -90,7 +109,7 @@
 {{$mentionsJSON := asciiMentionsJSON $node.Event.Content $profiles}}
 {{$rTot := reactionTotalFor .ReactionTotals $node.Event.ID}}
 {{$rView := reactionViewerFor .ReactionViewers $node.Event.ID}}
-<div id="note-{{$node.Event.ID}}" class="comment {{if eq $node.Event.ID $selectedID}}is-focused{{end}}" data-depth="{{$node.Depth}}" style="--depth: {{$node.Depth}}" data-ascii-kind="reply" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-is-last="{{$isLast}}" data-ascii-has-children="{{$hasChildren}}" data-ascii-selected="{{eq $node.Event.ID $selectedID}}" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$node.Event.Kind}}" data-ascii-user-href="/u/{{$node.Event.PubKey}}" data-ascii-select-href="/thread/{{$node.Event.ID}}" data-ascii-nevent="{{nevent $node.Event.ID $node.Event.PubKey}}" data-ascii-npub="{{npub $node.Event.PubKey}}" data-ascii-relay="{{$node.Event.RelayURL}}" data-reply-root-id="{{$rootID}}" data-reply-target-id="{{$node.Event.ID}}" data-reply-pubkey="{{$node.Event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}>
+<div id="note-{{$node.Event.ID}}" class="comment {{if eq $node.Event.ID $selectedID}}is-focused{{end}}" data-depth="{{$node.Depth}}" style="--depth: {{$node.Depth}}" data-ascii-kind="reply" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-is-last="{{$isLast}}" data-ascii-has-children="{{$hasChildren}}" data-ascii-selected="{{eq $node.Event.ID $selectedID}}" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$node.Event.Kind}}" data-ascii-user-href="/u/{{$node.Event.PubKey}}" data-ascii-select-href="/thread/{{$node.Event.ID}}" data-ascii-nevent="{{nevent $node.Event.ID $node.Event.PubKey}}" data-ascii-npub="{{npub $node.Event.PubKey}}" data-ascii-relay="{{$node.Event.RelayURL}}" data-reply-root-id="{{$rootID}}" data-reply-target-id="{{$node.Event.ID}}" data-reply-pubkey="{{$node.Event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}{{with imetaMediaItemsJSON $node.Event.Tags}} data-ascii-imeta-media="{{.}}"{{end}}>
 <a class="comment-avatar" href="/u/{{$node.Event.PubKey}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{end}}</a>
 <pre class="ascii-reply"><span class="ascii-line"><a href="/u/{{$node.Event.PubKey}}" data-relay-aware>{{$author}}</a> -- {{$age}}</span>
 <span class="thread-reply-collapse"><span class="reply-content"><span class="ascii-line">{{if $showRail}}|    {{else}}     {{end}}{{asciiReplyPadLine $width}}</span>
@@ -123,7 +142,7 @@
 {{$mentionsJSON := asciiMentionsJSON $event.Content $profiles}}
 {{$rTot := reactionTotalFor .ReactionTotals $event.ID}}
 {{$rView := reactionViewerFor .ReactionViewers $event.ID}}
-<div id="note-{{$event.ID}}" class="comment thread-focus-parent" data-depth="1" style="--depth: 1" data-ascii-kind="reply" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-is-last="false" data-ascii-has-children="true" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$event.Kind}}" data-ascii-user-href="/u/{{$event.PubKey}}" data-ascii-select-href="/thread/{{$event.ID}}" data-ascii-nevent="{{nevent $event.ID $event.PubKey}}" data-ascii-npub="{{npub $event.PubKey}}" data-ascii-relay="{{$event.RelayURL}}" data-reply-root-id="{{$rootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}>
+<div id="note-{{$event.ID}}" class="comment thread-focus-parent" data-depth="1" style="--depth: 1" data-ascii-kind="reply" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-is-last="false" data-ascii-has-children="true" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$event.Kind}}" data-ascii-user-href="/u/{{$event.PubKey}}" data-ascii-select-href="/thread/{{$event.ID}}" data-ascii-nevent="{{nevent $event.ID $event.PubKey}}" data-ascii-npub="{{npub $event.PubKey}}" data-ascii-relay="{{$event.RelayURL}}" data-reply-root-id="{{$rootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}{{with imetaMediaItemsJSON $event.Tags}} data-ascii-imeta-media="{{.}}"{{end}}>
 <a class="comment-avatar" href="/u/{{$event.PubKey}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{end}}</a>
 <pre class="ascii-reply"><span class="ascii-line"><a href="/u/{{$event.PubKey}}" data-relay-aware>{{$author}}</a> -- {{$age}}</span>
 <span class="thread-reply-collapse"><span class="reply-content"><span class="ascii-line">|    {{asciiReplyPadLine $width}}</span>
@@ -147,7 +166,7 @@
 {{$mentionsJSON := asciiMentionsJSON $event.Content $profiles}}
 {{$rTot := reactionTotalFor .ReactionTotals $event.ID}}
 {{$rView := reactionViewerFor .ReactionViewers $event.ID}}
-<article class="note is-focused thread-focus-selected" id="note-{{$event.ID}}" data-depth="1" style="--depth: 1" data-created-at="{{$event.CreatedAt}}" data-ascii-kind="selected" data-ascii-selected="true" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$event.Kind}}" data-ascii-user-href="/u/{{$event.PubKey}}" data-ascii-thread-href="/thread/{{$event.ID}}" data-ascii-select-href="/thread/{{$event.ID}}" data-ascii-nevent="{{nevent $event.ID $event.PubKey}}" data-ascii-npub="{{npub $event.PubKey}}" data-ascii-relay="{{$event.RelayURL}}" data-reply-root-id="{{.RootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}>
+<article class="note is-focused thread-focus-selected" id="note-{{$event.ID}}" data-depth="1" style="--depth: 1" data-created-at="{{$event.CreatedAt}}" data-ascii-kind="selected" data-ascii-selected="true" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$event.Kind}}" data-ascii-user-href="/u/{{$event.PubKey}}" data-ascii-thread-href="/thread/{{$event.ID}}" data-ascii-select-href="/thread/{{$event.ID}}" data-ascii-nevent="{{nevent $event.ID $event.PubKey}}" data-ascii-npub="{{npub $event.PubKey}}" data-ascii-relay="{{$event.RelayURL}}" data-reply-root-id="{{.RootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}{{with imetaMediaItemsJSON $event.Tags}} data-ascii-imeta-media="{{.}}"{{end}}>
 <a class="note-avatar" href="/u/{{$event.PubKey}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{end}}</a>
 <pre class="ascii-reply"><span class="ascii-line"><a href="/u/{{$event.PubKey}}" data-relay-aware>{{$author}}</a> -- {{$age}}</span>
 <span class="note-content"><span class="ascii-line">{{asciiReplyPadLine $width}}</span>
@@ -259,7 +278,7 @@
       <li><strong>Npub Login:</strong> read-only browsing with a public key (<a href="https://github.com/nostr-protocol/nips/blob/master/19.md" target="_blank" rel="noopener noreferrer">NIP-19</a>).</li>
       <li><strong>Browser Extension:</strong> connect an extension that exposes <code>window.nostr</code> (<a href="https://github.com/nostr-protocol/nips/blob/master/07.md" target="_blank" rel="noopener noreferrer">NIP-07</a>).</li>
       <li><strong>Nsec Login:</strong> local private key usage for signing during this login; high risk.</li>
-      <li><strong>Ephemeral:</strong> create a throwaway key for temporary testing logins.</li>
+      <li><strong>Sign up:</strong> the browser generates a new keypair; copy your <code>npub</code> and <code>nsec</code> to a safe place before continuing to the app.</li>
     </ul>
   </section>
 </aside>
@@ -286,12 +305,22 @@
   <div class="mobile-menu-backdrop" data-mobile-menu-backdrop></div>
   <div class="mobile-menu-panel" role="dialog" aria-modal="true" aria-label="Menu">
     <div class="mobile-menu-header">
-      <div class="mobile-menu-title">
-        <span class="about-page-logo" aria-hidden="true">
-          <img src="/static/img/ascritch_icon_black.png" alt="" width="32" height="32" decoding="async" class="about-logo about-logo-light-scheme">
-          <img src="/static/img/ascritch_icon_white.png" alt="" width="32" height="32" decoding="async" class="about-logo about-logo-dark-scheme">
+      <div class="mobile-menu-header-logo" aria-hidden="true">
+        <span class="about-page-logo">
+          <img src="/static/img/ascritch_icon_black.png" alt="" width="80" height="80" decoding="async" class="about-logo about-logo-light-scheme">
+          <img src="/static/img/ascritch_icon_white.png" alt="" width="80" height="80" decoding="async" class="about-logo about-logo-dark-scheme">
         </span>
+      </div>
+      <div class="mobile-menu-header-title">
         <strong>Plain Text Nostr</strong>
+      </div>
+      <div class="mobile-menu-session">
+        <a href="/login" class="mobile-menu-login-cta" data-session-cta>@ Login</a>
+        <a href="/login" class="mobile-menu-profile" data-session-user-link data-session-user-copy hidden>
+          <img src="" alt="" width="32" height="32" loading="lazy" decoding="async" data-session-avatar hidden>
+          <span class="mobile-trigger-fallback" data-session-avatar-fallback>@</span>
+          <strong data-session-display-name>Guest</strong>
+        </a>
       </div>
     </div>
     <section class="mobile-menu-intro" aria-label="Plain Text Nostr summary">
@@ -333,7 +362,7 @@
     <label class="composer-label" for="composer-content">Content</label>
     <div class="composer-input-wrap" data-composer-input-wrap>
       <pre class="composer-overlay" data-composer-overlay aria-hidden="true"></pre>
-      <textarea id="composer-content" name="content" rows="6" maxlength="64000" data-composer-content required></textarea>
+      <textarea id="composer-content" name="content" rows="6" maxlength="64000" data-composer-content></textarea>
       <div class="composer-mention-menu" data-composer-mentions hidden>
         <ul class="composer-mention-list" data-composer-mention-list role="listbox" aria-label="Mention suggestions"></ul>
       </div>
@@ -342,9 +371,14 @@
       <p class="muted">Reposting</p>
       <pre class="composer-repost-preview-content" data-composer-preview-content></pre>
     </section>
-    <div class="toolbar">
-      <button type="submit" data-composer-submit>Publish</button>
+    <div class="composer-media-row" data-composer-media-row hidden>
+      <input type="file" accept="image/*" multiple data-composer-image-input hidden>
+      <button type="button" class="link-button composer-add-image" data-composer-add-image>Add image</button>
+      <ul class="composer-attachment-strip" data-composer-attachments></ul>
+    </div>
+    <div class="toolbar dialog-actions">
       <button type="button" data-composer-cancel>Cancel</button>
+      <button type="submit" data-composer-submit>Publish</button>
     </div>
   </form>
 </dialog>

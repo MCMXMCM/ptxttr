@@ -142,10 +142,7 @@ func (s *Server) newSearchPlan(ctx context.Context, req searchRequest, query sto
 	if scope == searchScopeNetwork {
 		scopedAuthors = resolved.authors
 	}
-	viewer := resolved.userPubkey
-	if viewer == "" {
-		viewer = resolved.wotViewerPubkey
-	}
+	viewer := resolved.viewerForMuteFilter()
 	storeKey := fmt.Sprintf("%s|%s|%s|%s|%s|%d|%s|%d",
 		viewer,
 		scope,

@@ -19,6 +19,17 @@ type treeMediaItem struct {
 	Type string `json:"type"`
 }
 
+func treeMediaItemsJSON(items []treeMediaItem) string {
+	if len(items) == 0 {
+		return ""
+	}
+	b, err := json.Marshal(items)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
 // treeMediaInfo bundles every tree-row field the templates need so
 // extraction/strip work happens once per note.
 type treeMediaInfo struct {
@@ -27,23 +38,93 @@ type treeMediaInfo struct {
 	DisplaySource string
 }
 
-func treeMediaFields(content string) treeMediaInfo {
-	items, mediaURLs := treeExtractMediaItems(content)
-	info := treeMediaInfo{Label: treeMediaLabelForItems(items)}
-	if len(items) == 0 {
+func treeMediaFields(content string, tags [][]string) treeMediaInfo {
+	itemsFromContent, mediaURLs := treeExtractMediaItems(content)
+	itemsFromImeta := treeExtractImetaMediaItems(tags)
+	merged := treeMergeMediaItems(itemsFromContent, itemsFromImeta)
+	info := treeMediaInfo{Label: treeMediaLabelForItems(merged)}
+	if len(merged) == 0 {
 		return info
 	}
-	if encoded, err := json.Marshal(items); err == nil {
-		info.ItemsJSON = string(encoded)
-	}
-	// When the note is media-only, leave DisplaySource empty so the tree
-	// row shows just the clickable footer label rather than duplicating it
-	// as both placeholder text and a button.
+	info.ItemsJSON = treeMediaItemsJSON(merged)
 	stripped := treeStripMediaURLs(content, mediaURLs)
 	if strings.TrimSpace(stripped) != "" {
 		info.DisplaySource = stripped
 	}
 	return info
+}
+
+// imetaMediaItemsJSON returns JSON of image/video items parsed from NIP-94-style
+// `imeta` tags (for feed `data-ascii-imeta-media`). Safe inside HTML attributes via html/template.
+func imetaMediaItemsJSON(tags [][]string) string {
+	return treeMediaItemsJSON(treeExtractImetaMediaItems(tags))
+}
+
+func treeMergeMediaItems(a, b []treeMediaItem) []treeMediaItem {
+	seen := make(map[string]struct{})
+	out := make([]treeMediaItem, 0, len(a)+len(b))
+	for _, list := range [][]treeMediaItem{a, b} {
+		for _, it := range list {
+			if it.URL == "" {
+				continue
+			}
+			if _, ok := seen[it.URL]; ok {
+				continue
+			}
+			seen[it.URL] = struct{}{}
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+func isImetaHTTPURL(u string) bool {
+	lu := strings.ToLower(strings.TrimSpace(u))
+	return strings.HasPrefix(lu, "https://") || strings.HasPrefix(lu, "http://")
+}
+
+func parseImetaTag(tag []string) (url, mime string) {
+	if len(tag) < 2 || tag[0] != "imeta" {
+		return "", ""
+	}
+	for _, field := range tag[1:] {
+		if strings.HasPrefix(field, "url ") {
+			url = strings.TrimSpace(strings.TrimPrefix(field, "url "))
+		} else if strings.HasPrefix(field, "m ") {
+			mime = strings.TrimSpace(strings.TrimPrefix(field, "m "))
+		}
+	}
+	return url, mime
+}
+
+func treeExtractImetaMediaItems(tags [][]string) []treeMediaItem {
+	if len(tags) == 0 {
+		return nil
+	}
+	var out []treeMediaItem
+	seen := make(map[string]struct{})
+	for _, tag := range tags {
+		u, mime := parseImetaTag(tag)
+		if u == "" || !isImetaHTTPURL(u) {
+			continue
+		}
+		mLower := strings.ToLower(mime)
+		kind := ""
+		switch {
+		case strings.HasPrefix(mLower, "image/"):
+			kind = "image"
+		case strings.HasPrefix(mLower, "video/"):
+			kind = "video"
+		default:
+			continue
+		}
+		if _, ok := seen[u]; ok {
+			continue
+		}
+		seen[u] = struct{}{}
+		out = append(out, treeMediaItem{URL: u, Type: kind})
+	}
+	return out
 }
 
 func treeExtractMediaItems(content string) ([]treeMediaItem, map[string]struct{}) {

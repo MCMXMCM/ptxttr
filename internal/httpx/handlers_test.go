@@ -87,7 +87,7 @@ func TestBuildThreadViewRepliesIncludesAncestorChainForDeepSelection(t *testing.
 
 	viewReplies := buildThreadViewReplies(root, selected, []nostrx.Event{child}, func(id string) *nostrx.Event {
 		return lookup[id]
-	})
+	}, nil)
 	view := thread.BuildSelected(root, selected, viewReplies)
 	if !view.FocusMode {
 		t.Fatalf("focus mode = false, want true for deep selected reply")
@@ -100,6 +100,48 @@ func TestBuildThreadViewRepliesIncludesAncestorChainForDeepSelection(t *testing.
 	}
 	if len(view.SelectedNode.Children) != 1 || view.SelectedNode.Children[0].Event.ID != "child" {
 		t.Fatalf("selected children = %#v, want [child]", view.SelectedNode.Children)
+	}
+}
+
+func TestBuildThreadViewRepliesSkipsMutedSelectedAndStopsAtMutedAncestor(t *testing.T) {
+	root := testEvent("root", "alice", 1, nil)
+	a := testEvent("a", "bob", 2, [][]string{{"e", "root", "", "root"}})
+	b := testEvent("b", "carol", 3, [][]string{{"e", "root", "", "root"}, {"e", "a", "", "reply"}})
+	c := testEvent("c", "dave", 4, [][]string{{"e", "root", "", "root"}, {"e", "b", "", "reply"}})
+	selected := testEvent("selected", "erin", 5, [][]string{{"e", "root", "", "root"}, {"e", "c", "", "reply"}})
+	child := testEvent("child", "frank", 6, [][]string{{"e", "root", "", "root"}, {"e", "selected", "", "reply"}})
+	lookup := map[string]*nostrx.Event{
+		"a": &a,
+		"b": &b,
+		"c": &c,
+	}
+	mutedErin := map[string]struct{}{authorPubkeyForMuteLookup(selected.PubKey): {}}
+	viewRepliesMutedSelected := buildThreadViewReplies(root, selected, []nostrx.Event{child}, func(id string) *nostrx.Event {
+		return lookup[id]
+	}, mutedErin)
+	for _, ev := range viewRepliesMutedSelected {
+		if ev.ID == "selected" {
+			t.Fatalf("muted selected should not appear in view replies, got %#v", viewRepliesMutedSelected)
+		}
+	}
+	foundChild := false
+	for _, ev := range viewRepliesMutedSelected {
+		if ev.ID == "child" {
+			foundChild = true
+		}
+	}
+	if !foundChild {
+		t.Fatalf("direct reply child should remain, got %#v", viewRepliesMutedSelected)
+	}
+
+	mutedCarol := map[string]struct{}{authorPubkeyForMuteLookup(b.PubKey): {}}
+	viewRepliesMutedAncestor := buildThreadViewReplies(root, selected, []nostrx.Event{child}, func(id string) *nostrx.Event {
+		return lookup[id]
+	}, mutedCarol)
+	for _, ev := range viewRepliesMutedAncestor {
+		if ev.ID == "b" || ev.ID == "a" {
+			t.Fatalf("ancestors at or above muted author should be omitted, got %#v", viewRepliesMutedAncestor)
+		}
 	}
 }
 
@@ -155,7 +197,7 @@ func TestBuildThreadViewRepliesStopsWhenAncestorMissing(t *testing.T) {
 
 	viewReplies := buildThreadViewReplies(root, selected, []nostrx.Event{child}, func(string) *nostrx.Event {
 		return nil
-	})
+	}, nil)
 	view := thread.BuildSelected(root, selected, viewReplies)
 	if view.FocusMode {
 		t.Fatalf("focus mode = true, want false when selected ancestor chain cannot be resolved")

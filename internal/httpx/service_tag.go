@@ -39,10 +39,7 @@ func (s *Server) newTagPlan(ctx context.Context, req tagRequest) tagPlan {
 	if scope == searchScopeNetwork {
 		scopedAuthors = resolved.authors
 	}
-	viewer := resolved.userPubkey
-	if viewer == "" {
-		viewer = resolved.wotViewerPubkey
-	}
+	viewer := resolved.viewerForMuteFilter()
 	storeKey := fmt.Sprintf("tag|%s|%s|%s|%s|%s|%d|%s|%d",
 		viewer,
 		scope,
@@ -77,12 +74,10 @@ func (s *Server) tagData(ctx context.Context, plan tagPlan) TagPageData {
 		}
 		tagResult := s.tagStoreResult(ctx, plan)
 		events := s.hydrateTimelineEvents(ctx, tagResult.Events)
+		viewer := plan.resolved.viewerForMuteFilter()
+		events = s.filterFeedEventsByViewerMutes(ctx, viewer, events)
 		s.warmFeedEntities(events, plan.req.Relays)
 		referenced, combined := s.referencedHydration(ctx, events, plan.req.Relays)
-		viewer := plan.resolved.userPubkey
-		if viewer == "" {
-			viewer = plan.resolved.wotViewerPubkey
-		}
 		rt, rv := s.reactionMapsForEvents(ctx, combined, viewer)
 		data := TagPageData{
 			Tag:              plan.req.Tag,

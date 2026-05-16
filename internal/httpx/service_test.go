@@ -826,10 +826,10 @@ func TestUserStatsFragmentShowsExactCachedFollowCounts(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "following 125") {
+	if !strings.Contains(body, "Following") || !strings.Contains(body, "(125)") {
 		t.Fatalf("expected exact cached following count, got: %s", body)
 	}
-	if !strings.Contains(body, "followed 132") {
+	if !strings.Contains(body, "Followed") || !strings.Contains(body, "(132)") {
 		t.Fatalf("expected exact cached follower count, got: %s", body)
 	}
 }
@@ -3652,7 +3652,7 @@ func TestFetchAuthorsPageFeedFullCacheSkipsRefresh(t *testing.T) {
 	relay := newRelayWithEvents(t, []nostrx.Event{fresh})
 	defer relay.Close()
 
-	events, _ := srv.fetchAuthorsPage(ctx, "", []string{pubkey}, 0, "", 30, []string{wsURL(relay.URL)}, "feed", authorsCacheKey([]string{pubkey}))
+	events, _ := srv.fetchAuthorsPage(ctx, "", []string{pubkey}, 0, "", 30, []string{wsURL(relay.URL)}, "feed", authorsCacheKey([]string{pubkey}), nil)
 	if len(events) == 0 {
 		t.Fatalf("expected cached page")
 	}
@@ -3683,7 +3683,7 @@ func TestFetchAuthorsPageProfileFullCacheRefreshesFirstPage(t *testing.T) {
 	relay := newRelayWithEvents(t, []nostrx.Event{fresh})
 	defer relay.Close()
 
-	events, _ := srv.fetchAuthorsPage(ctx, strings.Repeat("f", 64), []string{pubkey}, 0, "", 30, []string{wsURL(relay.URL)}, "profile", pubkey)
+	events, _ := srv.fetchAuthorsPage(ctx, strings.Repeat("f", 64), []string{pubkey}, 0, "", 30, []string{wsURL(relay.URL)}, "profile", pubkey, nil)
 	if len(events) == 0 {
 		t.Fatalf("expected profile page results")
 	}

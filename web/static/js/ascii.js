@@ -1,4 +1,6 @@
+import { syncMuteToggleButtons } from "./mutations.js";
 import { ensureNoteReactionsDelegated, formatThousandsSpaced, openReactionsModal } from "./reactions.js";
+import { normalizePubkey } from "./session.js";
 import { compactReplyBadge, padAsciiDecimal, replyLabelForCount } from "./reply-label.js";
 import { getImageModePref } from "./sort-prefs.js";
 import { NOSTR_REF_PATTERN, nostrRefLink } from "./nip27.js";
@@ -552,9 +554,12 @@ async function copyText(value, trigger) {
   }
 }
 
-function closeActionMenus(except = null) {
+export function closeActionMenus(except = null) {
   document.querySelectorAll(".ascii-action-menu.is-open").forEach((menu) => {
-    if (menu !== except) menu.classList.remove("is-open");
+    if (menu !== except) {
+      menu.classList.remove("is-open");
+      menu.querySelector(".profile-stats-menu-trigger")?.setAttribute("aria-expanded", "false");
+    }
   });
 }
 
@@ -615,6 +620,19 @@ function repostComposeButton(container) {
   return item;
 }
 
+function muteAuthorMenuButton(container) {
+  const pk = normalizePubkey(container?.dataset?.replyPubkey || "");
+  const item = document.createElement("button");
+  item.className = "link-button";
+  item.type = "button";
+  item.setAttribute("data-mute-toggle", "");
+  item.setAttribute("data-mute-bracket-labels", "");
+  item.setAttribute("data-pubkey", pk || "");
+  item.textContent = "[mute]";
+  if (!pk) item.disabled = true;
+  return item;
+}
+
 function replyActionLink(container, href, label = "reply") {
   const item = link(href, label);
   item.dataset.replyAction = "1";
@@ -637,6 +655,7 @@ function replyThreadHref(container) {
 function asciiNoteOverflowMenuItems(container) {
   return [
     bookmarkToggleButton(container),
+    muteAuthorMenuButton(container),
     viewReactionsMenuButton(container),
     repostComposeButton(container),
     link(replyThreadHref(container), "[view thread]"),
@@ -670,6 +689,13 @@ function sourceText(container) {
 
 function referenceSourceText(container) {
   return container.querySelector(":scope > .ascii-reference-source")?.content?.textContent?.trim() || "";
+}
+
+/** Quote/repost body text with image placeholders applied (shared by tree quotes and nested ASCII refs). */
+function referenceBodyDisplaySource(container, imageMode) {
+  const raw = referenceSourceText(container);
+  const referenceMediaItems = imageMode ? extractMediaItems(raw) : [];
+  return displaySourceForMedia(raw, referenceMediaItems, imageMode);
 }
 
 function imageMount(container) {
@@ -724,9 +750,35 @@ function mergeMediaItemsDedup(a, b) {
   return out;
 }
 
-/** Image/video URLs from the note body plus embedded quote/repost text (deduped). */
-function mediaItemsForAsciiNote(container) {
-  const main = extractMediaItems(sourceText(container));
+/** Parse `data-ascii-imeta-media` JSON from the note/reply shell (NIP-94 imeta tags). */
+function extractImetaMediaFromNoteContainer(container) {
+  if (!container?.dataset?.asciiImetaMedia) return [];
+  try {
+    const parsed = JSON.parse(container.dataset.asciiImetaMedia);
+    if (!Array.isArray(parsed)) return [];
+    const out = [];
+    for (const entry of parsed) {
+      const url = typeof entry?.url === "string" ? entry.url.trim() : "";
+      const type = typeof entry?.type === "string" ? entry.type.trim() : "";
+      if (!url || (type !== "image" && type !== "video")) continue;
+      if (!/^https?:\/\//i.test(url)) continue;
+      out.push({ url, type });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** Media URLs from note body plus optional `imeta` tags (deduped). */
+function mainBodyMediaItems(container, text) {
+  return mergeMediaItemsDedup(extractMediaItems(text), extractImetaMediaFromNoteContainer(container));
+}
+
+/** @param {ReturnType<typeof mainBodyMediaItems> | undefined} precomputedMain when caller already computed main-body items for `sourceText(container)`. */
+function mediaItemsForAsciiNote(container, precomputedMain) {
+  const main =
+    precomputedMain ?? mainBodyMediaItems(container, sourceText(container));
   const refMode = container.dataset.asciiRefMode || "";
   if (refMode !== "quote" && refMode !== "repost") return main;
   return mergeMediaItemsDedup(main, extractMediaItems(referenceSourceText(container)));
@@ -1258,6 +1310,80 @@ function appendBoxedTextLine(target, width, text, attrs = null, container = null
   target.append(item, "\n");
 }
 
+/** Ensures `.thread-tree-quote` after `.thread-tree-text`; returns mount and text for layout measure. */
+function threadTreeQuoteMountContext(card) {
+  const textEl = card.querySelector(".thread-tree-text");
+  if (!(textEl instanceof Element)) return null;
+  const collapse = card.querySelector("[data-thread-tree-collapsible]");
+  const host = collapse instanceof Element ? collapse : textEl.parentElement;
+  if (!(host instanceof Element)) return null;
+  let m = host.querySelector(":scope > .thread-tree-quote");
+  if (!m) {
+    m = document.createElement("div");
+    m.className = "thread-tree-quote";
+    textEl.insertAdjacentElement("afterend", m);
+  }
+  return { mount: m, textEl };
+}
+
+/** Renders quoted/reposted note body in tree rows (plain lines, no ASCII box). */
+function appendThreadTreeQuoteMinimal(target, width, container, imageMode) {
+  const mode = container.dataset.asciiRefMode;
+  if (!mode) return;
+  const referenceSource = referenceBodyDisplaySource(container, imageMode).trim();
+  const tw = replyTextWidth(width);
+  const refAuthor = (container.dataset.asciiRefAuthor || "").trim();
+  const refAge = (container.dataset.asciiRefAge || "").trim();
+  const refThreadHref = container.dataset.asciiRefThreadHref || "";
+  const attribLabel = [refAuthor, refAge].filter(Boolean).join(" ").trim();
+  if (attribLabel) {
+    const attrib = document.createElement("div");
+    attrib.className = "thread-tree-quote-attrib muted";
+    const label = truncateMiddle(attribLabel, tw);
+    if (refThreadHref) attrib.append(link(refThreadHref, label));
+    else attrib.append(label);
+    target.append(attrib);
+  }
+  if (!referenceSource) return;
+  wrapText(referenceSource, tw).forEach((row) => {
+    const line = document.createElement("span");
+    line.className = "thread-tree-text-line";
+    appendAsciiTextWithLineLink(line, row.text, container, row.ext, null);
+    target.append(line);
+  });
+}
+
+/** Hydrates tree-view quote/repost blocks (minimal typography, not feed ASCII boxes). */
+export function refreshThreadTreeQuotes(root = document) {
+  const scope = root instanceof Element ? root : document;
+  const cards = new Set();
+  if (scope instanceof Element && scope.matches("[data-thread-tree-note][data-ascii-ref-mode]")) {
+    cards.add(scope);
+  }
+  scope.querySelectorAll("[data-thread-tree-note][data-ascii-ref-mode]").forEach((el) => cards.add(el));
+  const imageModeOn = getImageModePref();
+  const imageModeKey = imageModeOn ? "1" : "0";
+  const mobile = mobileActionsQuery.matches ? "1" : "0";
+  cards.forEach((card) => {
+    const ctx = threadTreeQuoteMountContext(card);
+    if (!ctx) return;
+    const { mount, textEl } = ctx;
+    const width = measureColumns(card, textEl);
+    if (!width) {
+      delete card._ptxtTreeQuoteKey;
+      mount.textContent = "";
+      mount.hidden = true;
+      return;
+    }
+    const key = `${width}:${imageModeKey}:${mobile}:${card.dataset.asciiRefMode || ""}`;
+    if (card._ptxtTreeQuoteKey === key) return;
+    card._ptxtTreeQuoteKey = key;
+    mount.textContent = "";
+    appendThreadTreeQuoteMinimal(mount, width, card, imageModeOn);
+    mount.hidden = mount.childNodes.length === 0;
+  });
+}
+
 function appendNestedReferenceLines(target, width, container) {
   const mode = container.dataset.asciiRefMode;
   if (!mode) return;
@@ -1270,10 +1396,8 @@ function appendNestedReferenceLines(target, width, container) {
   const refAttrs = refThreadHref
     ? { asciiRefSelectHref: refThreadHref, asciiRefHit: "1" }
     : null;
-  const rawReferenceSource = referenceSourceText(container);
   const imageMode = getImageModePref();
-  const referenceMediaItems = imageMode ? extractMediaItems(rawReferenceSource) : [];
-  const referenceSource = displaySourceForMedia(rawReferenceSource, referenceMediaItems, imageMode);
+  const referenceSource = referenceBodyDisplaySource(container, imageMode);
   const headerPrefix = `  +- ${refAuthor} -- ${refAge} `;
   const headerRule = repeat("-", Math.max(1, innerWidth - runeLength(`+- ${refAuthor} -- ${refAge} +`)));
   appendBoxedTextLine(target, width, `${headerPrefix}${headerRule}+`, refAttrs, container);
@@ -1300,8 +1424,8 @@ function renderNote(container, width) {
   const refMode = container.dataset.asciiRefMode || "";
   const hasReference = Boolean(refMode);
   const rawSource = sourceText(container);
-  const outerMediaItems = extractMediaItems(rawSource);
-  const mediaItems = mediaItemsForAsciiNote(container);
+  const outerMediaItems = mainBodyMediaItems(container, rawSource);
+  const mediaItems = mediaItemsForAsciiNote(container, outerMediaItems);
   const imageMode = getImageModePref();
   const hasMedia = imageMode && mediaItems.length > 0;
   const author = authorForWidth(container, width);
@@ -1510,7 +1634,7 @@ function renderReply(container, width) {
   const content = document.createElement("span");
   content.className = "reply-content";
   const replyRawSource = sourceText(container);
-  const replyMediaItems = extractMediaItems(replyRawSource);
+  const replyMediaItems = mainBodyMediaItems(container, replyRawSource);
   const imageMode = getImageModePref();
   const hasMedia = imageMode && replyMediaItems.length > 0;
   const footerCompact = mobileActionsQuery.matches && hasMedia && replyCount > 0;
@@ -1619,7 +1743,7 @@ function renderSelected(container, width) {
   const pre = container.querySelector(":scope > .ascii-reply");
   if (!pre) return;
   const rawSource = sourceText(container);
-  const mediaItems = extractMediaItems(rawSource);
+  const mediaItems = mainBodyMediaItems(container, rawSource);
   const imageMode = getImageModePref();
   const hasMedia = imageMode && mediaItems.length > 0;
   const replyCount = parseInt(container.dataset.asciiReplyCount || "0", 10) || 0;
@@ -1644,7 +1768,8 @@ function renderSelected(container, width) {
   const visibleAuthor = truncateMiddle(author, maxAuthor);
   const topPrefix = `${visibleAuthor} -- ${age} `;
   const topSuffix = "[...]+";
-  const topRule = repeat("-", Math.max(1, headerWidth - runeLength(topPrefix + topSuffix)));
+  // One extra dash so the closing `+` lines up with the body/footer `|` column (same total width as content rows).
+  const topRule = repeat("-", Math.max(1, headerWidth - runeLength(topPrefix + topSuffix) + 1));
   pre.textContent = "";
   appendLine(pre, [
     link(container.dataset.asciiUserHref || "#", visibleAuthor),
@@ -1778,6 +1903,7 @@ function renderAscii(container) {
   } else if (container.dataset.asciiKind === "selected") {
     renderSelected(container, width);
   }
+  syncMuteToggleButtons(container);
 }
 
 function observeAscii(container) {
@@ -1890,6 +2016,7 @@ export function refreshAscii(root = document) {
     delete container._ptxtAsciiColumns;
     renderAscii(container);
   });
+  refreshThreadTreeQuotes(root);
 }
 
 const queuedAsciiRoots = new Set();
@@ -1939,6 +2066,7 @@ function rerenderAllAscii() {
     delete container._ptxtAsciiColumns;
     renderAscii(container);
   });
+  refreshThreadTreeQuotes(document);
 }
 
 mobileActionsQuery.addEventListener("change", () => {

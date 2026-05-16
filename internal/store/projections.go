@@ -91,6 +91,8 @@ func (s *Store) projectEventTx(ctx context.Context, tx *sql.Tx, event nostrx.Eve
 		return upsertNoteProjectionTx(ctx, tx, event, now)
 	case nostrx.KindFollowList:
 		return replaceFollowEdgesTx(ctx, tx, event)
+	case nostrx.KindMuteList:
+		return replaceMuteListPubkeysTx(ctx, tx, event)
 	case nostrx.KindRelayListMetadata:
 		return upsertRelayHintsProjectionTx(ctx, tx, event, now)
 	case nostrx.KindReaction:
@@ -123,6 +125,9 @@ func (s *Store) RebuildProjections(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM follow_edges`); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM mute_list_pubkeys`); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM relay_hints_cache`); err != nil {
 		return err
 	}
@@ -133,8 +138,8 @@ func (s *Store) RebuildProjections(ctx context.Context) error {
 		return err
 	}
 
-	rows, err := tx.QueryContext(ctx, `SELECT raw_json FROM events WHERE kind IN (?, ?, ?, ?, ?, ?) ORDER BY created_at ASC, id ASC`,
-		nostrx.KindProfileMetadata, nostrx.KindTextNote, nostrx.KindComment, nostrx.KindFollowList, nostrx.KindRelayListMetadata, nostrx.KindReaction)
+	rows, err := tx.QueryContext(ctx, `SELECT raw_json FROM events WHERE kind IN (?, ?, ?, ?, ?, ?, ?) ORDER BY created_at ASC, id ASC`,
+		nostrx.KindProfileMetadata, nostrx.KindTextNote, nostrx.KindComment, nostrx.KindFollowList, nostrx.KindMuteList, nostrx.KindRelayListMetadata, nostrx.KindReaction)
 	if err != nil {
 		return err
 	}
@@ -450,6 +455,29 @@ func (s *Store) FollowingPubkeys(ctx context.Context, owner string, limit int) (
 		limit = 200
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT target_pubkey FROM follow_edges WHERE owner_pubkey = ? ORDER BY target_pubkey ASC LIMIT ?`, owner, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var pubkey string
+		if err := rows.Scan(&pubkey); err != nil {
+			return nil, err
+		}
+		out = append(out, pubkey)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) MutedPubkeys(ctx context.Context, owner string, limit int) ([]string, error) {
+	if owner == "" {
+		return nil, nil
+	}
+	if limit <= 0 || limit > nostrx.MaxMuteListTagRows {
+		limit = nostrx.MaxMuteListTagRows
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT muted_pubkey FROM mute_list_pubkeys WHERE owner_pubkey = ? ORDER BY muted_pubkey ASC LIMIT ?`, owner, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1314,6 +1342,26 @@ func (s *Store) descendantCount(ctx context.Context, rootID string) (int, error)
 		)
 		SELECT COUNT(DISTINCT note_id) FROM descendants`, rootID).Scan(&total)
 	return total, err
+}
+
+func replaceMuteListPubkeysTx(ctx context.Context, tx *sql.Tx, event nostrx.Event) error {
+	winner, err := isLatestReplaceableEventTx(ctx, tx, event.PubKey, nostrx.KindMuteList, event.ID)
+	if err != nil {
+		return err
+	}
+	if !winner {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM mute_list_pubkeys WHERE owner_pubkey = ?`, event.PubKey); err != nil {
+		return err
+	}
+	for _, target := range nostrx.MuteListPubkeys(&event) {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO mute_list_pubkeys(owner_pubkey, muted_pubkey, mute_list_event_id, created_at)
+			VALUES (?, ?, ?, ?)`, event.PubKey, target, event.ID, event.CreatedAt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func replaceFollowEdgesTx(ctx context.Context, tx *sql.Tx, event nostrx.Event) error {

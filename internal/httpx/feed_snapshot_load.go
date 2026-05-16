@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"ptxt-nstr/internal/nostrx"
+	"ptxt-nstr/internal/store"
 )
 
 // tryLoadFeedPageFromDurableSnapshots serves signed-in first-page requests from
@@ -27,7 +28,7 @@ func (s *Server) tryLoadFeedPageFromDurableSnapshots(ctx context.Context, req fe
 			s.metrics.Add("feed.snapshot_stale_served", 1)
 		}
 		data := s.baseFeedPageFromSnapshotShell(ctx, req, decoded, tf, includeTrending)
-		mergeFeedSnapshotRecordIntoFeedPageData(&data, rec, false)
+		s.mergeSnapshotFeedAndApplyViewerMutes(ctx, decoded, &data, rec, false)
 		data.FeedSort = sortMode
 		return data, true
 	}
@@ -36,7 +37,7 @@ func (s *Server) tryLoadFeedPageFromDurableSnapshots(ctx context.Context, req fe
 	if rec, ok, err := s.store.GetFeedSnapshot(ctx, guestKey); err == nil && ok && rec != nil && len(rec.Feed) > 0 {
 		s.metrics.Add("feed.snapshot_starter_served", 1)
 		data := s.baseFeedPageFromSnapshotShell(ctx, req, decoded, tf, includeTrending)
-		mergeFeedSnapshotRecordIntoFeedPageData(&data, rec, true)
+		s.mergeSnapshotFeedAndApplyViewerMutes(ctx, decoded, &data, rec, true)
 		data.FeedSort = sortMode
 		return data, true
 	}
@@ -45,12 +46,17 @@ func (s *Server) tryLoadFeedPageFromDurableSnapshots(ctx context.Context, req fe
 		if err == nil && ok && snap != nil && len(snap.Feed) > 0 {
 			s.metrics.Add("feed.snapshot_starter_served", 1)
 			data := s.baseFeedPageFromSnapshotShell(ctx, req, decoded, tf, includeTrending)
-			mergeFeedSnapshotRecordIntoFeedPageData(&data, defaultSeedGuestSnapToFeedSnapshotRecord(snap), true)
+			s.mergeSnapshotFeedAndApplyViewerMutes(ctx, decoded, &data, defaultSeedGuestSnapToFeedSnapshotRecord(snap), true)
 			data.FeedSort = sortMode
 			return data, true
 		}
 	}
 	return FeedPageData{}, false
+}
+
+func (s *Server) mergeSnapshotFeedAndApplyViewerMutes(ctx context.Context, viewer string, data *FeedPageData, rec *store.FeedSnapshotRecord, starter bool) {
+	mergeFeedSnapshotRecordIntoFeedPageData(data, rec, starter)
+	data.Feed = s.filterFeedEventsByViewerMutes(ctx, viewer, data.Feed)
 }
 
 func (s *Server) baseFeedPageFromSnapshotShell(ctx context.Context, req feedRequest, viewerHex string, timeframe string, includeTrending bool) FeedPageData {

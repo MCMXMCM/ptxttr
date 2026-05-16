@@ -3,6 +3,7 @@ package httpx
 import (
 	"context"
 	"html/template"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -48,7 +49,7 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		return s.followingList(r.Context(), pubkey, "", 1), s.followersList(r.Context(), pubkey, "", 1)
 	}
 	loadNotes := func() ([]nostrx.Event, bool, int64, string) {
-		notes, hasMore := s.fetchAuthorsPage(r.Context(), "", []string{pubkey}, cursor, cursorID, 30, relays, "profile", pubkey)
+		notes, hasMore := s.fetchAuthorsPage(r.Context(), viewerPub, []string{pubkey}, cursor, cursorID, 30, relays, "profile", pubkey, nil)
 		if len(notes) > 30 {
 			notes = notes[:30]
 		}
@@ -416,6 +417,25 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var mutedForThread map[string]struct{}
+	var mutedLoadErr error
+	if !loggedOut && viewerPub != "" {
+		mutedForThread, mutedLoadErr = s.viewerMutePubkeySet(r.Context(), viewerPub)
+		if mutedLoadErr != nil {
+			// Fail-open: still show replies if mute projection cannot be read. Feeds/search
+			// use filterFeedEventsByViewerMutes (fail-closed) instead to avoid briefly showing
+			// muted authors when the DB is unhealthy.
+			slog.Warn("thread: viewer mutes load failed", "viewer", short(viewerPub), "err", mutedLoadErr)
+		} else {
+			replies = s.filterEventsByViewerMutedSet(replies, mutedForThread)
+			if fullReplyWalk {
+				fullReplies = s.filterEventsByViewerMutedSet(fullReplies, mutedForThread)
+			}
+		}
+	}
+	skipStoreThreadReplyStatsMerge := mutedLoadErr == nil && len(mutedForThread) > 0
+	// When mutes hide replies, store reply stats still count muted authors; skip that merge only (direct counts stay from buildThreadDirectReplyCounts).
+
 	all := append([]nostrx.Event(nil), *root, *selected)
 	if fullReplyWalk {
 		all = append(all, fullReplies...)
@@ -469,7 +489,8 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if needsView {
-		viewReplies := buildThreadViewReplies(*root, *selected, replies, resolveEvent)
+		// mutedForThread is nil on load error (fail-open) and when the set is empty.
+		viewReplies := buildThreadViewReplies(*root, *selected, replies, resolveEvent, mutedForThread)
 		view = thread.BuildSelected(*root, *selected, viewReplies)
 		selectedDepth = selectedDepthFromRoot(*root, *selected, view, resolveEvent)
 		traversalPath = buildTraversalPath(*root, *selected, view, resolveEvent)
@@ -478,7 +499,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		if fullReplyWalk {
 			treeData = buildThreadTreeDataFromReplies(*root, fullReplies)
 		} else if !repliesPaginationFragment {
-			treeData = s.buildThreadTreeData(r.Context(), *root, repliesPaginationFragment, threadRelays)
+			treeData = s.buildThreadTreeData(r.Context(), *root, repliesPaginationFragment, threadRelays, mutedForThread)
 		}
 		profileEvents = appendThreadProfileEvents(profileEvents, view, traversalPath)
 		profileEvents = appendThreadTreeProfileEvents(profileEvents, treeData)
@@ -486,15 +507,17 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		hiddenReplies = len(view.HiddenAncestors)
 		if needsReplyCounts {
 			replyCounts = buildThreadDirectReplyCounts(view, all)
-			if stats, err := s.store.ReplyStatsByNoteIDs(r.Context(), extractEventIDs(appendThreadTreeEvents(all, treeData))); err == nil {
-				for id, stat := range stats {
-					replyCounts[id] = stat.DirectReplies
-					if id == root.ID {
-						if stat.DirectReplies > totalReplyCount {
-							totalReplyCount = stat.DirectReplies
-						}
-						if stat.DescendantReplies > totalReplyCount {
-							totalReplyCount = stat.DescendantReplies
+			if !skipStoreThreadReplyStatsMerge {
+				if stats, err := s.store.ReplyStatsByNoteIDs(r.Context(), extractEventIDs(appendThreadTreeEvents(all, treeData))); err == nil {
+					for id, stat := range stats {
+						replyCounts[id] = stat.DirectReplies
+						if id == root.ID {
+							if stat.DirectReplies > totalReplyCount {
+								totalReplyCount = stat.DirectReplies
+							}
+							if stat.DescendantReplies > totalReplyCount {
+								totalReplyCount = stat.DescendantReplies
+							}
 						}
 					}
 				}
@@ -868,9 +891,16 @@ func linearFirstPageFromFullReplies(full []nostrx.Event, root, selected nostrx.E
 	return merged, 0, "", false
 }
 
-func buildThreadViewReplies(root nostrx.Event, selected nostrx.Event, directReplies []nostrx.Event, lookup func(string) *nostrx.Event) []nostrx.Event {
+func buildThreadViewReplies(root nostrx.Event, selected nostrx.Event, directReplies []nostrx.Event, lookup func(string) *nostrx.Event, muted map[string]struct{}) []nostrx.Event {
 	seen := make(map[string]bool, len(directReplies)+4)
 	viewReplies := make([]nostrx.Event, 0, len(directReplies)+4)
+	mutedAuthor := func(ev nostrx.Event) bool {
+		if len(muted) == 0 {
+			return false
+		}
+		_, hide := muted[authorPubkeyForMuteLookup(ev.PubKey)]
+		return hide
+	}
 	appendUnique := func(event nostrx.Event) {
 		if event.ID == "" || event.ID == root.ID || seen[event.ID] {
 			return
@@ -881,7 +911,7 @@ func buildThreadViewReplies(root nostrx.Event, selected nostrx.Event, directRepl
 	for _, reply := range directReplies {
 		appendUnique(reply)
 	}
-	if selected.ID != root.ID {
+	if selected.ID != root.ID && !mutedAuthor(selected) {
 		appendUnique(selected)
 	}
 	if lookup == nil {
@@ -895,6 +925,9 @@ func buildThreadViewReplies(root nostrx.Event, selected nostrx.Event, directRepl
 		}
 		parent := lookup(parentID)
 		if parent == nil {
+			break
+		}
+		if mutedAuthor(*parent) {
 			break
 		}
 		appendUnique(*parent)

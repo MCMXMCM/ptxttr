@@ -105,6 +105,15 @@ type requestAuthors struct {
 	seedWOTEnabled  bool
 }
 
+// viewerForMuteFilter returns the hex pubkey whose kind-10000 mute list applies
+// when filtering notes (signed-in user, or WoT center when userPubkey is empty).
+func (a requestAuthors) viewerForMuteFilter() string {
+	if strings.TrimSpace(a.userPubkey) != "" {
+		return a.userPubkey
+	}
+	return strings.TrimSpace(a.wotViewerPubkey)
+}
+
 type outboxRouteGroup struct {
 	authors []string
 	relays  []string
@@ -316,7 +325,7 @@ func (s *Server) feedPageDataEx(ctx context.Context, req feedRequest, includeTre
 			membership := newAuthorMembership(resolved.allAuthors)
 			events, hasMore = s.fetchScannedFeedPage(ctx, resolved.userPubkey, resolved.authors, membership, req.Cursor, req.CursorID, req.Limit, req.Relays, "feed", authorsCacheKey(resolved.authors))
 		} else {
-			events, hasMore = s.fetchAuthorsPage(ctx, resolved.userPubkey, resolved.authors, req.Cursor, req.CursorID, req.Limit, req.Relays, "feed", authorsCacheKey(resolved.authors))
+			events, hasMore = s.fetchAuthorsPage(ctx, resolved.userPubkey, resolved.authors, req.Cursor, req.CursorID, req.Limit, req.Relays, "feed", authorsCacheKey(resolved.authors), nil)
 		}
 		if len(events) > req.Limit {
 			events = events[:req.Limit]
@@ -351,6 +360,11 @@ func (s *Server) feedPageDataEx(ctx context.Context, req feedRequest, includeTre
 			s.refreshFeedForTrendingAsync(resolved, window, req.Relays, trendingKey, feedSortTimeframe(sortMode))
 		}
 		events, hasMore, offset = s.fetchRankedFeedPage(ctx, cohort, offset, req.Limit, sortMode, cacheOnlyFeedRanking)
+		if !resolved.loggedOut {
+			if v := resolved.viewerForMuteFilter(); v != "" {
+				events = s.filterFeedEventsByViewerMutes(ctx, v, events)
+			}
+		}
 		if rawOffset == 0 && len(events) == 0 {
 			s.metrics.Add("feed.ranked.cold_miss", 1)
 		}
@@ -556,6 +570,11 @@ func (s *Server) feedNewerCount(ctx context.Context, req feedRequest) int {
 		}
 	} else {
 		events, _ = s.store.NewerSummariesByAuthorsCursor(ctx, resolved.authors, noteTimelineKinds, req.Cursor, req.CursorID, req.Limit)
+	}
+	if !resolved.loggedOut {
+		if v := resolved.viewerForMuteFilter(); v != "" {
+			events = s.filterFeedEventsByViewerMutes(ctx, v, events)
+		}
 	}
 	if len(events) > req.Limit {
 		events = events[:req.Limit]
@@ -938,8 +957,19 @@ func (s *Server) fetchScannedFeedPage(ctx context.Context, viewer string, author
 	pageKey := feedRefreshKey(cacheKey, cursor, cursorID)
 	events, exhausted := s.scanRecentFeedEvents(ctx, membership, cursor, cursorID, limit)
 	events = s.hydrateTimelineEvents(ctx, events)
+	var muteReuse *map[string]struct{}
+	if strings.TrimSpace(viewer) != "" {
+		muted, muteErr := s.viewerMutePubkeySet(ctx, viewer)
+		if muteErr != nil {
+			slog.Warn("viewer mutes: MutedPubkeys failed", "viewer", short(viewer), "err", muteErr)
+			events = nil
+		} else {
+			muteReuse = &muted
+			events = s.filterEventsByViewerMutedSet(events, muted)
+		}
+	}
 	if len(events) == 0 && len(authors) > 0 {
-		return s.fetchAuthorsPage(ctx, viewer, authors, cursor, cursorID, limit, relays, scope, cacheKey)
+		return s.fetchAuthorsPage(ctx, viewer, authors, cursor, cursorID, limit, relays, scope, cacheKey, muteReuse)
 	}
 	shouldRefresh := len(events) == 0 || s.store.ShouldRefresh(ctx, scope, pageKey, feedTTL)
 	if len(events) >= pageLimit {
@@ -972,7 +1002,7 @@ func (s *Server) fetchScannedFeedPage(ctx context.Context, viewer string, author
 	return events, len(events) > 0 && !exhausted
 }
 
-func (s *Server) fetchAuthorsPage(ctx context.Context, viewer string, authors []string, cursor int64, cursorID string, limit int, relays []string, scope, cacheKey string) ([]nostrx.Event, bool) {
+func (s *Server) fetchAuthorsPage(ctx context.Context, viewer string, authors []string, cursor int64, cursorID string, limit int, relays []string, scope, cacheKey string, reuseMuteFilter *map[string]struct{}) ([]nostrx.Event, bool) {
 	defer s.observe("feed.authors_page", time.Now())
 	pageLimit := limit + 1
 	pageKey := feedRefreshKey(cacheKey, cursor, cursorID)
@@ -989,6 +1019,11 @@ func (s *Server) fetchAuthorsPage(ctx context.Context, viewer string, authors []
 	}
 	events, _ := s.store.RecentSummariesByAuthorsCursor(ctx, authors, noteTimelineKinds, cursor, cursorID, pageLimit)
 	events = s.hydrateTimelineEvents(ctx, events)
+	if reuseMuteFilter != nil {
+		events = s.filterEventsByViewerMutedSet(events, *reuseMuteFilter)
+	} else {
+		events = s.filterFeedEventsByViewerMutes(ctx, viewer, events)
+	}
 	shouldRefresh := len(events) == 0 || s.store.ShouldRefresh(ctx, scope, pageKey, feedTTL)
 	fetchLimit := recentAuthorsFetchLimit(pageLimit)
 	if len(events) >= pageLimit {
@@ -1024,8 +1059,11 @@ func (s *Server) fetchAuthorsPage(ctx context.Context, viewer string, authors []
 func (s *Server) profilePostsNewerFeedPageDataFromSummaries(ctx context.Context, r *http.Request, profilePubkey string, summaries []nostrx.Event) FeedPageData {
 	base := s.userBasePageData(r, "User", "feed", "feed-shell")
 	relays := s.requestRelays(r)
-	events := s.hydrateTimelineEvents(ctx, summaries)
 	viewer, loggedOut := s.resolveViewer(viewerFromRequest(r), relays)
+	if !loggedOut && viewer != "" {
+		summaries = s.filterFeedEventsByViewerMutes(ctx, viewer, summaries)
+	}
+	events := s.hydrateTimelineEvents(ctx, summaries)
 	var referenced map[string]nostrx.Event
 	var combined []nostrx.Event
 	if !allowSyncRelayWork(viewer, loggedOut) {
@@ -1176,6 +1214,7 @@ func (s *Server) refreshAuthor(ctx context.Context, pubkey string, relays []stri
 		Kinds: []int{
 			nostrx.KindProfileMetadata,
 			nostrx.KindFollowList,
+			nostrx.KindMuteList,
 			nostrx.KindRelayListMetadata,
 		},
 		Limit: 40,

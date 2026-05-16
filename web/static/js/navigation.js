@@ -617,18 +617,55 @@ function renderShell(route, url) {
           <section id="user-header" data-user-fragment="header">
             <section class="profile profile-modern profile-skeleton" aria-hidden="true">
               <div class="profile-hero">
-                <span class="profile-back text-skeleton">&lt;-- ----</span>
-                <div class="profile-avatar-wrap">
-                  <div class="profile-avatar profile-avatar-fallback profile-skeleton-avatar">@</div>
+                <div class="profile-hero-top">
+                  <span class="profile-back text-skeleton">&lt;-- Back</span>
+                  <span class="text-skeleton profile-hero-options-skeleton" aria-hidden="true">[...]</span>
                 </div>
-                <span class="profile-display-name text-skeleton profile-skeleton-display-name">----------------</span>
-                <div class="profile-actions">
-                  <span class="profile-action-link text-skeleton">-----------</span>
+                <div class="profile-hero-body">
+                  <div class="profile-avatar-wrap">
+                    <div class="profile-avatar-fallback profile-skeleton-avatar">@</div>
+                  </div>
+                  <div class="profile-hero-text">
+                  <span class="profile-display-name text-skeleton profile-skeleton-display-name">----------------</span>
+                  <div class="profile-actions">
+                    <span class="profile-follow-mute profile-follow-mute--skeleton" aria-hidden="true">
+                      <span class="text-skeleton profile-follow-mute-skeleton-line">[------]</span>
+                      <span class="text-skeleton profile-follow-mute-skeleton-line">[----]</span>
+                    </span>
+                  </div>
+                  <div class="profile-npub-block profile-npub-block--header profile-npub-block--skeleton" aria-hidden="true">
+                    <div class="profile-npub-grid">
+                      <div class="profile-npub-grid-row">
+                        <span class="text-skeleton profile-npub-skel-cell">----</span>
+                        <span class="text-skeleton profile-npub-skel-cell">----</span>
+                        <span class="text-skeleton profile-npub-skel-cell">----</span>
+                        <span class="text-skeleton profile-npub-skel-cell">----</span>
+                      </div>
+                      <div class="profile-npub-grid-row">
+                        <span class="text-skeleton profile-npub-skel-cell">----</span>
+                        <span class="text-skeleton profile-npub-skel-cell">----</span>
+                        <span class="text-skeleton profile-npub-skel-cell">----</span>
+                        <span class="text-skeleton profile-npub-skel-cell">----</span>
+                      </div>
+                      <div class="profile-npub-grid-row">
+                        <span class="text-skeleton profile-npub-skel-cell">----</span>
+                        <span class="text-skeleton profile-npub-skel-cell">----</span>
+                        <span class="text-skeleton profile-npub-skel-cell">----</span>
+                        <span class="text-skeleton profile-npub-skel-cell">----</span>
+                      </div>
+                      <div class="profile-npub-grid-row">
+                        <span class="text-skeleton profile-npub-skel-cell">----</span>
+                        <span class="text-skeleton profile-npub-skel-cell">----</span>
+                        <span class="text-skeleton profile-npub-skel-cell">----</span>
+                        <span class="text-skeleton profile-npub-skel-cell">----</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
                 </div>
               </div>
               <div class="profile-main">
                 <div class="profile-ident">
-                  <p class="text-skeleton text-skeleton-block">-------------------------------------------</p>
                   <p class="text-skeleton text-skeleton-block">-----------------------------</p>
                   <p class="text-skeleton text-skeleton-block">------------------------------------------------------</p>
                 </div>
@@ -636,15 +673,17 @@ function renderShell(route, url) {
             </section>
           </section>
           <section id="user-stats" class="stats profile-stats-row" data-user-fragment="stats">
-            <span class="text-skeleton" aria-hidden="true">-------------------------------</span>
+            <span class="text-skeleton" aria-hidden="true">Following </span><span class="muted text-skeleton" aria-hidden="true">(----)</span>
+            <span class="muted profile-stats-sep" aria-hidden="true">•</span>
+            <span class="text-skeleton" aria-hidden="true">Followed </span><span class="muted text-skeleton" aria-hidden="true">(----)</span>
+            <span class="muted profile-stats-sep" aria-hidden="true">•</span>
+            <span class="text-skeleton" aria-hidden="true">Relays</span>
           </section>
           <div class="user-tabs profile-tabs">
             <nav class="user-tab-nav" aria-label="Profile timeline">
               <label class="user-tab-label" for="user-tab-posts">Posts</label><span class="user-tab-sep" aria-hidden="true">·</span>
               <label class="user-tab-label" for="user-tab-replies">Replies</label><span class="user-tab-sep" aria-hidden="true">·</span>
-              <label class="user-tab-label" for="user-tab-media">Media</label><span class="user-tab-sep profile-mobile-only-tab" aria-hidden="true">·</span>
-              <label class="user-tab-label profile-mobile-only-tab" for="user-tab-identifiers">Identities</label><span class="user-tab-sep profile-mobile-only-tab" aria-hidden="true">·</span>
-              <label class="user-tab-label profile-mobile-only-tab" for="user-tab-relays">Relays</label>
+              <label class="user-tab-label" for="user-tab-media">Media</label>
             </nav>
             <input type="radio" name="user-tab" id="user-tab-posts" class="user-tab-state" checked>
             <section class="user-tab-panel" id="user-panel-posts" data-user-fragment="posts">
@@ -663,20 +702,12 @@ function renderShell(route, url) {
             <input type="radio" name="user-tab" id="user-tab-followers" class="user-tab-state">
             <section class="user-tab-panel" id="user-panel-followers" data-user-fragment="followers"><p class="text-skeleton text-skeleton-block" aria-hidden="true">--------------------------------</p></section>
             <input type="radio" name="user-tab" id="user-tab-identifiers" class="user-tab-state">
-            <section class="user-tab-panel profile-mobile-only-panel" id="user-panel-identifiers" data-user-fragment="identifiers"><p class="text-skeleton text-skeleton-block" aria-hidden="true">------------------------------</p></section>
+            <section class="user-tab-panel" id="user-panel-identifiers" data-user-fragment="identifiers"><p class="text-skeleton text-skeleton-block" aria-hidden="true">------------------------------</p></section>
             <input type="radio" name="user-tab" id="user-tab-relays" class="user-tab-state">
             <section class="user-tab-panel profile-mobile-only-panel" id="user-panel-relays" data-user-fragment="relays"><p class="text-skeleton text-skeleton-block" aria-hidden="true">---------------------------</p></section>
           </div>
         </section>
         <aside class="right-rail profile-right-rail">
-          <section class="profile-card profile-right-panel profile-right-panel-skeleton" id="user-right-identifiers" data-user-fragment="identifiers">
-            <div class="text-skeleton-stack" aria-hidden="true">
-              <p class="text-skeleton text-skeleton-block">Identifiers</p>
-              <p class="text-skeleton text-skeleton-block">npub: ------------------------------------</p>
-              <p class="text-skeleton text-skeleton-block">hex:  ------------------------------------</p>
-              <p class="text-skeleton text-skeleton-block">------------------------------------------</p>
-            </div>
-          </section>
           <section class="profile-card profile-right-panel profile-right-panel-skeleton" id="user-right-relays" data-user-fragment="relays">
             <div class="text-skeleton-stack" aria-hidden="true">
               <p class="text-skeleton text-skeleton-block">---------------------------------------------</p>
@@ -1009,6 +1040,9 @@ function rehydrateRouteUI(route, url, restoredFeed, options = {}) {
     main.querySelectorAll("[data-profile-tab]").forEach((el) => {
       delete el.dataset.bound;
     });
+    main.querySelectorAll(".profile-stats-menu-trigger").forEach((el) => {
+      delete el.dataset.boundStatsMenu;
+    });
     bindProfileStatLinks();
     bindProfileLazyTabs(url);
   }
@@ -1224,7 +1258,6 @@ async function loadProfileFragments(url) {
   setFragmentHTML("#user-stats", stats.body);
   bindProfileStatLinks();
   setFragmentHTML("#user-panel-identifiers", identifiers.body);
-  setFragmentHTML("#user-right-identifiers", identifiers.body);
   setFragmentHTML("#user-panel-following", following.body);
   const followingPanel = main.querySelector("#user-panel-following");
   if (followingPanel) followingPanel.dataset.loaded = "1";
@@ -1318,8 +1351,6 @@ function bindProfileLazyTabs(url) {
     { id: "user-tab-media", fragment: "media", panel: "#user-panel-media" },
     { id: "user-tab-following", fragment: "following", panel: "#user-panel-following" },
     { id: "user-tab-followers", fragment: "followers", panel: "#user-panel-followers" },
-    { id: "user-tab-identifiers", fragment: "identifiers", panel: "#user-panel-identifiers" },
-    { id: "user-tab-relays", fragment: "relays", panel: "#user-panel-relays" },
   ];
   mapping.forEach(({ id, fragment, panel }) => {
     const input = main.querySelector(`#${id}`);

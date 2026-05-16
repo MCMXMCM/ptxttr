@@ -1,3 +1,4 @@
+import { positionPopoverNearAnchor } from "./popover_anchor.js";
 import { fetchWithSession, getSession, normalizedPubkey, normalizeRelayURL, saveSelectedRelays, selectedRelays } from "./session.js";
 
 let list = null;
@@ -90,11 +91,11 @@ function bindGlobalRelayClicks() {
     if (!anchor) return;
     const pop = ensureRelayInfoPopover();
     pop.textContent = "Loading...";
-    positionRelayPopoverNear(anchor, pop);
+    positionPopoverNearAnchor(anchor, pop, { maxWidth: 360, fallbackHeight: 120 });
     showRelayInfoPopover();
     const response = await fetch(`/api/relay-info?url=${encodeURIComponent(anchor.dataset.checkRelay)}`);
     pop.textContent = formatRelayInfo(await response.json());
-    positionRelayPopoverNear(anchor, pop);
+    positionPopoverNearAnchor(anchor, pop, { maxWidth: 360, fallbackHeight: 120 });
   });
   document.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") return;
@@ -177,28 +178,6 @@ function showRelayInfoPopover() {
   }
   pop.hidden = false;
   wireRelayPopoverOutsideClose();
-}
-
-function positionRelayPopoverNear(anchor, pop) {
-  const margin = 8;
-  const maxW = Math.min(360, window.innerWidth - 2 * margin);
-  pop.style.maxWidth = `${maxW}px`;
-  void pop.offsetWidth;
-  const rect = anchor.getBoundingClientRect();
-  const ph = pop.offsetHeight || 120;
-  let top = rect.bottom + margin;
-  if (top + ph > window.innerHeight - margin && rect.top - ph - margin > margin) {
-    top = rect.top - ph - margin;
-  }
-  top = Math.max(margin, Math.min(top, window.innerHeight - ph - margin));
-  let left = rect.left;
-  if (left + maxW > window.innerWidth - margin) {
-    left = window.innerWidth - maxW - margin;
-  }
-  left = Math.max(margin, left);
-  pop.style.setProperty("position", "fixed");
-  pop.style.setProperty("top", `${top}px`);
-  pop.style.setProperty("left", `${left}px`);
 }
 
 bindGlobalRelayClicks();

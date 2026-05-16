@@ -33,6 +33,71 @@
           </div>
         </div>
       </div>
+      <div class="settings-blossom-section" data-blossom-settings-section hidden>
+      <h2>Blossom uploads</h2>
+      <div class="settings-mode-tree-group" data-blossom-settings>
+        <div class="settings-mode-tree-group-main">
+          <div class="settings-slider-tree settings-mode-tree-stacked">
+            <div class="settings-mode-branch" aria-hidden="true"></div>
+            <div class="settings-mode-row-head">
+            </div>
+            <div class="settings-mode-row-body">
+              <small class="muted">New posts upload images from your browser directly to a Blossom HTTPS endpoint (BUD-02). The first host is tried first; others are fallbacks. If uploads fail (often CORS), try another preset or your own host.</small>
+              <p class="settings-blossom-actions">
+                <button type="button" class="link-button" data-blossom-reset>Reset to defaults</button>
+              </p>
+            </div>
+          </div>
+          <div role="radiogroup" aria-labelledby="blossom-host-heading" class="settings-blossom-radiogroup">
+            <div class="settings-slider-tree settings-mode-tree-stacked settings-blossom-preset-row">
+              <div class="settings-mode-branch" aria-hidden="true"></div>
+              <div class="settings-mode-row-body">
+                <label class="settings-blossom-preset-card">
+                  <input type="radio" name="blossom-preset" value="primal" data-blossom-preset="primal">
+                  <span class="settings-blossom-preset-meta">
+                    <strong>Primal</strong>
+                    <small class="muted"><code>blossom.primal.net</code> first, then <code>blossom.nostr.build</code>.</small>
+                  </span>
+                </label>
+              </div>
+            </div>
+            <div class="settings-slider-tree settings-mode-tree-stacked settings-blossom-preset-row">
+              <div class="settings-mode-branch" aria-hidden="true"></div>
+              <div class="settings-mode-row-body">
+                <label class="settings-blossom-preset-card">
+                  <input type="radio" name="blossom-preset" value="nostr_build" data-blossom-preset="nostr_build">
+                  <span class="settings-blossom-preset-meta">
+                    <strong>nostr.build</strong>
+                    <small class="muted"><code>blossom.nostr.build</code> first, then <code>blossom.primal.net</code>.</small>
+                  </span>
+                </label>
+              </div>
+            </div>
+            <div class="settings-slider-tree settings-mode-tree-stacked settings-blossom-preset-row">
+              <div class="settings-mode-branch" aria-hidden="true"></div>
+              <div class="settings-mode-row-body">
+                <label class="settings-blossom-preset-card">
+                  <input type="radio" name="blossom-preset" value="custom" data-blossom-preset="custom">
+                  <span class="settings-blossom-preset-meta">
+                    <strong>Custom base URL</strong>
+                    <small class="muted">Your URL is tried first; built-in hosts remain as fallbacks.</small>
+                  </span>
+                </label>
+              </div>
+            </div>
+          </div>
+          <div class="settings-slider-tree settings-mode-tree-stacked" data-blossom-custom-wrap>
+            <div class="settings-mode-branch" aria-hidden="true"></div>
+            <div class="settings-mode-row-head">
+              <strong>Custom Blossom URL</strong>
+            </div>
+            <div class="settings-mode-row-body">
+              <input id="blossom-custom-url" class="settings-blossom-custom-input" type="url" inputmode="url" autocomplete="off" placeholder="https://example.com/blossom/" data-blossom-custom-url aria-label="Custom Blossom base URL">
+            </div>
+          </div>
+        </div>
+      </div>
+      </div>
       <h2>Web of Trust</h2>
       <div class="settings-mode-tree-group">
         <div class="settings-mode-tree-group-main">

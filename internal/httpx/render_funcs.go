@@ -45,6 +45,64 @@ func bioLinkHTML(about string) template.HTML {
 	return template.HTML(buf.String())
 }
 
+// keyCheckerboardGridHTML lays out a string as rows of four-character groups
+// (four groups per row) with a checkerboard emphasis pattern.
+func keyCheckerboardGridHTML(s string) template.HTML {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	var chunks []string
+	for i := 0; i < len(s); i += 4 {
+		end := i + 4
+		if end > len(s) {
+			end = len(s)
+		}
+		chunks = append(chunks, s[i:end])
+	}
+	var buf bytes.Buffer
+	buf.WriteString(`<div class="profile-npub-grid" translate="no">`)
+	for rowStart := 0; rowStart < len(chunks); rowStart += 4 {
+		rowIdx := rowStart / 4
+		buf.WriteString(`<div class="profile-npub-grid-row">`)
+		for col := 0; col < 4; col++ {
+			idx := rowStart + col
+			if idx >= len(chunks) {
+				break
+			}
+			chunk := chunks[idx]
+			class := "profile-npub-cell"
+			if (rowIdx+col)%2 == 0 {
+				class += " profile-npub-cell--emph"
+			}
+			buf.WriteString(`<span class="`)
+			buf.WriteString(class)
+			buf.WriteString(`">`)
+			buf.WriteString(template.HTMLEscapeString(chunk))
+			buf.WriteString(`</span>`)
+		}
+		buf.WriteString(`</div>`)
+	}
+	buf.WriteString(`</div>`)
+	return template.HTML(buf.String())
+}
+
+// npubGridHTML renders the bech32 npub as a human-readable grid. Returns
+// empty HTML when the pubkey cannot be encoded.
+func npubGridHTML(pubkey string) template.HTML {
+	return keyCheckerboardGridHTML(nostrx.EncodeNPub(pubkey))
+}
+
+// hexGridHTML renders the normalized hex public key the same way. Returns
+// empty HTML when the pubkey is not valid hex.
+func hexGridHTML(pubkey string) template.HTML {
+	pk, err := nostrx.NormalizePubKey(pubkey)
+	if err != nil {
+		return ""
+	}
+	return keyCheckerboardGridHTML(pk)
+}
+
 func templateFuncs() template.FuncMap {
 	return template.FuncMap{
 		"relTime":                  relTime,
@@ -55,6 +113,8 @@ func templateFuncs() template.FuncMap {
 		"avatarSrc":                avatarSrc,
 		"avatarSrcURL":             avatarSrcFor,
 		"npub":                     nostrx.EncodeNPub,
+		"npubGridHTML":             npubGridHTML,
+		"hexGridHTML":              hexGridHTML,
 		"nevent":                   nostrx.EncodeNEvent,
 		"contentLines":             contentLines,
 		"dict":                     dict,
@@ -83,7 +143,9 @@ func templateFuncs() template.FuncMap {
 		"reactionViewerFor":        reactionViewerFor,
 		"isSimpleRepost":           isSimpleRepost,
 		"isQuotePost":              isQuotePost,
+		"threadTreeMainBodyText":   threadTreeMainBodyText,
 		"treeMediaFields":          treeMediaFields,
+		"imetaMediaItemsJSON":      imetaMediaItemsJSON,
 		"threadContinueThreadHref": threadContinueThreadHref,
 		"hnPathIndentPx":           hnPathIndentPx,
 		"sub":                      func(a, b int) int { return a - b },
@@ -119,6 +181,15 @@ func isSimpleRepost(event nostrx.Event) bool {
 
 func isQuotePost(event nostrx.Event) bool {
 	return event.Kind == nostrx.KindTextNote && event.FirstTagValue("q") != ""
+}
+
+// threadTreeMainBodyText is the tree-view main text column: empty for simple
+// reposts (quoted body is rendered separately like the feed note client).
+func threadTreeMainBodyText(event nostrx.Event, profiles map[string]nostrx.Profile) string {
+	if isSimpleRepost(event) {
+		return ""
+	}
+	return asciiMentionContent(event.Content, profiles)
 }
 
 func referenceEvent(referenced map[string]nostrx.Event, id string) nostrx.Event {

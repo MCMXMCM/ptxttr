@@ -9,6 +9,24 @@ const WEB_OF_TRUST_SEED_KEY = "ptxt_wot_seed_pubkey";
 const TRENDING_TF_KEY = "ptxt_trending_tf";
 const READS_TRENDING_TF_KEY = "ptxt_reads_trending_tf";
 const THREAD_RENDER_MODE_KEY = "ptxt_thread_render_mode";
+const BLOSSOM_SERVERS_KEY = "ptxt_blossom_servers";
+
+/** Default Blossom bases (first = primary upload target, rest = fallback order). */
+export const BLOSSOM_DEFAULT_SERVER_URLS = Object.freeze([
+  "https://blossom.primal.net/",
+  "https://blossom.nostr.build/",
+]);
+
+const BLOSSOM_PRESET_NOSTR_BUILD_URLS = Object.freeze([
+  "https://blossom.nostr.build/",
+  "https://blossom.primal.net/",
+]);
+
+function blossomURLsMatchPreset(list, preset) {
+  if (list.length !== preset.length) return false;
+  return list.every((u, i) => u === preset[i]);
+}
+
 const VALID = new Set(["recent", "trend24h", "trend7d"]);
 const VALID_TRENDING_TF = new Set(["24h", "1w"]);
 const MAX_WEB_OF_TRUST_DEPTH = 3;
@@ -245,5 +263,96 @@ export function setReadsTrendingTimeframePref(value) {
   } catch {
     // ignore
   }
+}
+
+export function normalizeBlossomBaseUrl(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return "";
+  try {
+    const u = new URL(s.includes("://") ? s : `https://${s}`);
+    if (u.protocol !== "https:") return "";
+    const trimmed = (u.pathname || "/").replace(/\/+$/, "");
+    if (!trimmed || trimmed === "/") return `${u.origin}/`;
+    return `${u.origin}${trimmed}/`;
+  } catch {
+    return "";
+  }
+}
+
+function normalizeBlossomServerList(urls) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of urls || []) {
+    const n = normalizeBlossomBaseUrl(raw);
+    if (!n || seen.has(n)) continue;
+    seen.add(n);
+    out.push(n);
+  }
+  return out;
+}
+
+/** Ordered Blossom server base URLs (https://host/.../). */
+export function getBlossomServerURLs() {
+  try {
+    const raw = localStorage.getItem(BLOSSOM_SERVERS_KEY);
+    if (!raw) return [...BLOSSOM_DEFAULT_SERVER_URLS];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [...BLOSSOM_DEFAULT_SERVER_URLS];
+    const list = normalizeBlossomServerList(parsed.map((x) => String(x || "").trim()));
+    return list.length > 0 ? list : [...BLOSSOM_DEFAULT_SERVER_URLS];
+  } catch {
+    return [...BLOSSOM_DEFAULT_SERVER_URLS];
+  }
+}
+
+export function setBlossomServerURLs(urls) {
+  try {
+    const list = normalizeBlossomServerList(urls);
+    if (list.length === 0) {
+      localStorage.removeItem(BLOSSOM_SERVERS_KEY);
+      return;
+    }
+    const defaults = [...BLOSSOM_DEFAULT_SERVER_URLS];
+    if (list.length === defaults.length && list.every((u, i) => u === defaults[i])) {
+      localStorage.removeItem(BLOSSOM_SERVERS_KEY);
+      return;
+    }
+    localStorage.setItem(BLOSSOM_SERVERS_KEY, JSON.stringify(list));
+  } catch {
+    // ignore
+  }
+}
+
+export function resetBlossomServerURLsToDefaults() {
+  try {
+    localStorage.removeItem(BLOSSOM_SERVERS_KEY);
+  } catch {
+    // ignore
+  }
+}
+
+/** Primal-first vs nostr.build-first presets for the settings UI. */
+export function setBlossomPreset(preset) {
+  const p = String(preset || "").toLowerCase();
+  if (p === "nostr_build" || p === "nostr.build") {
+    setBlossomServerURLs(["https://blossom.nostr.build/", "https://blossom.primal.net/"]);
+    return;
+  }
+  if (p === "primal") {
+    setBlossomServerURLs([...BLOSSOM_DEFAULT_SERVER_URLS]);
+    return;
+  }
+}
+
+/** Which preset matches the given normalized URL list, or "custom". */
+export function getBlossomPresetIdForURLs(list) {
+  if (blossomURLsMatchPreset(list, BLOSSOM_DEFAULT_SERVER_URLS)) return "primal";
+  if (blossomURLsMatchPreset(list, BLOSSOM_PRESET_NOSTR_BUILD_URLS)) return "nostr_build";
+  return "custom";
+}
+
+/** Which preset matches the stored list, or "custom". */
+export function getBlossomPresetId() {
+  return getBlossomPresetIdForURLs(getBlossomServerURLs());
 }
 

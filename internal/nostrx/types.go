@@ -9,14 +9,17 @@ import (
 )
 
 const (
-	KindProfileMetadata    = 0
-	KindTextNote           = 1
-	KindComment            = 1111
-	KindFollowList         = 3
-	KindRepost             = 6
-	KindReaction           = 7
-	KindBookmarkList       = 10003
+	KindProfileMetadata = 0
+	KindTextNote        = 1
+	KindComment         = 1111
+	KindFollowList      = 3
+	KindRepost          = 6
+	KindReaction        = 7
+	KindMuteList           = 10000
+	// MaxMuteListTagRows caps tag rows on NIP-51 kind-10000 (publish validation and server-side mute projection reads).
+	MaxMuteListTagRows     = 2000
 	KindRelayListMetadata  = 10002
+	KindBookmarkList       = 10003
 	KindLongForm           = 30023
 	MaxRelayQueryLimit     = 200
 	DefaultRelayQueryLimit = 50
@@ -157,6 +160,28 @@ func DedupeEvents(events []Event, limit int) []Event {
 		}
 	}
 	return out
+}
+
+// MuteListPubkeys returns unique hex pubkeys from public "p" tags on a NIP-51
+// kind-10000 mute list (private encrypted entries in content are ignored here).
+func MuteListPubkeys(event *Event) []string {
+	if event == nil || event.Kind != KindMuteList {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var pubkeys []string
+	for _, tag := range event.Tags {
+		if len(tag) < 2 || tag[0] != "p" {
+			continue
+		}
+		normalized, err := NormalizePubKey(tag[1])
+		if err != nil || seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		pubkeys = append(pubkeys, normalized)
+	}
+	return pubkeys
 }
 
 func FollowPubkeys(event *Event) []string {

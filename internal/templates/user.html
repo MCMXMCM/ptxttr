@@ -13,10 +13,6 @@
         <label class="user-tab-label" for="user-tab-replies">Replies <span class="muted">({{len .Replies}})</span></label>
         <span class="user-tab-sep" aria-hidden="true">·</span>
         <label class="user-tab-label" for="user-tab-media">Media <span class="muted">({{len .Media}})</span></label>
-        <span class="user-tab-sep profile-mobile-only-tab" aria-hidden="true">·</span>
-        <label class="user-tab-label profile-mobile-only-tab" for="user-tab-identifiers">Identities</label>
-        <span class="user-tab-sep profile-mobile-only-tab" aria-hidden="true">·</span>
-        <label class="user-tab-label profile-mobile-only-tab" for="user-tab-relays">Relays</label>
       </nav>
 
       <input type="radio" name="user-tab" id="user-tab-posts" class="user-tab-state" checked>
@@ -51,7 +47,7 @@
       <section class="user-tab-panel" aria-label="Followed by" id="user-panel-followers" data-user-fragment="followers">{{template "user_followers" .}}</section>
 
       <input type="radio" name="user-tab" id="user-tab-identifiers" class="user-tab-state">
-      <section class="user-tab-panel profile-mobile-only-panel" aria-label="Identifiers" id="user-panel-identifiers" data-user-fragment="identifiers">{{template "user_identifiers" .}}</section>
+      <section class="user-tab-panel" aria-label="Identifiers" id="user-panel-identifiers" data-user-fragment="identifiers">{{template "user_identifiers" .}}</section>
 
       <input type="radio" name="user-tab" id="user-tab-relays" class="user-tab-state">
       <section class="user-tab-panel profile-mobile-only-panel" aria-label="Relays" id="user-panel-relays" data-user-fragment="relays">{{template "user_relays" .}}</section>
@@ -69,12 +65,11 @@
 {{end}}
 
 {{define "user_stats"}}
-<span class="profile-stats-counts">
-  <a href="#user-panel-following" class="profile-stat-link" data-profile-tab="user-tab-following">following {{if .FollowingList.CachedExact}}{{.FollowingList.CachedTotal}}{{else}}{{len .FollowingList.Items}}+{{end}}</a>
-  <span class="muted" aria-hidden="true"> • </span>
-  <a href="#user-panel-followers" class="profile-stat-link" data-profile-tab="user-tab-followers">followed {{if .FollowersList.CachedExact}}{{.FollowersList.CachedTotal}}{{else}}{{len .FollowersList.Items}}+{{end}}</a>
-</span>
-<span><a href="/" data-relay-aware>view feed</a></span>
+<a href="#user-panel-following" class="profile-stat-link" data-profile-tab="user-tab-following">Following <span class="muted">({{if .FollowingList.CachedExact}}{{.FollowingList.CachedTotal}}{{else}}{{len .FollowingList.Items}}+{{end}})</span></a>
+<span class="muted profile-stats-sep" aria-hidden="true">•</span>
+<a href="#user-panel-followers" class="profile-stat-link" data-profile-tab="user-tab-followers">Followed <span class="muted">({{if .FollowersList.CachedExact}}{{.FollowersList.CachedTotal}}{{else}}{{len .FollowersList.Items}}+{{end}})</span></a>
+<span class="muted profile-stats-sep" aria-hidden="true">•</span>
+<a href="#user-panel-relays" class="profile-stat-link" data-profile-tab="user-tab-relays">Relays</a>
 {{end}}
 
 {{define "user_identifiers"}}
@@ -83,8 +78,19 @@
   <span class="ascii-edge">|</span>
   <div class="ascii-content">
     <h2 class="user-tab-panel-heading">Identifiers</h2>
-    <p>npub: <span class="mono">{{npub .Profile.PubKey}}</span></p>
-    <p>hex: <span class="mono">{{.Profile.PubKey}}</span></p>
+    <div class="profile-ident-grids">
+      <div class="profile-ident-grid-column">
+        <p class="muted profile-id-heading">npub</p>
+        <div class="profile-ident-grid-wrap profile-npub-copy" data-profile-npub-copy data-npub="{{npub .Profile.PubKey}}" role="button" tabindex="0" aria-label="Copy npub to clipboard">
+          <span class="profile-npub-copy-toast" data-profile-npub-copy-status role="status" aria-live="polite" hidden></span>
+          {{npubGridHTML .Profile.PubKey}}
+        </div>
+      </div>
+      <div class="profile-ident-grid-column">
+        <p class="muted profile-id-heading">hex</p>
+        <div class="profile-ident-grid-wrap">{{hexGridHTML .Profile.PubKey}}</div>
+      </div>
+    </div>
     {{if .Profile.Event}}
       <p class="muted">metadata cached from kind 0 event <a href="/thread/{{.Profile.Event.ID}}" data-relay-aware>{{short .Profile.Event.ID}}</a></p>
     {{else}}
@@ -209,7 +215,6 @@
 
 {{define "user_right_rail"}}
 <aside class="right-rail profile-right-rail">
-  <section class="profile-card profile-right-panel" id="user-right-identifiers" data-user-fragment="identifiers">{{template "user_identifiers" .}}</section>
   <section class="profile-card profile-right-panel" id="user-right-relays" data-user-fragment="relays">{{template "user_relays" .}}</section>
 </aside>
 {{end}}

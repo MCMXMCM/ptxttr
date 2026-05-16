@@ -39,12 +39,10 @@ func (s *Server) searchData(ctx context.Context, plan searchPlan) SearchPageData
 		}
 		searchResult := s.searchStoreResult(ctx, plan)
 		events := s.hydrateTimelineEvents(ctx, searchResult.Events)
+		viewer := plan.resolved.viewerForMuteFilter()
+		events = s.filterFeedEventsByViewerMutes(ctx, viewer, events)
 		s.warmFeedEntities(events, plan.req.Relays)
 		referenced, combined := s.referencedHydration(ctx, events, plan.req.Relays)
-		viewer := plan.resolved.userPubkey
-		if viewer == "" {
-			viewer = plan.resolved.wotViewerPubkey
-		}
 		rt, rv := s.reactionMapsForEvents(ctx, combined, viewer)
 		data := SearchPageData{
 			Query:            plan.query.Normalized,

@@ -252,6 +252,12 @@ After a successful artifact apply, `make deploy` also runs [`scripts/cloudfront-
 - Set `SKIP_CLOUDFRONT_INVALIDATION=1` to skip (e.g. local tests).
 - `./scripts/reapply-cfn-artifact.sh` alone does not run this step; invoke `cloudfront-invalidate-static.sh` manually if you deploy that way.
 
+## Mute lists (NIP-51 kind 10000)
+
+The web UI publishes mute list updates as **public `p` tags** with empty **`content`**. Other Nostr clients may keep encrypted or supplemental mute data in `content` or non-`p` tags; publishing from this app **replaces** the replaceable kind 10000 event with that simplified shape. Operators should expect that behavior when supporting users who cross-post between clients.
+
+The server projects public `p` mutes into SQLite for filtering. If that projection read fails, **feed-like surfaces** return **no timeline rows** until the store recovers (fail-closed for privacy), while **thread HTML** still shows replies (fail-open) so a transient DB error does not hide an entire conversation.
+
 ## Data model
 
 SQLite lives at `/var/lib/ptxt-nstr/ptxt-nstr.sqlite` on a dedicated EBS data volume mounted at `/var/lib/ptxt-nstr`. The volume is created by the single-instance stack as a separate `AWS::EC2::Volume` with both `DeletionPolicy: Retain` and `UpdateReplacePolicy: Retain`, so it survives:

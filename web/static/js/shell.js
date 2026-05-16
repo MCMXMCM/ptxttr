@@ -144,12 +144,22 @@ export function mobileMenu(searchQuery = "") {
       <div class="mobile-menu-backdrop" data-mobile-menu-backdrop></div>
       <div class="mobile-menu-panel" role="dialog" aria-modal="true" aria-label="Menu">
         <div class="mobile-menu-header">
-          <div class="mobile-menu-title">
-            <span class="about-page-logo" aria-hidden="true">
-              <img src="/static/img/ascritch_icon_black.png" alt="" width="32" height="32" decoding="async" class="about-logo about-logo-light-scheme">
-              <img src="/static/img/ascritch_icon_white.png" alt="" width="32" height="32" decoding="async" class="about-logo about-logo-dark-scheme">
+          <div class="mobile-menu-header-logo" aria-hidden="true">
+            <span class="about-page-logo">
+              <img src="/static/img/ascritch_icon_black.png" alt="" width="80" height="80" decoding="async" class="about-logo about-logo-light-scheme">
+              <img src="/static/img/ascritch_icon_white.png" alt="" width="80" height="80" decoding="async" class="about-logo about-logo-dark-scheme">
             </span>
+          </div>
+          <div class="mobile-menu-header-title">
             <strong>Plain Text Nostr</strong>
+          </div>
+          <div class="mobile-menu-session">
+            <a href="/login" class="mobile-menu-login-cta" data-session-cta>@ Login</a>
+            <a href="/login" class="mobile-menu-profile" data-session-user-link data-session-user-copy hidden>
+              <img src="" alt="" width="32" height="32" loading="lazy" decoding="async" data-session-avatar hidden>
+              <span class="mobile-trigger-fallback" data-session-avatar-fallback>@</span>
+              <strong data-session-display-name>Guest</strong>
+            </a>
           </div>
         </div>
         <section class="mobile-menu-intro" aria-label="Plain Text Nostr summary">
@@ -193,7 +203,7 @@ export function postPlaceholderDialog() {
         <label class="composer-label" for="composer-content">Content</label>
         <div class="composer-input-wrap" data-composer-input-wrap>
           <pre class="composer-overlay" data-composer-overlay aria-hidden="true"></pre>
-          <textarea id="composer-content" name="content" rows="6" maxlength="64000" data-composer-content required></textarea>
+          <textarea id="composer-content" name="content" rows="6" maxlength="64000" data-composer-content></textarea>
           <div class="composer-mention-menu" data-composer-mentions hidden>
             <ul class="composer-mention-list" data-composer-mention-list role="listbox" aria-label="Mention suggestions"></ul>
           </div>
@@ -202,9 +212,14 @@ export function postPlaceholderDialog() {
           <p class="muted">Reposting</p>
           <pre class="composer-repost-preview-content" data-composer-preview-content></pre>
         </section>
-        <div class="toolbar">
-          <button type="submit" data-composer-submit>Publish</button>
+        <div class="composer-media-row" data-composer-media-row hidden>
+          <input type="file" accept="image/*" multiple data-composer-image-input hidden>
+          <button type="button" class="link-button composer-add-image" data-composer-add-image>Add image</button>
+          <ul class="composer-attachment-strip" data-composer-attachments></ul>
+        </div>
+        <div class="toolbar dialog-actions">
           <button type="button" data-composer-cancel>Cancel</button>
+          <button type="submit" data-composer-submit>Publish</button>
         </div>
       </form>
     </dialog>

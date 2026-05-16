@@ -10,7 +10,8 @@ import (
 
 const (
 	ogSiteName        = "Plain Text Nostr"
-	ogDefaultImage    = "/static/img/ascritch.png"
+	// Black-on-white OG card (transparent favicon asset is composited in ascritch_og_light.png).
+	ogDefaultImage = "/static/img/ascritch_og_light.png"
 	ogDescriptionMax  = 240
 	ogTitleMax        = 110
 	ogTypeArticle     = "article"

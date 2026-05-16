@@ -163,6 +163,14 @@ func (s *Store) migrate(ctx context.Context) error {
 			PRIMARY KEY(owner_pubkey, target_pubkey)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_follow_edges_target ON follow_edges(target_pubkey, owner_pubkey)`,
+		`CREATE TABLE IF NOT EXISTS mute_list_pubkeys (
+			owner_pubkey TEXT NOT NULL,
+			muted_pubkey TEXT NOT NULL,
+			mute_list_event_id TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			PRIMARY KEY(owner_pubkey, muted_pubkey)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_mute_list_pubkeys_muted ON mute_list_pubkeys(muted_pubkey, owner_pubkey)`,
 		`CREATE TABLE IF NOT EXISTS relay_hints_cache (
 			pubkey TEXT PRIMARY KEY,
 			relay_event_id TEXT NOT NULL,

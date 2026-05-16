@@ -109,6 +109,25 @@ func TestFollowPubkeysExtractsUniqueValidTags(t *testing.T) {
 	}
 }
 
+func TestMuteListPubkeysExtractsUniqueValidTags(t *testing.T) {
+	alice := strings.Repeat("a", 64)
+	bobUpper := strings.Repeat("B", 64)
+	bob := strings.ToLower(bobUpper)
+	event := Event{
+		Kind: KindMuteList,
+		Tags: [][]string{
+			{"p", alice},
+			{"t", "spam"},
+			{"p", "not-a-pubkey"},
+			{"p", bobUpper},
+		},
+	}
+	got := MuteListPubkeys(&event)
+	if len(got) != 2 || got[0] != alice || got[1] != bob {
+		t.Fatalf("unexpected mute list pubkeys: %#v", got)
+	}
+}
+
 func TestBookmarkEventIDsExtractsUniqueHexEventIDs(t *testing.T) {
 	first := strings.Repeat("a", 64)
 	secondUpper := strings.Repeat("B", 64)

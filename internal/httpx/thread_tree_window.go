@@ -14,11 +14,14 @@ type ThreadTreeData struct {
 	Nodes []thread.Node
 }
 
-func (s *Server) buildThreadTreeData(ctx context.Context, focus nostrx.Event, storeOnly bool, relays []string) ThreadTreeData {
+func (s *Server) buildThreadTreeData(ctx context.Context, focus nostrx.Event, storeOnly bool, relays []string, muted map[string]struct{}) ThreadTreeData {
 	if focus.ID == "" {
 		return ThreadTreeData{}
 	}
 	replies, _ := s.threadTreeReplies(ctx, focus.ID, storeOnly, relays)
+	if s != nil {
+		replies = s.filterEventsByViewerMutedSet(replies, muted)
+	}
 	return buildThreadTreeDataFromReplies(focus, replies)
 }
 

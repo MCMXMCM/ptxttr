@@ -622,3 +622,28 @@ func (s *Server) handleBookmarksAPI(w http.ResponseWriter, r *http.Request) {
 		"count":      len(ids),
 	}, nil)
 }
+
+func (s *Server) handleMuteListAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Cache-Control", "private, no-store")
+	pubkey, err := nostrx.DecodeIdentifier(viewerFromRequest(r))
+	if err != nil || pubkey == "" {
+		writeJSON(w, nil, httpError("valid pubkey is required", http.StatusBadRequest))
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout(s.cfg.RequestTimeout))
+	defer cancel()
+	mutedPubkeys, err := s.store.MutedPubkeys(ctx, pubkey, nostrx.MaxMuteListTagRows)
+	if err != nil {
+		slog.Warn("mute-list: MutedPubkeys failed", "pubkey", short(pubkey), "err", err)
+		writeJSON(w, nil, httpError("mute list unavailable", http.StatusServiceUnavailable))
+		return
+	}
+	writeJSON(w, map[string]any{
+		"pubkey":        pubkey,
+		"muted_pubkeys": mutedPubkeys,
+	}, nil)
+}

@@ -1,5 +1,5 @@
 html {
-  font-size: 9pt;
+  font-size: 10pt;
 }
 
 :root {
@@ -16,6 +16,9 @@ html {
   --body-max: 1280px;
   /* Extra scroll room below the last note/reply so the feed does not end flush with the viewport. */
   --feed-scroll-pad: max(3rem, 22vh);
+  --font-mono-stack: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  --mono: var(--font-mono-stack);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -40,7 +43,7 @@ body {
   padding: 0 1rem;
   background: var(--bg);
   color: var(--fg);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono-stack);
   font-size: inherit;
   line-height: 1.25;
 }
@@ -143,7 +146,7 @@ body.feed-shell main {
 }
 
 .rail-user[data-logged-in="1"],
-.mobile-menu-header[data-logged-in="1"] {
+.mobile-menu-profile[data-logged-in="1"] {
   cursor: pointer;
 }
 
@@ -713,8 +716,12 @@ body.feed-shell main {
   gap: 0.55rem;
 }
 
-.composer-form .toolbar {
+/* Dismissive/secondary control first in DOM (left of pair); primary submit last (right).
+   Use with justify-content: flex-end so the group sits on the trailing edge. */
+.toolbar.dialog-actions {
+  box-sizing: border-box;
   justify-content: flex-end;
+  width: 100%;
 }
 
 .composer-label {
@@ -855,6 +862,58 @@ body.feed-shell main {
   white-space: pre-wrap;
 }
 
+.composer-media-row {
+  align-items: flex-start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.composer-attachment-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+}
+
+.composer-attachment-item {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: space-between;
+}
+
+.composer-attachment-label {
+  font-size: 0.875rem;
+  max-width: 70%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-blossom-radiogroup {
+  display: contents;
+}
+
+.settings-blossom-custom-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.settings-blossom-custom-input {
+  max-width: 36rem;
+  width: 100%;
+}
+
+.settings-blossom-actions {
+  margin: 0.5rem 0 0;
+}
+
 @media (min-width: 1100px) {
   .composer-dialog {
     max-width: min(92vw, 58rem);
@@ -864,6 +923,194 @@ body.feed-shell main {
   .composer-form textarea {
     min-height: 16rem;
   }
+}
+
+/* Thread: inline reply composer — same column geometry as `.comment` (rail + avatar + body). */
+.thread-inline-reply {
+  --avatar-left: -0.4ch;
+  --avatar-size: 2.4em;
+  --depth: 1;
+  font-family: var(--font-mono-stack);
+  font-size: inherit;
+  line-height: 1.25em;
+  margin-left: calc((var(--depth, 1) - 1) * 1ch);
+  margin-top: 1.15em;
+  max-width: 100%;
+  min-width: 0;
+  padding-left: 1ch;
+  position: relative;
+}
+
+/* Connector from parent into this composer: branch uses a short vertical stub; leaf is a single `|` so nothing reads as continuing below the avatar when there are no sibling rails. */
+.thread-inline-reply::before {
+  color: var(--fg);
+  content: "|\A|";
+  left: calc(var(--avatar-left) + var(--avatar-size) / 2 - 0.5ch);
+  line-height: 1.25em;
+  pointer-events: none;
+  position: absolute;
+  top: -1.35em;
+  white-space: pre;
+  z-index: 1;
+}
+
+.thread-inline-reply[data-inline-rail-mode="leaf"]::before {
+  content: "|";
+  white-space: normal;
+}
+
+/* Vertical thread rail: `.thread-inline-reply__rail-pre` is filled in JS (`syncThreadInlineRailGlyphs`)
+   only in `data-inline-rail-mode="branch"` so the column continues through siblings. */
+
+.thread-inline-reply__card {
+  margin: 0;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: clip;
+}
+
+.thread-inline-reply__header {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  font-family: var(--font-mono-stack);
+  line-height: 1.25em;
+  margin: 0;
+  min-height: 1.25em;
+  padding-left: calc(1ch + var(--avatar-size));
+}
+
+.thread-inline-reply__header-name {
+  font-weight: 600;
+}
+
+.thread-inline-reply__header-pad {
+  flex: 1 1 2ch;
+  min-width: 1ch;
+}
+
+.thread-inline-reply__header-dots {
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.thread-inline-reply__rail-row {
+  align-items: stretch;
+  display: flex;
+  gap: 0;
+  margin-top: 0.05em;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.thread-inline-reply__rail-track {
+  align-self: stretch;
+  flex-shrink: 0;
+  min-height: 1.25em;
+  position: relative;
+  width: 5ch;
+}
+
+.thread-inline-reply__rail-pre {
+  background: transparent;
+  border: 0;
+  bottom: 0;
+  box-sizing: border-box;
+  color: var(--fg);
+  font-family: var(--font-mono-stack);
+  font-size: inherit;
+  left: 0;
+  line-height: 1.25em;
+  margin: 0;
+  overflow: hidden;
+  padding: 0;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  user-select: none;
+  white-space: pre;
+  width: 1ch;
+}
+
+.thread-inline-reply[data-inline-rail-mode="leaf"] .thread-inline-reply__rail-pre {
+  display: none;
+}
+
+.thread-inline-reply[data-inline-rail-mode="leaf"] .thread-inline-reply__rail-track {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.thread-inline-reply__form-col {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.thread-inline-reply .composer-form--thread-inline {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0;
+}
+
+.thread-inline-reply .composer-form--thread-inline .composer-label,
+.thread-inline-reply .composer-form--thread-inline > .toolbar.dialog-actions {
+  display: none;
+}
+
+.thread-inline-reply .composer-form--thread-inline .composer-input-wrap {
+  min-height: 5.25rem;
+}
+
+.thread-inline-reply .composer-input-wrap textarea {
+  border-radius: 0;
+  min-height: 5.25rem;
+}
+
+.thread-inline-reply .composer-input-wrap textarea::placeholder {
+  color: var(--muted);
+  opacity: 1;
+}
+
+.thread-inline-reply .composer-overlay {
+  border-radius: 0;
+  border-style: dashed;
+}
+
+.thread-inline-reply__status {
+  margin: 0;
+  min-height: 1.1rem;
+  white-space: pre-wrap;
+}
+
+.thread-inline-reply__footer {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.55rem;
+  margin: 0.1rem 0 0;
+}
+
+.thread-inline-reply__footer-rule {
+  border-bottom: 1px dashed color-mix(in oklab, var(--border) 85%, transparent);
+  flex: 1 1 3ch;
+  height: 0;
+  margin-bottom: 0.2em;
+  min-width: 2ch;
+}
+
+.thread-inline-reply__footer-actions {
+  display: inline-flex;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+  gap: 0.45rem 0.55rem;
+}
+
+.thread-inline-reply__bracket-btn {
+  font-family: inherit;
 }
 
 .settings-profile-panel {
@@ -892,6 +1139,50 @@ body.feed-shell main {
 .settings-form label {
   display: grid;
   gap: 0.3rem;
+}
+
+.settings-form label.settings-blossom-preset-card {
+  align-items: start;
+  cursor: pointer;
+  display: grid;
+  gap: 0.6rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  margin: 0;
+  padding: 0;
+}
+
+.settings-blossom-preset-card input[type="radio"] {
+  -webkit-appearance: radio;
+  appearance: auto;
+  accent-color: var(--fg);
+  align-self: center;
+  background: transparent;
+  border: 0;
+  block-size: 1rem;
+  inline-size: 1rem;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.settings-blossom-preset-meta {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.settings-blossom-preset-meta strong {
+  white-space: nowrap;
+}
+
+[data-blossom-settings] .settings-slider-tree.settings-mode-tree-stacked {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.settings-blossom-preset-row.settings-mode-tree-stacked > .settings-mode-branch {
+  align-self: start;
+  grid-row: auto;
+  height: 2.8rem;
 }
 
 .settings-form textarea,
@@ -1212,20 +1503,114 @@ body.mobile-menu-open {
 }
 
 .mobile-menu-header {
+  align-items: center;
   border-bottom: 0;
-  display: flex;
+  column-gap: 0.65rem;
+  display: grid;
+  grid-template-columns: minmax(3.75rem, 5.75rem) minmax(0, 1fr);
+  grid-template-rows: auto auto;
   margin-bottom: 0.75rem;
   padding-bottom: 0.75rem;
+  row-gap: 0.35rem;
 }
 
-.mobile-menu-title {
-  align-items: center;
+.mobile-menu-header-logo {
+  align-self: center;
   display: flex;
-  gap: 0.55rem;
+  grid-column: 1;
+  grid-row: 1 / -1;
+  justify-content: center;
+  line-height: 0;
 }
 
-.mobile-menu-title strong {
+.mobile-menu-header-logo .about-page-logo .about-logo {
+  height: auto;
+  max-width: 100%;
+  width: clamp(4rem, 17vw, 6.25rem);
+}
+
+.mobile-menu-header-title {
+  align-self: start;
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+}
+
+.mobile-menu-session {
+  align-self: start;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+}
+
+.mobile-menu-login-cta {
+  font-weight: 600;
+}
+
+.mobile-menu-profile {
+  align-items: center;
+  color: var(--fg);
+  display: inline-flex;
+  gap: 0.55rem;
+  max-width: 100%;
+  text-decoration: none;
+}
+
+.mobile-menu-profile:hover {
+  text-decoration: none;
+}
+
+.mobile-menu-profile strong {
+  font-size: clamp(1.05rem, 3.5vw, 1.2rem);
+  font-weight: 700;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-menu-login-cta:focus,
+.mobile-menu-profile:focus {
+  outline: none;
+}
+
+.mobile-menu-login-cta:focus-visible,
+.mobile-menu-profile:focus-visible {
+  outline: 1px dashed var(--border);
+  outline-offset: 2px;
+}
+
+/* Square avatars aligned with `.thread-tree-avatar` / `.thread-tree-avatar-fallback` (not global circular session chrome). */
+.mobile-menu-profile [data-session-avatar],
+.mobile-menu-profile [data-session-avatar-fallback] {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  height: 2.35rem;
+  width: 2.35rem;
+}
+
+.mobile-menu-profile [data-session-avatar] {
+  display: block;
+  object-fit: cover;
+}
+
+.mobile-menu-profile [data-session-avatar-fallback] {
+  align-items: center;
+  display: inline-flex;
+  font-weight: 700;
+  justify-content: center;
+}
+
+.mobile-menu-header-title strong {
+  display: block;
   font-size: 1.15rem;
+  line-height: 1.2;
 }
 
 .mobile-menu-intro {
@@ -1341,7 +1726,7 @@ select:focus-visible {
 pre,
 code,
 .mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono-stack);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -1360,6 +1745,22 @@ code,
   line-height: 1.45;
   white-space: pre-wrap;
   box-shadow: 0 0.4rem 1.2rem rgba(0, 0, 0, 0.22);
+}
+
+#ptxt-login-required-popover {
+  box-sizing: border-box;
+  z-index: 10050;
+  max-width: min(22.5rem, 90vw);
+  margin: 0;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 0.2rem;
+  background: var(--panel);
+  color: var(--fg);
+  font: inherit;
+  font-size: 0.95rem;
+  line-height: 1.4;
+  box-shadow: 0 0.35rem 1rem rgba(0, 0, 0, 0.2);
 }
 
 .relay-list li {
@@ -1418,6 +1819,10 @@ nav,
 
 [aria-current="page"] {
   font-weight: 700;
+}
+
+.session-panel .login-tab-panel-actions {
+  margin-top: 0.5rem;
 }
 
 .page-heading,
@@ -1663,6 +2068,19 @@ article.note {
   border-radius: 0.35rem;
   color: var(--muted);
   animation: skeleton-bob 1.45s ease-in-out infinite;
+}
+
+.profile-modern.profile-skeleton .profile-avatar-wrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.profile-modern.profile-skeleton .profile-avatar-wrap > .profile-skeleton-avatar {
+  box-sizing: border-box;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  width: 100%;
 }
 
 .profile-skeleton-display-name {
@@ -2196,6 +2614,27 @@ article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--
   white-space: pre-wrap;
 }
 
+.thread-tree-quote {
+  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  display: grid;
+  gap: 0.1rem;
+  margin-top: 0.25rem;
+  min-width: 0;
+  padding: 0.35rem 0 0 0.55rem;
+}
+
+.thread-tree-quote-attrib {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.thread-tree-quote .thread-tree-text-line {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .continue-thread-tree {
   margin: 0.25rem 0 0;
 }
@@ -2432,7 +2871,7 @@ article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--
 }
 
 .hn-commtext.thread-tree-text {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono-stack);
   font-size: 1rem;
   line-height: 1.45;
   margin-top: 0.08rem;
@@ -2524,7 +2963,7 @@ article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--
   background: transparent;
   border: 0;
   color: var(--fg);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono-stack);
   font-size: inherit;
   line-height: inherit;
   margin: 0;
@@ -2551,7 +2990,7 @@ article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--
 .note-image-toggle {
   color: var(--link);
   display: inline-block;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono-stack);
   font-size: 0.9rem;
   font-weight: 600;
   text-decoration: underline;
@@ -2602,7 +3041,7 @@ button.note-image-toggle {
   bottom: 0;
   color: var(--fg);
   content: "|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|";
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono-stack);
   font-size: inherit;
   left: 0;
   line-height: 1.25em;
@@ -2791,7 +3230,7 @@ button.note-image-toggle {
 }
 
 .login-intro {
-  margin: 0.55rem 0;
+  margin: 0;
 }
 
 .login-intro p {
@@ -2802,10 +3241,79 @@ button.note-image-toggle {
   margin-top: 0.35rem;
 }
 
+/* Login page only: no horizontal rules around the method tab strip (profile-tabs adds top border globally). */
+.login-tabs.profile-tabs {
+  border-top: none;
+  padding-top: 0;
+}
+
 .login-tabs .user-tab-nav {
-  border-bottom: 1px solid var(--border);
+  border-bottom: none;
   margin-bottom: 0.75rem;
-  padding-bottom: 0.45rem;
+  padding-bottom: 0;
+}
+
+.login-split {
+  display: grid;
+  gap: 1.5rem;
+  grid-template-columns: 1fr;
+  margin-left: auto;
+  margin-right: auto;
+  margin-top: 0.75rem;
+  width: min(var(--page-max), 100%);
+}
+
+.login-split-column--signup {
+  border-top: 1px solid var(--border);
+  padding-top: 1.25rem;
+}
+
+.login-split-heading {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 0 0 0.45rem;
+}
+
+.login-signup-panel.login-tab-panel {
+  margin-top: 0.35rem;
+}
+
+.login-signup-credentials {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 0.75rem;
+}
+
+.login-signup-field-label {
+  display: block;
+  font-size: 0.85rem;
+  margin-bottom: 0.25rem;
+}
+
+.login-signup-secret-row {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.login-signup-field-row {
+  align-items: stretch;
+  display: grid;
+  gap: 0.35rem;
+  grid-template-columns: 1fr auto;
+}
+
+.login-signup-field-row input {
+  min-width: 0;
+  width: 100%;
+}
+
+.login-signup-secret-input {
+  font-family: var(--font-mono-stack);
+  font-size: 0.8rem;
+}
+
+.login-signup-continue-wrap {
+  margin: 0.35rem 0 0;
 }
 
 .login-tab-panel {
@@ -2828,16 +3336,31 @@ button.note-image-toggle {
   margin-top: 0.5rem;
 }
 
-.login-tab-panel input {
+.login-tab-panel form.login-tab-stacked-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
   width: min(100%, 34rem);
 }
 
-.login-tab-actions {
-  margin: 0.55rem 0 0;
+.login-tab-stacked-form input {
+  min-width: 0;
+  width: 100%;
 }
 
-.login-tab-actions button + button {
-  margin-left: 0.2rem;
+.login-tab-panel-actions {
+  display: flex;
+  justify-content: flex-end;
+  width: 100%;
+}
+
+.login-tab-panel > .login-tab-panel-actions {
+  margin-top: 0.5rem;
+  width: min(100%, 34rem);
+}
+
+.login-tab-panel input {
+  width: min(100%, 34rem);
 }
 
 .login-tab-panel-danger {
@@ -2892,6 +3415,18 @@ button.note-image-toggle {
   min-width: 0;
 }
 
+.user-profile-column .profile-stats-row {
+  margin: 0.4rem 0 0.15rem;
+}
+
+.user-profile-column .user-tabs {
+  margin-top: 0.3rem;
+}
+
+.user-profile-column .profile-tabs {
+  padding-top: 0.2rem;
+}
+
 .profile-modern {
   margin-top: 0;
 }
@@ -2906,30 +3441,103 @@ button.note-image-toggle {
 }
 
 .profile-hero {
-  column-gap: 1rem;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-rows: auto auto auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
   padding: 0 0.75rem;
-  row-gap: 0.35rem;
 }
 
-.profile-hero .profile-back {
-  grid-column: 1 / -1;
-  grid-row: 1;
-  justify-self: start;
+.profile-hero-top {
+  align-items: center;
+  column-gap: 0.75rem;
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+  min-width: 0;
+  width: 100%;
+}
+
+.profile-hero-top .profile-back {
+  align-self: center;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.profile-hero-options-menu.ascii-action-menu {
+  align-items: center;
+  display: inline-flex;
+  flex: 0 0 auto;
+  flex-shrink: 0;
+}
+
+.profile-hero-options-trigger {
+  appearance: none;
+  background: none;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  color: var(--link);
+  cursor: pointer;
+  font: inherit;
+  line-height: inherit;
+  padding: 0;
+  text-align: right;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.profile-hero-options-trigger::before {
+  content: "[";
+}
+
+.profile-hero-options-trigger::after {
+  content: "]";
+}
+
+.profile-hero-options-trigger:hover {
+  text-decoration: underline;
+}
+
+.profile-hero-options-trigger:focus-visible {
+  border-radius: 0.12rem;
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+
+.profile-hero-options-skeleton {
+  display: inline-block;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.profile-hero-body {
+  align-items: stretch;
+  column-gap: 1rem;
+  display: flex;
+  flex-direction: row;
+  min-width: 0;
 }
 
 .profile-avatar-wrap {
-  align-self: center;
-  grid-column: 1;
-  grid-row: 2 / span 2;
+  box-sizing: border-box;
+  display: block;
+  flex: 0 0 auto;
+  max-height: min(60vw, 9.25rem);
+  max-width: min(34vw, 9.25rem);
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.profile-hero-text {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
 }
 
 .profile-hero .profile-display-name {
-  align-self: end;
-  grid-column: 2;
-  grid-row: 2;
   margin: 0;
   min-width: 0;
   overflow: hidden;
@@ -2944,10 +3552,230 @@ button.note-image-toggle {
 }
 
 .profile-hero .profile-actions {
-  align-self: start;
-  grid-column: 2;
-  grid-row: 3;
-  justify-self: start;
+  align-items: baseline;
+  align-self: flex-start;
+  column-gap: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  row-gap: 0.35rem;
+}
+
+.profile-follow-mute {
+  align-items: baseline;
+  column-gap: 2ch;
+  display: inline-flex;
+  flex-wrap: wrap;
+  row-gap: 0.35rem;
+}
+
+/* Bracketed link actions: label text is e.g. Follow / Mute / Edit profile; brackets from pseudo-elements. */
+.profile-follow-mute-link,
+.profile-action-link {
+  appearance: none;
+  background: none;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  color: var(--link);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 1.125rem;
+  font-style: inherit;
+  font-weight: inherit;
+  line-height: inherit;
+  padding: 0;
+  text-align: inherit;
+  text-decoration: none;
+  text-decoration-color: transparent;
+  text-underline-offset: 0.15em;
+  transition:
+    color 0.12s ease,
+    text-decoration-color 0.12s ease;
+  white-space: nowrap;
+}
+
+.profile-follow-mute-link::before,
+.profile-action-link::before {
+  content: "[";
+}
+
+.profile-follow-mute-link::after,
+.profile-action-link::after {
+  content: "]";
+}
+
+.profile-follow-mute-link:hover,
+.profile-action-link:hover {
+  text-decoration: underline;
+  text-decoration-color: currentcolor;
+}
+
+.profile-follow-mute-link:focus-visible,
+.profile-action-link:focus-visible {
+  border-radius: 0.12rem;
+  outline: 2px solid var(--link);
+  outline-offset: 2px;
+}
+
+.profile-follow-mute-link[disabled],
+.profile-follow-mute-link[aria-disabled="true"],
+.profile-action-link[disabled],
+.profile-action-link[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.55;
+  text-decoration: none;
+}
+
+.profile-follow-mute--skeleton .profile-follow-mute-skeleton-line {
+  display: inline-block;
+  font-size: 1.125rem;
+  letter-spacing: normal;
+  white-space: nowrap;
+}
+
+.profile-npub-copy {
+  cursor: pointer;
+  position: relative;
+}
+
+.profile-npub-copy:focus-visible {
+  border-radius: 0.2rem;
+  outline: 1px dashed var(--border);
+  outline-offset: 2px;
+}
+
+.profile-npub-copy-toast {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  bottom: calc(100% + 0.35rem);
+  box-shadow: 0 0.15rem 0.6rem rgba(0, 0, 0, 0.25);
+  color: var(--fg);
+  font-family: var(--font-ui-stack, system-ui, sans-serif);
+  font-size: 0.75rem;
+  font-weight: 500;
+  left: 50%;
+  line-height: 1.2;
+  max-width: min(18rem, calc(100vw - 2rem));
+  opacity: 0;
+  padding: 0.35rem 0.55rem;
+  pointer-events: none;
+  position: absolute;
+  text-align: center;
+  transform: translateX(-50%) translateY(0.2rem);
+  transition:
+    opacity 0.12s ease,
+    transform 0.12s ease,
+    visibility 0.12s ease;
+  visibility: hidden;
+  white-space: normal;
+  z-index: 5;
+}
+
+.profile-npub-copy--toast .profile-npub-copy-toast {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+  visibility: visible;
+}
+
+.profile-npub-block--header {
+  line-height: 1.35;
+  margin-top: 0.1rem;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.profile-npub-block--header .profile-npub-grid {
+  font-size: 1rem;
+  letter-spacing: 0.2em;
+  gap: 0.05em;
+}
+
+@media (min-width: 701px) {
+  /* Same balance as narrow view: modest square avatar, bottom-aligned with the
+     name + actions + npub column so the block doesn’t leave a dead zone under
+     the picture or blow the avatar up to the full npub height. */
+  .profile-hero-body {
+    align-items: flex-end;
+  }
+
+  .profile-avatar-wrap {
+    aspect-ratio: 1;
+    flex: 0 0 auto;
+    height: auto;
+    max-height: min(34vw, 9.25rem);
+    max-width: min(34vw, 9.25rem);
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+    width: min(34vw, 9.25rem);
+  }
+
+  .profile-npub-block--header .profile-npub-grid {
+    font-size: 0.82rem;
+    gap: 0.08em;
+    letter-spacing: 0.06em;
+  }
+
+  .profile-modern .profile-avatar,
+  .profile-modern .profile-avatar-fallback {
+    height: 100%;
+    max-height: none;
+    max-width: none;
+    width: 100%;
+  }
+}
+
+.profile-npub-grid {
+  display: flex;
+  flex-direction: column;
+  font-family: var(--font-mono-stack);
+  font-size: 0.8rem;
+  gap: 0.15em;
+  letter-spacing: 0.02em;
+}
+
+.profile-npub-grid-row {
+  column-gap: 1.5em;
+  display: flex;
+  flex-wrap: nowrap;
+}
+
+.profile-npub-cell {
+  flex: 0 0 auto;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.profile-npub-cell--emph {
+  font-weight: 700;
+}
+
+.profile-npub-block--skeleton .profile-npub-grid {
+  opacity: 0.78;
+}
+
+.profile-npub-skel-cell.text-skeleton {
+  animation: text-skeleton-live 1.45s ease-in-out infinite;
+  border-radius: 0.2rem;
+  display: inline-block;
+  font-family: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: inherit;
+  line-height: inherit;
+}
+
+.profile-npub-block--skeleton .profile-npub-grid-row:nth-child(2) .profile-npub-skel-cell {
+  animation-delay: 0.08s;
+}
+
+.profile-npub-block--skeleton .profile-npub-grid-row:nth-child(3) .profile-npub-skel-cell {
+  animation-delay: 0.16s;
+}
+
+.profile-npub-block--skeleton .profile-npub-grid-row:nth-child(4) .profile-npub-skel-cell {
+  animation-delay: 0.24s;
 }
 
 .profile-avatar {
@@ -2959,12 +3787,33 @@ button.note-image-toggle {
   width: 96px;
 }
 
-.profile-modern .profile-avatar,
-.profile-modern .profile-avatar-fallback {
+.profile-modern .profile-avatar {
+  aspect-ratio: 1;
   border: 1px solid var(--border);
   border-radius: 0.35rem;
-  height: 96px;
-  width: 96px;
+  box-sizing: border-box;
+  display: block;
+  height: 100%;
+  max-height: 100%;
+  max-width: 100%;
+  min-height: 0;
+  object-fit: cover;
+  width: auto;
+}
+
+.profile-modern .profile-avatar-fallback {
+  align-items: center;
+  aspect-ratio: 1;
+  border: 1px solid var(--border);
+  border-radius: 0.35rem;
+  box-sizing: border-box;
+  display: flex;
+  height: 100%;
+  justify-content: center;
+  max-height: 100%;
+  max-width: 100%;
+  min-height: 0;
+  width: auto;
 }
 
 .profile-avatar-fallback {
@@ -2972,22 +3821,6 @@ button.note-image-toggle {
   display: inline-flex;
   font-weight: 700;
   justify-content: center;
-}
-
-.profile-action-link {
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  color: inherit;
-  cursor: pointer;
-  display: inline-block;
-  font: inherit;
-  padding: 0.25rem 0.85rem;
-  white-space: nowrap;
-}
-
-.profile-action-link[aria-pressed="true"] {
-  background: var(--panel);
 }
 
 .profile-ident {
@@ -3045,7 +3878,7 @@ button.note-image-toggle {
 .comment {
   --avatar-left: -0.4ch;
   --avatar-size: 2.4em;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono-stack);
   margin-left: calc((var(--depth) - 1) * 1ch);
   /* Top margin keeps the absolutely-positioned avatar (which overflows
      above the first text row by ~half its height) from colliding with
@@ -3076,6 +3909,7 @@ button.note-image-toggle {
      to the left of the avatar, with the avatar starting at ~1.2ch from
      the padding edge. Centered vertically on the first text line
      (line-height 1.25em → center at 0.625em from pre top). */
+  box-sizing: border-box;
   position: absolute;
   left: var(--avatar-left);
   top: calc(0.625em - var(--avatar-size) / 2);
@@ -3118,7 +3952,7 @@ button.note-image-toggle {
 
 .note.thread-focus-selected {
   --avatar-size: 2.4em;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono-stack);
   /* No padding-left: the selected note's content (and reply link) sits
      flush with the comment's outer-left edge so it visually flows in the
      column directly under the avatar. The header line is still pushed
@@ -3130,6 +3964,7 @@ button.note-image-toggle {
   /* Sit flush with the left edge of the selected note. The header line
      is pushed past the avatar's right edge via padding-left on the
      first :ascii-line; subsequent content lines wrap under the avatar. */
+  box-sizing: border-box;
   position: absolute;
   left: 0;
   top: calc(0.625em - var(--avatar-size) / 2);
@@ -3383,6 +4218,15 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
   padding-top: 0.5rem;
 }
 
+/* Stats dash rule (::after) replaces border-top here; avoid a double rule above Posts/Replies/Media. */
+.user-profile-column .profile-tabs {
+  border-top: none;
+}
+
+.edit-profile-tabs {
+  border-top: none;
+}
+
 .user-tab-nav {
   align-items: center;
   display: flex;
@@ -3432,21 +4276,41 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
 .user-tabs:has(#user-tab-posts:checked) .user-tab-nav label[for="user-tab-posts"],
 .user-tabs:has(#user-tab-replies:checked) .user-tab-nav label[for="user-tab-replies"],
 .user-tabs:has(#user-tab-media:checked) .user-tab-nav label[for="user-tab-media"],
-.user-tabs:has(#user-tab-identifiers:checked) .user-tab-nav label[for="user-tab-identifiers"],
-.user-tabs:has(#user-tab-relays:checked) .user-tab-nav label[for="user-tab-relays"],
 .login-tabs:has(#login-tab-readonly:checked) .user-tab-nav label[for="login-tab-readonly"],
 .login-tabs:has(#login-tab-nip07:checked) .user-tab-nav label[for="login-tab-nip07"],
 .login-tabs:has(#login-tab-yolo:checked) .user-tab-nav label[for="login-tab-yolo"],
-.login-tabs:has(#login-tab-ephemeral:checked) .user-tab-nav label[for="login-tab-ephemeral"] {
+.edit-profile-tabs:has(#edit-profile-tab-metadata:checked) .user-tab-nav label[for="edit-profile-tab-metadata"],
+.edit-profile-tabs:has(#edit-profile-tab-relays:checked) .user-tab-nav label[for="edit-profile-tab-relays"] {
   color: var(--fg);
   font-weight: 600;
   text-decoration: none;
 }
 
 .profile-stats-row {
-  border-bottom: 1px solid var(--border);
+  align-items: center;
+  border-bottom: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.5rem;
   margin: 0.4rem 0;
-  padding-bottom: 0.5rem;
+  padding-bottom: 0.25rem;
+}
+
+.profile-stats-row::after {
+  color: var(--border);
+  content: "----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------";
+  display: block;
+  flex: 0 0 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  line-height: 1.1;
+  margin-top: 0.25rem;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.profile-stats-sep {
+  flex: 0 0 auto;
+  user-select: none;
 }
 
 .profile-stat-link {
@@ -3473,10 +4337,6 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
   border: none;
   border-radius: 0;
   padding: 0.75rem;
-}
-
-#user-right-identifiers {
-  border-bottom: 1px dashed var(--border);
 }
 
 .profile-card .ascii-row {
@@ -3506,6 +4366,54 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
 .profile-right-panel .ascii-row {
   display: block;
   width: 100%;
+}
+
+.profile-ident-grids {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-bottom: 0.35rem;
+}
+
+@media (min-width: 701px) {
+  .profile-ident-grids {
+    align-items: flex-start;
+    column-gap: 1.1rem;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    row-gap: 0.5rem;
+  }
+
+  .profile-ident-grid-column {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+}
+
+.profile-id-heading {
+  font-size: 0.82rem;
+  margin: 0.5rem 0 0.15rem;
+}
+
+.profile-id-heading:first-of-type {
+  margin-top: 0.25rem;
+}
+
+.profile-ident-grid-wrap {
+  margin-bottom: 0.35rem;
+}
+
+.profile-ident-grid-wrap.profile-npub-copy {
+  align-self: flex-start;
+  width: fit-content;
+}
+
+.profile-right-panel .profile-npub-grid {
+  font-size: 0.75rem;
+}
+
+.profile-right-id-skel-grid {
+  min-height: 4.5rem;
 }
 
 .profile-right-panel .ascii-content {
@@ -3542,7 +4450,6 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
 }
 
 @media (min-width: 701px) {
-  .user-tab-state#user-tab-identifiers:checked + .profile-mobile-only-panel,
   .user-tab-state#user-tab-relays:checked + .profile-mobile-only-panel {
     display: none;
   }
@@ -3828,14 +4735,16 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
   }
 
   .profile-hero {
-    column-gap: 0.65rem;
     padding: 0 0.3rem;
   }
 
-  .profile-modern .profile-avatar,
-  .profile-modern .profile-avatar-fallback {
-    height: 72px;
-    width: 72px;
+  .profile-hero-body {
+    align-items: flex-end;
+    column-gap: 0.65rem;
+  }
+
+  .profile-modern .profile-hero .profile-avatar-wrap {
+    min-width: min(34vw, 9.25rem);
   }
 
   .profile-display-name {
@@ -3850,7 +4759,6 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
     display: inline-flex;
   }
 
-  .user-tab-state#user-tab-identifiers:checked + .profile-mobile-only-panel,
   .user-tab-state#user-tab-relays:checked + .profile-mobile-only-panel {
     display: block;
   }
@@ -3881,7 +4789,7 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
   }
 
   .mobile-menu-header {
-    flex-shrink: 0;
+    display: grid;
     margin-bottom: 0.5rem;
     padding-bottom: 0.5rem;
   }
@@ -3891,8 +4799,14 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
     margin-bottom: 0.45rem;
   }
 
-  .mobile-menu-title strong {
+  .mobile-menu-header-title strong {
     font-size: clamp(1.1rem, 4vw, 1.25rem);
+  }
+
+  .mobile-menu-profile [data-session-avatar],
+  .mobile-menu-profile [data-session-avatar-fallback] {
+    height: 1.9rem;
+    width: 1.9rem;
   }
 
   .mobile-menu-intro-copy {
@@ -3958,6 +4872,16 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
 
   .ascii-enhanced .comment {
     margin-left: calc((var(--depth) - 1) * 1ch);
+    padding-left: 1ch;
+  }
+
+  .thread-inline-reply {
+    margin-left: calc(var(--depth, 1) * 0.25rem);
+    padding-left: 0.95rem;
+  }
+
+  .ascii-enhanced .thread-inline-reply {
+    margin-left: calc((var(--depth, 1) - 1) * 1ch);
     padding-left: 1ch;
   }
 
@@ -4115,7 +5039,7 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
 .read-article .ascii-border {
   color: var(--fg);
   display: block;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  font-family: var(--font-mono-stack);
   margin: 0 auto;
   user-select: none;
   white-space: pre;
@@ -4254,7 +5178,7 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
 
 .read-body code,
 .read-body pre {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-family: var(--font-mono-stack);
   font-size: 0.95em;
 }
 

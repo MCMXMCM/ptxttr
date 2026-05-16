@@ -74,5 +74,5 @@ func TestFetchAuthorsPageProfileHeadRefreshDoesNotPanic(t *testing.T) {
 	if err := st.SaveEvent(ctx, ev); err != nil {
 		t.Fatal(err)
 	}
-	_, _ = srv.fetchAuthorsPage(ctx, "", []string{author}, 0, "", 30, nil, "profile", author)
+	_, _ = srv.fetchAuthorsPage(ctx, "", []string{author}, 0, "", 30, nil, "profile", author, nil)
 }

@@ -4,6 +4,60 @@ import { pubkeyFromInput, secretFromInput } from "./key-input.js";
 
 const state = document.querySelector("[data-session-state]");
 const actions = document.querySelector("[data-session-actions]");
+const signupIntroActions = document.querySelector("[data-signup-intro-actions]");
+const signupCredentials = document.querySelector("[data-signup-credentials]");
+const signupNsecInput = document.querySelector("[data-signup-nsec-input]");
+const signupNpubInput = document.querySelector("[data-signup-npub-input]");
+
+const copyRestoreTimers = new WeakMap();
+
+function resetSignupUI() {
+  if (signupIntroActions) signupIntroActions.hidden = false;
+  if (signupCredentials) signupCredentials.hidden = true;
+  if (signupNsecInput) signupNsecInput.value = "";
+  if (signupNpubInput) signupNpubInput.value = "";
+}
+
+/** Ephemeral signup flow: show saved keys only when session and sessionStorage agree. */
+function signupCredentialsWanted(session) {
+  if (session.method !== "ephemeral" || !session.pubkey) return false;
+  return Boolean(sessionStorage.getItem("ptxt_nsec"));
+}
+
+function maybeResetSignupForSession(session) {
+  if (signupCredentialsWanted(session)) return;
+  resetSignupUI();
+}
+
+function syncSignupCredentialsFromSession(session) {
+  if (!signupCredentials || !signupIntroActions) return;
+  if (!signupCredentialsWanted(session)) return;
+  const nsec = sessionStorage.getItem("ptxt_nsec") || "";
+  if (signupNpubInput && session.npub) signupNpubInput.value = session.npub;
+  if (signupNsecInput) signupNsecInput.value = nsec;
+  signupIntroActions.hidden = true;
+  signupCredentials.hidden = false;
+}
+
+async function copyLoginValue(text, button) {
+  if (!text || !button) return;
+  try {
+    await navigator.clipboard.writeText(text);
+    const previous = button.textContent;
+    const prior = copyRestoreTimers.get(button);
+    if (prior) clearTimeout(prior);
+    button.textContent = "Copied";
+    copyRestoreTimers.set(
+      button,
+      setTimeout(() => {
+        button.textContent = previous;
+        copyRestoreTimers.delete(button);
+      }, 1500),
+    );
+  } catch {
+    window.prompt("Copy this value", text);
+  }
+}
 
 function renderSession() {
   if (!state) return;
@@ -21,21 +75,29 @@ function renderSession() {
     state.textContent = "Not logged in.";
   }
   if (actions) actions.hidden = !session.pubkey;
+  maybeResetSignupForSession(session);
+  syncSignupCredentialsFromSession(session);
 }
 
 function completeLogin(session, redirect = true) {
   setSession(session);
-  renderSession();
   if (redirect && session.pubkey) {
     window.location.href = sessionFeedURL();
   }
+}
+
+function completeLoginWithStoredNsec(secret, method, redirect = true) {
+  const pubkey = getPublicKey(secret);
+  const npub = nip19.npubEncode(pubkey);
+  sessionStorage.setItem("ptxt_nsec", nip19.nsecEncode(secret));
+  completeLogin({ method, pubkey, npub }, redirect);
 }
 
 document.querySelector("[data-login-readonly]")?.addEventListener("submit", (event) => {
   event.preventDefault();
   try {
     const pubkey = pubkeyFromInput(new FormData(event.currentTarget).get("pubkey"));
-    completeLogin({ method: "readonly", pubkey, npub: nip19.npubEncode(pubkey) });
+    completeLogin({ method: "readonly", pubkey, npub: nip19.npubEncode(pubkey) }, true);
   } catch (error) {
     alert(error.message);
   }
@@ -54,19 +116,28 @@ document.querySelector("[data-login-yolo]")?.addEventListener("submit", (event) 
   event.preventDefault();
   try {
     const secret = secretFromInput(new FormData(event.currentTarget).get("secret"));
-    const pubkey = getPublicKey(secret);
-    sessionStorage.setItem("ptxt_nsec", nip19.nsecEncode(secret));
-    completeLogin({ method: "yolo", pubkey, npub: nip19.npubEncode(pubkey) });
+    completeLoginWithStoredNsec(secret, "yolo");
   } catch (error) {
     alert(error.message);
   }
 });
 
-document.querySelector("[data-login-ephemeral]")?.addEventListener("click", () => {
-  const secret = generateSecretKey();
-  const pubkey = getPublicKey(secret);
-  sessionStorage.setItem("ptxt_nsec", nip19.nsecEncode(secret));
-  completeLogin({ method: "ephemeral", pubkey, npub: nip19.npubEncode(pubkey) });
+document.querySelector("[data-signup-generate]")?.addEventListener("click", () => {
+  completeLoginWithStoredNsec(generateSecretKey(), "ephemeral", false);
+});
+
+document.querySelector("[data-signup-copy-nsec]")?.addEventListener("click", (event) => {
+  copyLoginValue(signupNsecInput?.value ?? "", event.currentTarget);
+});
+
+document.querySelector("[data-signup-copy-npub]")?.addEventListener("click", (event) => {
+  copyLoginValue(signupNpubInput?.value ?? "", event.currentTarget);
+});
+
+document.querySelector("[data-signup-continue]")?.addEventListener("click", () => {
+  const session = getSession();
+  if (!session.pubkey) return;
+  window.location.href = sessionFeedURL();
 });
 
 window.addEventListener("ptxt:session", renderSession);

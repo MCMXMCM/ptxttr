@@ -11,10 +11,10 @@
 
 {{define "thread_back_secondary_links"}}
   {{if .BackReadID}}
-    <p class="thread-back thread-back-secondary"><a href="/reads/{{.BackReadID}}" data-relay-aware>&lt;-- back to read</a></p>
+    <p class="thread-back thread-back-secondary"><a href="/reads/{{.BackReadID}}" data-relay-aware>&lt;-- Back to read</a></p>
   {{end}}
   {{if .BackThreadID}}
-    <p class="thread-back thread-back-secondary"><a href="/thread/{{.BackThreadID}}{{if .BackNoteID}}#note-{{.BackNoteID}}{{end}}" data-relay-aware>&lt;-- back to original thread</a></p>
+    <p class="thread-back thread-back-secondary"><a href="/thread/{{.BackThreadID}}{{if .BackNoteID}}#note-{{.BackNoteID}}{{end}}" data-relay-aware>&lt;-- Back to original thread</a></p>
   {{end}}
 {{end}}
 
@@ -28,7 +28,7 @@
     <div class="thread-toolbar-slot" aria-hidden="true"></div>
     <section class="thread-header">
       <div class="thread-header-top">
-        <p class="thread-back thread-back-primary"><a href="/" data-relay-aware data-feed-home>&lt;-- back</a></p>
+        <p class="thread-back thread-back-primary"><a href="/" data-relay-aware data-feed-home>&lt;-- Back</a></p>
         <p class="thread-header-op">
           {{if $onRoot}}
             <span class="thread-op-label">[OP]</span>
@@ -50,9 +50,9 @@
             {{$display := displayName $.Profiles $event.PubKey}}
             {{$age := relTime $event.CreatedAt}}
             {{$avatar := avatarSrc $.Profiles $event.PubKey}}
-            {{$content := asciiMentionContent $event.Content $.Profiles}}
-            {{$media := treeMediaFields $content}}
-            <div class="hn-comtr hn-comtr-summary{{if eq $event.ID $.SelectedID}} is-selected{{end}}" data-thread-tree-note="note-{{$event.ID}}" data-thread-focus-id="{{$event.ID}}" data-thread-tree-source="{{$content}}" data-thread-tree-display-source="{{$media.DisplaySource}}"{{if $media.ItemsJSON}} data-thread-tree-media="{{$media.ItemsJSON}}"{{end}}>
+            {{$content := threadTreeMainBodyText $event $.Profiles}}
+            {{$media := treeMediaFields $content $event.Tags}}
+            <div class="hn-comtr hn-comtr-summary{{if eq $event.ID $.SelectedID}} is-selected{{end}}" data-thread-tree-note="note-{{$event.ID}}" data-thread-focus-id="{{$event.ID}}" data-thread-tree-source="{{$content}}" data-thread-tree-display-source="{{$media.DisplaySource}}"{{if $media.ItemsJSON}} data-thread-tree-media="{{$media.ItemsJSON}}"{{end}}{{template "thread_tree_ref_data_attrs" dict "Event" $event "ReferencedEvents" $.ReferencedEvents "ReplyCounts" $.ReplyCounts "AsciiWidth" $.AsciiWidth "Profiles" $.Profiles}}>
               <div class="hn-comtr-inner">
                 <div class="hn-ind" aria-hidden="true" style="width:{{hnPathIndentPx $index}}px"></div>
                 <a class="hn-tree-avatar" href="/u/{{$event.PubKey}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img class="thread-tree-avatar" src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{else}}<span class="thread-tree-avatar thread-tree-avatar-fallback" aria-hidden="true">@</span>{{end}}</a>
@@ -68,6 +68,7 @@
                   {{end}}
                 </div>
               </div>
+              {{template "thread_tree_ref_source_template" dict "Event" $event "ReferencedEvents" $.ReferencedEvents "Profiles" $.Profiles}}
             </div>
           {{end}}
         </div>
@@ -76,28 +77,50 @@
   {{else}}
     <div class="thread-toolbar-slot" aria-hidden="true"></div>
     <section class="thread-header">
-      <p class="thread-back thread-back-primary"><a href="/" data-relay-aware data-feed-home>&lt;-- back</a></p>
+      <p class="thread-back thread-back-primary"><a href="/" data-relay-aware data-feed-home>&lt;-- Back</a></p>
     </section>
     {{template "thread_back_secondary_links" .}}
   {{end}}
 {{end}}
 
+{{define "thread_tree_ref_data_attrs"}}
+{{- $ev := .Event -}}
+{{- $profiles := .Profiles -}}
+{{- $ref := referenceEvent .ReferencedEvents (referencedEventID $ev) -}}
+{{- $refID := referencedEventID $ev -}}
+{{- $hasReference := ne $ref.ID "" -}}
+{{- if isSimpleRepost $ev}} data-ascii-ref-mode="repost"{{- else if isQuotePost $ev}} data-ascii-ref-mode="quote"{{- end -}}
+{{- if or (isSimpleRepost $ev) (isQuotePost $ev) }}
+ data-ascii-ref-author="{{if $hasReference}}{{asciiAuthor .AsciiWidth $profiles $ref.PubKey}}{{else if $refID}}{{short $refID}}{{end}}" data-ascii-ref-age="{{if $hasReference}}{{relTime $ref.CreatedAt}}{{else}}?{{end}}" data-ascii-ref-thread-href="{{if $hasReference}}/thread/{{$ref.ID}}{{else if $refID}}/thread/{{$refID}}{{end}}" data-ascii-ref-reply-label="{{if $hasReference}}{{replyBadgeText (replyCountFor .ReplyCounts $ref.ID)}}{{end}}"{{- with asciiMentionsJSONFor $profiles $ev.Content (or $ref.Content "")}} data-ascii-mentions="{{.}}"{{end}}
+{{- end -}}
+{{end}}
+
+{{define "thread_tree_ref_source_template"}}
+{{- if or (isSimpleRepost .Event) (isQuotePost .Event) -}}
+{{- $ev := .Event -}}
+{{- $ref := referenceEvent .ReferencedEvents (referencedEventID $ev) -}}
+{{- $refID := referencedEventID $ev -}}
+{{- $hasReference := ne $ref.ID "" -}}
+<template class="ascii-reference-source">{{if $hasReference}}{{asciiMentionContent $ref.Content .Profiles}}{{else if $refID}}[reposted note unavailable on current relays]{{end}}</template>
+{{- end -}}
+{{end}}
+
 {{define "hn_tree_ul"}}
 <ul class="hn-tree-ul">
   {{range .Nodes}}
-    {{$content := asciiMentionContent .Event.Content $.Profiles}}
-    {{$media := treeMediaFields $content}}
+    {{$content := threadTreeMainBodyText .Event $.Profiles}}
+    {{$media := treeMediaFields $content .Event.Tags}}
     {{$display := displayName $.Profiles .Event.PubKey}}
     {{$age := relTime .Event.CreatedAt}}
     {{$avatar := avatarSrc $.Profiles .Event.PubKey}}
-    <li class="hn-comtr thread-tree-item{{if eq .Event.ID $.TreeSelectedID}} is-selected{{end}}" data-thread-tree-note="note-{{.Event.ID}}" data-thread-focus-id="{{.Event.ID}}" data-thread-tree-source="{{$content}}" data-thread-tree-display-source="{{$media.DisplaySource}}" data-reply-root-id="{{$.RootID}}" data-reply-target-id="{{.Event.ID}}" data-reply-pubkey="{{.Event.PubKey}}" data-ascii-relay="{{.Event.RelayURL}}"{{if $media.ItemsJSON}} data-thread-tree-media="{{$media.ItemsJSON}}"{{end}}>
+    <li class="hn-comtr thread-tree-item{{if eq .Event.ID $.TreeSelectedID}} is-selected{{end}}" data-thread-tree-note="note-{{.Event.ID}}" data-thread-focus-id="{{.Event.ID}}" data-thread-tree-source="{{$content}}" data-thread-tree-display-source="{{$media.DisplaySource}}" data-reply-root-id="{{$.RootID}}" data-reply-target-id="{{.Event.ID}}" data-reply-pubkey="{{.Event.PubKey}}" data-ascii-relay="{{.Event.RelayURL}}"{{if $media.ItemsJSON}} data-thread-tree-media="{{$media.ItemsJSON}}"{{end}}{{template "thread_tree_ref_data_attrs" dict "Event" .Event "ReferencedEvents" $.ReferencedEvents "ReplyCounts" $.ReplyCounts "AsciiWidth" $.AsciiWidth "Profiles" $.Profiles}}>
       <div class="hn-li-body">
         <a class="hn-tree-avatar" href="/u/{{.Event.PubKey}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img class="thread-tree-avatar" src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{else}}<span class="thread-tree-avatar thread-tree-avatar-fallback" aria-hidden="true">@</span>{{end}}</a>
         <div class="hn-default">
           <div class="hn-comhead">
             <a href="/u/{{.Event.PubKey}}" data-relay-aware>{{$display}}</a>
             <span class="hn-age muted"> <a href="/thread/{{$.RootID}}#note-{{.Event.ID}}" data-relay-aware>{{$age}}</a></span>
-            <span class="hn-navs hn-collapse-nav"> | <button class="link-button" type="button" data-thread-tree-collapse="{{.Event.ID}}" aria-expanded="true">[-]</button></span>
+            <span class="hn-navs hn-collapse-nav"> <button class="link-button" type="button" data-thread-tree-collapse="{{.Event.ID}}" aria-expanded="true">[-]</button></span>
           </div>
           <div class="hn-tree-collapsible" data-thread-tree-collapsible="{{.Event.ID}}">
             <div class="hn-commtext thread-tree-text">{{range asciiTextLines $content (replyTextWidth $.AsciiWidth)}}<span class="thread-tree-text-line">{{.}}</span>{{end}}</div>
@@ -110,7 +133,8 @@
           </div>
         </div>
       </div>
-      {{if .Children}}{{template "hn_tree_ul" dict "Nodes" .Children "RootID" $.RootID "TreeSelectedID" $.TreeSelectedID "Profiles" $.Profiles "AsciiWidth" $.AsciiWidth}}{{end}}
+      {{template "thread_tree_ref_source_template" dict "Event" .Event "ReferencedEvents" $.ReferencedEvents "Profiles" $.Profiles}}
+      {{if .Children}}{{template "hn_tree_ul" dict "Nodes" .Children "RootID" $.RootID "TreeSelectedID" $.TreeSelectedID "Profiles" $.Profiles "AsciiWidth" $.AsciiWidth "ReferencedEvents" $.ReferencedEvents "ReplyCounts" $.ReplyCounts}}{{end}}
     </li>
   {{end}}
 </ul>
@@ -121,13 +145,14 @@
   {{$rootID := .RootID}}
   {{$root := .Tree.Root}}
   {{$treeRootID := $root.ID}}
-  {{$rootContent := asciiMentionContent $root.Content .Profiles}}
-  {{$rootMedia := treeMediaFields $rootContent}}
+  {{$rootContent := threadTreeMainBodyText $root .Profiles}}
+  {{$rootMedia := treeMediaFields $rootContent $root.Tags}}
   {{$rootDisplay := displayName $.Profiles $root.PubKey}}
   {{$rootAge := relTime $root.CreatedAt}}
   {{$rootAvatar := avatarSrc $.Profiles $root.PubKey}}
+  {{$rootAsciiAuthor := asciiAuthor $.AsciiWidth $.Profiles $root.PubKey}}
   <section class="thread-tree-mode hn-thread-tree-mode" data-thread-tree-view data-thread-tree-root-id="{{$treeRootID}}">
-    <div class="hn-story thread-tree-root-note{{if eq $treeRootID $.TreeSelectedID}} is-selected{{end}}" data-thread-tree-note="note-{{$treeRootID}}" data-thread-focus-id="{{$treeRootID}}" data-thread-tree-source="{{$rootContent}}" data-thread-tree-display-source="{{$rootMedia.DisplaySource}}" data-reply-root-id="{{$rootID}}" data-reply-target-id="{{$treeRootID}}" data-reply-pubkey="{{$root.PubKey}}" data-ascii-relay="{{$root.RelayURL}}"{{if $rootMedia.ItemsJSON}} data-thread-tree-media="{{$rootMedia.ItemsJSON}}"{{end}}>
+    <div class="hn-story thread-tree-root-note{{if eq $treeRootID $.TreeSelectedID}} is-selected{{end}}" data-thread-tree-note="note-{{$treeRootID}}" data-thread-focus-id="{{$treeRootID}}" data-thread-tree-source="{{$rootContent}}" data-thread-tree-display-source="{{$rootMedia.DisplaySource}}" data-reply-root-id="{{$rootID}}" data-reply-target-id="{{$treeRootID}}" data-reply-pubkey="{{$root.PubKey}}" data-ascii-author="{{$rootAsciiAuthor}}" data-ascii-relay="{{$root.RelayURL}}"{{if $rootMedia.ItemsJSON}} data-thread-tree-media="{{$rootMedia.ItemsJSON}}"{{end}}{{template "thread_tree_ref_data_attrs" dict "Event" $root "ReferencedEvents" .ReferencedEvents "ReplyCounts" .ReplyCounts "AsciiWidth" .AsciiWidth "Profiles" .Profiles}}>
       <a class="hn-tree-avatar" href="/u/{{$root.PubKey}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $rootAvatar}}<img class="thread-tree-avatar" src="{{$rootAvatar}}" alt="" loading="lazy" decoding="async">{{else}}<span class="thread-tree-avatar thread-tree-avatar-fallback" aria-hidden="true">@</span>{{end}}</a>
       <div class="hn-root-stack">
       <div class="hn-comhead hn-story-comhead">
@@ -141,13 +166,15 @@
         <p class="thread-tree-media hn-media" data-thread-tree-media-wrap hidden><button class="link-button thread-tree-media-toggle" type="button" data-thread-tree-media-toggle>{{$rootMedia.Label}}</button></p>
         <div class="thread-tree-media-preview" data-thread-tree-media-mount hidden></div>
       {{end}}
+      <div class="hn-reply"><font class="hn-reply-font"><u><a href="/thread/{{$rootID}}#note-{{$treeRootID}}" data-relay-aware>reply</a></u></font></div>
       <template class="ascii-source">{{$rootContent}}</template>
       </div>
       </div>
+    {{template "thread_tree_ref_source_template" dict "Event" $root "ReferencedEvents" .ReferencedEvents "Profiles" .Profiles}}
     </div>
     {{if .Tree.Nodes}}
       <div class="hn-comment-tree thread-tree">
-        {{template "hn_tree_ul" dict "Nodes" .Tree.Nodes "RootID" .RootID "TreeSelectedID" .TreeSelectedID "Profiles" .Profiles "AsciiWidth" .AsciiWidth}}
+        {{template "hn_tree_ul" dict "Nodes" .Tree.Nodes "RootID" .RootID "TreeSelectedID" .TreeSelectedID "Profiles" .Profiles "AsciiWidth" .AsciiWidth "ReferencedEvents" .ReferencedEvents "ReplyCounts" .ReplyCounts}}
       </div>
     {{end}}
   </section>
