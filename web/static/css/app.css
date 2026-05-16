@@ -2618,7 +2618,10 @@ article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--
   border-left: 1px solid var(--border);
   border-top: 1px solid var(--border);
   display: grid;
+  font-family: var(--font-mono-stack);
+  font-size: 1rem;
   gap: 0.1rem;
+  line-height: 1.45;
   margin-top: 0.25rem;
   min-width: 0;
   padding: 0.35rem 0 0 0.55rem;
