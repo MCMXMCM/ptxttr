@@ -6,6 +6,63 @@ A small Go Nostr web app built around server-side relay aggregation, a SQLite ev
 
 **Operators:** hosted AWS / CloudFront deployment is optional and documented in [`deploy/README.md`](deploy/README.md).
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/screenshots/feed.png" alt="Home feed with web-of-trust filtering and a trending sidebar" width="920"/>
+</p>
+<p align="center"><em>Home feed — chronological notes, optional web-of-trust depth, trending</em></p>
+
+<table>
+  <tr>
+    <td align="center" width="33%">
+      <b>Thread (linear)</b><br/>
+      <img src="docs/screenshots/thread-tree.png" alt="Thread page in tree layout with participants sidebar" width="400"/>
+    </td>
+    <td align="center" width="33%">
+      <b>Thread (tree)</b><br/>
+      <img src="docs/screenshots/thread-view.png" alt="Thread page in linear reply layout" width="400"/>
+    </td>
+    <td align="center" width="33%">
+      <b>Settings</b><br/>
+      <img src="docs/screenshots/settings.png" alt="Settings for media mode and web-of-trust seed profile" width="400"/>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" colspan="3">
+      <b>Profile</b><br/>
+      <img src="docs/screenshots/profile.png" alt="User profile with posts and suggested relays" width="720"/>
+    </td>
+  </tr>
+</table>
+
+<p align="center"><b>Mobile</b></p>
+
+<table>
+  <tr>
+    <td align="center" width="20%">
+      <b>Thread</b><br/>
+      <img src="docs/screenshots/mobile-thread-tree.png" alt="Mobile thread tree view" width="180"/>
+    </td>
+    <td align="center" width="20%">
+      <b>Thread Trees</b><br/>
+      <img src="docs/screenshots/mobile-thread-view.png" alt="Mobile linear thread view" width="180"/>
+    </td>
+    <td align="center" width="20%">
+      <b>Profile</b><br/>
+      <img src="docs/screenshots/mobile-profile.png" alt="Mobile user profile" width="180"/>
+    </td>
+    <td align="center" width="20%">
+      <b>Settings</b><br/>
+      <img src="docs/screenshots/mobile-settings.png" alt="Mobile settings" width="180"/>
+    </td>
+    <td align="center" width="20%">
+      <b>Bookmarks</b><br/>
+      <img src="docs/screenshots/mobile-bookmarks.png" alt="Mobile bookmarks from NIP-51 lists" width="180"/>
+    </td>
+  </tr>
+</table>
+
 ## Try it (macOS desktop)
 
 **Download a build:** open [GitHub Releases](https://github.com/MCMXMCM/ptxttr/releases) and download the latest **`ptxt-nstr-desktop-mac-*.dmg`**, then install from the disk image as usual.
