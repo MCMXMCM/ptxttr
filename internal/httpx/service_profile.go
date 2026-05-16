@@ -131,13 +131,20 @@ func (s *Server) contactProfiles(ctx context.Context, pubkeys []string) map[stri
 	return profiles
 }
 
-func (s *Server) following(ctx context.Context, pubkey string) []string {
+func (s *Server) following(ctx context.Context, pubkey string, limit int) []string {
 	defer s.observe("store.following", time.Now())
-	if follows, err := s.store.FollowingPubkeys(ctx, pubkey, maxFeedAuthors); err == nil && len(follows) > 0 {
+	if limit <= 0 {
+		limit = maxFeedAuthors
+	}
+	if follows, err := s.store.FollowingPubkeys(ctx, pubkey, limit); err == nil && len(follows) > 0 {
 		return follows
 	}
 	event, _ := s.store.LatestReplaceable(ctx, pubkey, nostrx.KindFollowList)
-	return nostrx.FollowPubkeys(event)
+	pubkeys := nostrx.FollowPubkeys(event)
+	if len(pubkeys) > limit {
+		pubkeys = pubkeys[:limit]
+	}
+	return pubkeys
 }
 
 func (s *Server) followers(ctx context.Context, pubkey string, limit int) []string {
@@ -198,7 +205,7 @@ func (s *Server) followList(ctx context.Context, pubkey string, query string, pa
 func (s *Server) followListFallback(ctx context.Context, pubkey string, query string, page int, following bool) FollowListView {
 	var all []string
 	if following {
-		all = s.following(ctx, pubkey)
+		all = s.following(ctx, pubkey, maxFeedAuthors)
 	} else {
 		all = s.followers(ctx, pubkey, 500)
 	}

@@ -276,7 +276,8 @@ Useful environment variables (all optional):
 | `PTXT_HYDRATION_SWEEP_INTERVAL` | `5m` | Delay between hydration sweeps. |
 | `PTXT_TRENDING_SWEEP_INTERVAL` | `5m` | Delay between trending sweep passes. |
 | `PTXT_TRENDING_MIN_RECOMPUTE` | `20m` | Minimum age before trending cache recomputes. |
-| `PTXT_ACTIVE_VIEWER_TRENDING` | `false` | When `1`/`true`, runs the per-active-viewer trending warm loop (extra SQLite load). |
+| `PTXT_ACTIVE_VIEWER_TRENDING` | `false` | When `1`/`true`, runs the per-active-viewer trending warm loop (extra SQLite load). Recommended in production so signed-in WoT trend feeds and sidebars stay populated. |
+| `PTXT_WOT_MAX_AUTHORS` | `240` | Cap on direct follows seeded into WoT resolution and on SQL `IN` feed queries; larger cohorts use batched author queries. |
 | `PTXT_SEED_CRAWLER_ENABLED` | `true` | Keep the WoT seed crawler running in the background. |
 | `PTXT_SEED_CRAWLER_INTERVAL` | `20s` | Delay between crawler ticks. |
 | `PTXT_SEED_CRAWLER_AUTHOR_BATCH` | `16` | Stale seed contacts processed per tick. |
@@ -291,7 +292,6 @@ Useful environment variables (all optional):
 | `PTXT_SQLITE_BUSY_TIMEOUT_MS` | `5000` | SQLite busy timeout (ms) for lock retries (`PRAGMA busy_timeout`). |
 | `PTXT_SQLITE_WAL_AUTOCHECKPOINT_PAGES` | `800` | SQLite WAL autocheckpoint page threshold. |
 | `PTXT_SIDECAR_LRU_SIZE` | `2048` | Max entries per sidecar domain (relay hints, profiles, reply stats) for the in-process read-through LRU. |
-| `PTXT_WOT_MAX_AUTHORS` | `240` | Cap on the WoT-expanded author universe per request. |
 | `PTXT_OUTBOX_MAX_RELAYS_PER_AUTHOR` | `8` | Per-author outbox cap. |
 | `PTXT_OUTBOX_MAX_ROUTE_GROUPS` | `6` | Max simultaneous route groups per request. |
 | `PTXT_OUTBOX_FOF_SEEDS` | `40` | Followers-of-followers seed cap for outbox routing. |
@@ -304,7 +304,7 @@ Useful environment variables (all optional):
 
 - **`GET /healthz`** (always on): SQLite `Ping` only — use for **liveness** (process + DB). It does not call relays. JSON includes `degraded` when the optional self-probe has failed repeatedly (see `PTXT_HEALTH_PROBE_*`). **`systemd` `MemoryCurrent` can stay high while RSS is moderate** (e.g. page cache / mmap); treat `/healthz` + probe state as separate from RSS-only signals.
 - **Readiness vs liveness**: `/healthz` may return `200` with `"degraded": true` if the probe path is slow or wedged while SQLite still answers — wire your load balancer to `degraded` for **readiness** if you want to drain traffic before full failure.
-- **`/debug/metrics`** (when `PTXT_DEBUG=1`): includes `relay_queries.outbound` (slot cap, wait counts), `health` (last probe, consecutive failures), and sidecar counters `sidecar.relay_hint.{hit,miss}`, `sidecar.profile.{hit,miss}`, `sidecar.reply_stat.{hit,miss}` (same keys appear in `/debug/cache` under `sidecar_lru` as snapshots).
+- **`/debug/metrics`** (when `PTXT_DEBUG=1`): includes `relay_queries.outbound` (slot cap, wait counts), `health` (last probe, consecutive failures), and sidecar counters `sidecar.relay_hint.{hit,miss}`, `sidecar.profile.{hit,miss}`, `sidecar.reply_stat.{hit,miss}` (same keys appear in `/debug/cache` under `sidecar_lru` as snapshots). WoT feed tuning: `feed.wot_sql_hit` vs `feed.wot_sql_miss_scan_fallback` (indexed author query vs global scan fallback), `feed.scan_cache_hit_thin`, `feed.snapshot_stale_served`. Trending: `trending.sidebar_global_stale_fallback`, `trending.cache_miss.fast_empty`, `trending.cohort_global_fallback_*`.
 
 ## Local checks
 

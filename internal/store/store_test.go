@@ -473,6 +473,25 @@ func TestTrendingSummariesByKindsSupportsAuthorFilterAndOffset(t *testing.T) {
 	if len(paged) != 1 || paged[0].ID != "note-b" {
 		t.Fatalf("unexpected paged result: %#v", paged)
 	}
+
+	first, err := st.TrendingSummariesByKindsAfter(ctx, []int{nostrx.KindTextNote}, 200, nil, 0, 0, "", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || first[0].ID != "note-a" {
+		t.Fatalf("unexpected first keyset page: %#v", first)
+	}
+	stats, err := st.ReplyStatsByNoteIDs(ctx, []string{first[0].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.TrendingSummariesByKindsAfter(ctx, []int{nostrx.KindTextNote}, 200, nil, stats[first[0].ID].DirectReplies, first[0].CreatedAt, first[0].ID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second) != 2 || second[0].ID != "note-b" || second[1].ID != "note-c" {
+		t.Fatalf("unexpected second keyset page: %#v", second)
+	}
 }
 
 func TestTrendingCacheRoundTripAndOverwrite(t *testing.T) {

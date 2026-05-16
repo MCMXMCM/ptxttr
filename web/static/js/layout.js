@@ -19,6 +19,7 @@ import {
   getImageModePref,
   getWebOfTrustDepthPref,
   getWebOfTrustEnabledPref,
+  ensureDefaultViewerPrefs,
   getWebOfTrustSeedPref,
   normalizeWebOfTrustDepth,
   setFeedSortPref,
@@ -492,10 +493,13 @@ function bindBlossomSettings(root) {
 }
 
 function bindImageModeToggle(root) {
-  const toggle = root.querySelector("[data-image-mode-toggle]");
+  const settingsRoot = root.querySelector(".settings-preferences");
+  const scope = settingsRoot || root;
+  const toggle = scope.querySelector("[data-image-mode-toggle]");
   if (!toggle || toggle._ptxtImageModeBound) return;
   toggle._ptxtImageModeBound = true;
-  const modeButtons = Array.from(root.querySelectorAll("[data-image-mode-set]"));
+  ensureDefaultViewerPrefs();
+  const modeButtons = Array.from(scope.querySelectorAll("[data-image-mode-set]"));
   const syncModeButtons = (enabled) => {
     modeButtons.forEach((button) => {
       const isOn = button.dataset.imageModeSet === "on";
@@ -681,29 +685,33 @@ function bindWebOfTrustControls(root) {
       }));
     }
   };
-  const initialDepth = getWebOfTrustDepthPref();
-  setEligible(false, { showEligibilityNote: false, showSeed: false });
-  apply({ enabled: false, depth: initialDepth, announce: false, persist: false });
+  ensureDefaultViewerPrefs();
+  const syncFromStorage = (announce = false, persist = false) => {
+    apply({
+      enabled: getWebOfTrustEnabledPref(),
+      depth: getWebOfTrustDepthPref(),
+      announce,
+      persist,
+    });
+  };
   const viewer = normalizedPubkey();
+  if (!viewer && currentHasWOTParams) {
+    setWebOfTrustEnabledPref(currentEnabledFromURL);
+    if (currentDepthFromURL) setWebOfTrustDepthPref(currentDepthFromURL);
+    if (currentSeedFromURL) setWebOfTrustSeedPref(currentSeedFromURL);
+  }
   if (!viewer) {
-    if (currentHasWOTParams) {
-      setWebOfTrustEnabledPref(currentEnabledFromURL);
-      if (currentDepthFromURL) setWebOfTrustDepthPref(currentDepthFromURL);
-      if (currentSeedFromURL) setWebOfTrustSeedPref(currentSeedFromURL);
-    }
     setEligible(true, { showSeed: true });
-    apply({ enabled: getWebOfTrustEnabledPref(), depth: getWebOfTrustDepthPref(), announce: false });
   } else {
+    setEligible(true, { showEligibilityNote: false, showSeed: false });
     void viewerHasAtLeastOneFollow(viewer).then((hasFollows) => {
-      if (!hasFollows) {
-        setWebOfTrustEnabledPref(false);
-        setEligible(false, { showEligibilityNote: true, showSeed: false });
-        return;
-      }
-      setEligible(true, { showEligibilityNote: false, showSeed: false });
-      apply({ enabled: getWebOfTrustEnabledPref(), depth: getWebOfTrustDepthPref(), announce: false });
+      setEligible(true, {
+        showEligibilityNote: !hasFollows,
+        showSeed: false,
+      });
     });
   }
+  syncFromStorage(false, true);
   modeButtons.forEach((button) => {
     button.addEventListener("click", () => {
       apply({ enabled: button.dataset.wotSet === "on", depth: getWebOfTrustDepthPref() });

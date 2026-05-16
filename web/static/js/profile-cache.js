@@ -1,20 +1,12 @@
-import { applyRelayParamsToURL } from "./session.js";
 import {
-  replaceRouteOutletAndScroll,
-  routeOutletInnerHTML,
-  routeScrollTop,
-} from "./shell-swap.js";
+  lookupProfileSnapshot,
+  profileSnapshotKey,
+  purgeStaleProfileSnapshotKeys,
+} from "./profile-snapshot-keys.js";
+import { restoreRouteSnapshot, writeRouteSnapshot } from "./route-snapshot.js";
 
 const maxSnapshots = 4;
 const profileSnapshots = new Map();
-
-export function profileSnapshotKey(urlLike) {
-  const url = new URL(urlLike, window.location.origin);
-  url.searchParams.delete("cursor");
-  url.searchParams.delete("cursor_id");
-  applyRelayParamsToURL(url);
-  return `${url.pathname}?${url.searchParams.toString()}`;
-}
 
 export function snapshotProfile(urlLike, mainNode) {
   if (!mainNode?.innerHTML) return;
@@ -22,30 +14,24 @@ export function snapshotProfile(urlLike, mainNode) {
   if (!postsFeed || postsFeed.classList.contains("profile-feed-skeleton")) {
     return;
   }
-  const key = profileSnapshotKey(urlLike);
-  profileSnapshots.delete(key);
-  profileSnapshots.set(key, {
-    html: routeOutletInnerHTML(mainNode),
-    scrollTop: routeScrollTop(mainNode),
-    savedAt: Date.now(),
+  writeRouteSnapshot({
+    map: profileSnapshots,
+    urlLike,
+    mainNode,
+    maxSnapshots,
+    toCanonicalKey: profileSnapshotKey,
+    purgeStale: purgeStaleProfileSnapshotKeys,
   });
-  while (profileSnapshots.size > maxSnapshots) {
-    const oldest = profileSnapshots.keys().next().value;
-    if (!oldest) break;
-    profileSnapshots.delete(oldest);
-  }
 }
 
 export function restoreProfile(urlLike, mainNode) {
-  const key = profileSnapshotKey(urlLike);
-  const snapshot = profileSnapshots.get(key) || null;
-  if (!snapshot || !mainNode) return null;
-  if (snapshot.html.includes("profile-feed-skeleton")) {
-    profileSnapshots.delete(key);
-    return null;
-  }
-  replaceRouteOutletAndScroll(mainNode, snapshot.html, snapshot.scrollTop ?? snapshot.scrollY ?? 0);
-  return snapshot;
+  return restoreRouteSnapshot({
+    map: profileSnapshots,
+    urlLike,
+    mainNode,
+    lookup: lookupProfileSnapshot,
+    isInvalidSnapshot: (snapshot) => snapshot.html.includes("profile-feed-skeleton"),
+  });
 }
 
 export function clearProfileSnapshots() {

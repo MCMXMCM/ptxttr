@@ -41,6 +41,9 @@ const (
 	feedSortTrend24h            = "trend24h"
 	feedSortTrend7d             = "trend7d"
 	scanFeedChunkSize           = 256
+	feedMuteTopUpMaxRounds      = 4
+	trendingScanLimit           = 4800
+	trendingSidebarBackfillMin  = 8
 	defaultLoggedOutWOTDepth    = 3
 	defaultLoggedOutWOTSeedNPub = "npub1sg6plzptd64u62a878hep2kev88swjh3tw00gjsfl8f237lmu63q0uf63m"
 )
@@ -112,6 +115,41 @@ func (a requestAuthors) viewerForMuteFilter() string {
 		return a.userPubkey
 	}
 	return strings.TrimSpace(a.wotViewerPubkey)
+}
+
+// feedQueryAuthors returns the author list used for SQL IN queries and relay
+// refresh (clamped WoT prefix). Scan fallbacks still use allAuthors membership.
+func (a requestAuthors) feedQueryAuthors() []string {
+	return a.authors
+}
+
+// trendingScope returns cohort key and authors for WoT-scoped trending sidebars.
+func (a requestAuthors) trendingScope() (cohortKey string, authors []string) {
+	if !a.wotEnabled {
+		return "", nil
+	}
+	return authorsCacheKey(a.allAuthors), a.allAuthors
+}
+
+func feedCacheKeyForResolved(resolved requestAuthors) string {
+	if resolved.wotEnabled {
+		return authorsCacheKey(resolved.allAuthors)
+	}
+	return authorsCacheKey(resolved.authors)
+}
+
+func filterFeedEventsToAuthors(events []nostrx.Event, authors []string) []nostrx.Event {
+	if len(events) == 0 || len(authors) == 0 {
+		return events
+	}
+	membership := newAuthorMembership(authors)
+	out := events[:0]
+	for _, ev := range events {
+		if membership.Contains(ev.PubKey) {
+			out = append(out, ev)
+		}
+	}
+	return out
 }
 
 type outboxRouteGroup struct {
@@ -287,9 +325,9 @@ func (s *Server) feedPageDataEx(ctx context.Context, req feedRequest, includeTre
 	resolved := s.resolveRequestAuthors(ctx, req.Pubkey, req.SeedPubkey, req.Relays, req.WoT)
 	sortMode := normalizeFeedSort(req.SortMode)
 	timeframe := normalizeTrendingTimeframe(req.Timeframe)
-	// Default Jack seed: ranked feed may fall back to global trending when
-	// cohort cache is cold. Custom seeds stay cohort-scoped only.
-	cacheOnlyFeedRanking := resolved.loggedOut && resolved.wotEnabled && isDefaultLoggedOutSeed(req.SeedPubkey)
+	// Logged-out WoT ranked feeds may read cohort cache only on the request path,
+	// falling back to global trending_cache when the cohort row is cold.
+	cacheOnlyFeedRanking := resolved.loggedOut && resolved.wotEnabled
 	// Anonymous right-rail: never sync-recompute trending on the request path.
 	cacheOnlyTrending := resolved.loggedOut && resolved.wotEnabled
 	guestCacheKey := ""
@@ -314,18 +352,22 @@ func (s *Server) feedPageDataEx(ctx context.Context, req feedRequest, includeTre
 	var next int64
 	var nextID string
 	if sortMode == feedSortRecent {
+		cacheKey := feedCacheKeyForResolved(resolved)
 		if resolved.loggedOut {
 			if resolved.wotEnabled {
+				viewer := resolved.wotViewerPubkey
+				queryAuthors := resolved.feedQueryAuthors()
 				membership := newAuthorMembership(resolved.allAuthors)
-				events, hasMore = s.fetchScannedFeedPage(ctx, resolved.wotViewerPubkey, resolved.authors, membership, req.Cursor, req.CursorID, req.Limit, req.Relays, "feed", authorsCacheKey(resolved.authors))
+				events, hasMore = s.fetchWoTFeedPage(ctx, viewer, queryAuthors, membership, req.Cursor, req.CursorID, req.Limit, req.Relays, "feed", cacheKey)
 			} else {
 				events, hasMore = s.fetchDefaultFeedPage(ctx, req.Cursor, req.CursorID, req.Limit, req.Relays)
 			}
 		} else if resolved.wotEnabled {
+			queryAuthors := resolved.feedQueryAuthors()
 			membership := newAuthorMembership(resolved.allAuthors)
-			events, hasMore = s.fetchScannedFeedPage(ctx, resolved.userPubkey, resolved.authors, membership, req.Cursor, req.CursorID, req.Limit, req.Relays, "feed", authorsCacheKey(resolved.authors))
+			events, hasMore = s.fetchWoTFeedPage(ctx, resolved.userPubkey, queryAuthors, membership, req.Cursor, req.CursorID, req.Limit, req.Relays, "feed", cacheKey)
 		} else {
-			events, hasMore = s.fetchAuthorsPage(ctx, resolved.userPubkey, resolved.authors, req.Cursor, req.CursorID, req.Limit, req.Relays, "feed", authorsCacheKey(resolved.authors), nil)
+			events, hasMore = s.fetchAuthorsPage(ctx, resolved.userPubkey, resolved.authors, req.Cursor, req.CursorID, req.Limit, req.Relays, "feed", cacheKey, nil)
 		}
 		if len(events) > req.Limit {
 			events = events[:req.Limit]
@@ -336,40 +378,66 @@ func (s *Server) feedPageDataEx(ctx context.Context, req feedRequest, includeTre
 			nextID = last.ID
 		}
 	} else {
-		offset := int(req.Cursor)
-		if offset < 0 {
-			offset = 0
-		}
-		rawOffset := offset
-		pageLimit := req.Limit + 1
-		window := pageLimit * 4
-		if window > loggedInFetchWindow {
-			window = loggedInFetchWindow
-		}
-		trendingKey := feedRefreshKey("feed-"+sortMode, 0, "")
+		timeframe := feedSortTimeframe(sortMode)
+		cohortKey := ""
 		var cohort []string
 		if resolved.wotEnabled {
 			cohort = resolved.allAuthors
 		} else if !resolved.loggedOut {
 			cohort = resolved.authors
 		}
-		if cohortKey := authorsCacheKey(cohort); cohortKey != "" {
+		cohortKey = authorsCacheKey(cohort)
+		rankAfter := s.resolveTrendingFeedCursor(ctx, req.Cursor, req.CursorID, timeframe, cohortKey, cohort)
+		pageLimit := req.Limit + 1
+		window := pageLimit * 4
+		if window > loggedInFetchWindow {
+			window = loggedInFetchWindow
+		}
+		trendingKey := feedRefreshKey("feed-"+sortMode, 0, "")
+		if cohortKey != "" {
 			trendingKey += "|" + cohortKey
 		}
-		if offset == 0 && s.store.ShouldRefresh(ctx, "feed", trendingKey, feedTTL) {
-			s.refreshFeedForTrendingAsync(resolved, window, req.Relays, trendingKey, feedSortTimeframe(sortMode))
+		if req.Cursor == 0 && req.CursorID == "" && s.store.ShouldRefresh(ctx, "feed", trendingKey, feedTTL) {
+			s.refreshFeedForTrendingAsync(resolved, window, req.Relays, trendingKey, timeframe)
 		}
-		events, hasMore, offset = s.fetchRankedFeedPage(ctx, cohort, offset, req.Limit, sortMode, cacheOnlyFeedRanking)
-		if !resolved.loggedOut {
-			if v := resolved.viewerForMuteFilter(); v != "" {
-				events = s.filterFeedEventsByViewerMutes(ctx, v, events)
+		allowGlobalTrendFallback := resolved.loggedOut && resolved.wotEnabled && isDefaultLoggedOutSeed(req.SeedPubkey)
+		muteViewer := resolved.viewerForMuteFilter()
+		var muted map[string]struct{}
+		muteBlocked := false
+		if muteViewer != "" {
+			var muteErr error
+			muted, muteErr = s.viewerMutePubkeySet(ctx, muteViewer)
+			if muteErr != nil {
+				slog.Warn("viewer mutes: MutedPubkeys failed", "viewer", short(muteViewer), "err", muteErr)
+				muteBlocked = true
+				events = nil
+				hasMore = false
 			}
 		}
-		if rawOffset == 0 && len(events) == 0 {
+		if !muteBlocked {
+			for round := 0; round < feedMuteTopUpMaxRounds && len(events) < pageLimit; round++ {
+				need := pageLimit - len(events)
+				var batch []nostrx.Event
+				batch, hasMore, rankAfter = s.fetchRankedFeedPage(ctx, cohort, rankAfter, need, sortMode, cacheOnlyFeedRanking, allowGlobalTrendFallback)
+				if muteViewer != "" {
+					batch = s.filterEventsByViewerMutedSet(batch, muted)
+				}
+				events = append(events, batch...)
+				if len(batch) == 0 {
+					break
+				}
+			}
+		}
+		if len(events) > req.Limit {
+			events = events[:req.Limit]
+			hasMore = true
+		}
+		if req.Cursor == 0 && req.CursorID == "" && len(events) == 0 {
 			s.metrics.Add("feed.ranked.cold_miss", 1)
 		}
-		next = int64(offset)
-		nextID = ""
+		if len(events) > 0 {
+			next, nextID = rankedFeedPaginationCursor(s, ctx, events, rankAfter, muteViewer)
+		}
 	}
 	s.warmFeedEntities(events, req.Relays)
 	referenced, combined := s.referencedHydration(ctx, events, req.Relays)
@@ -390,7 +458,8 @@ func (s *Server) feedPageDataEx(ctx context.Context, req feedRequest, includeTre
 	trending := []TrendingNote{}
 	profileEvents := append([]nostrx.Event(nil), combined...)
 	if includeTrending {
-		trending = s.trendingData(ctx, timeframe, req.Relays, cacheOnlyTrending)
+		trendCohort, trendAuthors := resolved.trendingScope()
+		trending = s.trendingData(ctx, timeframe, trendCohort, trendAuthors, req.Relays, cacheOnlyTrending)
 		for _, item := range trending {
 			profileEvents = append(profileEvents, item.Event)
 		}
@@ -441,9 +510,9 @@ func (s *Server) feedItemsData(ctx context.Context, req feedRequest) FeedPageDat
 				return data
 			}
 		}
-		// Canonical logged-out guest first fragment: serve only from durable
-		// snapshots on the request path. Live feed assembly runs in background
-		// warmers (never feedPageDataEx here) so t4g.small stays responsive.
+		// Canonical logged-out guest first fragment: prefer durable snapshots,
+		// then assemble live on the request path when the snapshot is cold so
+		// ?fragment=1 does not return an empty body (which leaves the loader up).
 		if deferGuestLoggedOutFeedFirstPage(req) && s.isGuestCanonicalSnapshotTarget(req) {
 			sm := normalizeFeedSort(req.SortMode)
 			data := s.feedHeadingData(req)
@@ -459,19 +528,15 @@ func (s *Server) feedItemsData(ctx context.Context, req feedRequest) FeedPageDat
 					return data
 				}
 				s.metrics.Add("feed.guest_ranked_fragment_snapshot_miss", 1)
-				s.scheduleGuestFeedFragmentWarm(req)
-				return data
-			}
-			if sm == feedSortRecent && s.isCanonicalDefaultLoggedOutGuestFeedRequest(req) {
+			} else if sm == feedSortRecent && s.isCanonicalDefaultLoggedOutGuestFeedRequest(req) {
 				if s.mergePersistedDefaultSeedGuestFeedIntoShell(ctx, &data, req) && len(data.Feed) > 0 {
 					s.metrics.Add("feed.guest_recent_fragment_snapshot_hit", 1)
 					s.scheduleGuestFeedFragmentWarm(req)
 					return data
 				}
 				s.metrics.Add("feed.guest_recent_fragment_snapshot_miss", 1)
-				s.scheduleGuestFeedFragmentWarm(req)
-				return data
 			}
+			s.scheduleGuestFeedFragmentWarm(req)
 		}
 	}
 	o := feedPageDataOptions{}
@@ -518,11 +583,17 @@ func (s *Server) feedDataNewer(ctx context.Context, req feedRequest) FeedPageDat
 	} else if resolved.wotEnabled {
 		membership := newAuthorMembership(resolved.allAuthors)
 		events = s.scanNewerFeedEvents(ctx, membership, req.Cursor, req.CursorID, req.Limit)
-		if len(events) == 0 && len(resolved.authors) > 0 {
-			events, _ = s.store.NewerSummariesByAuthorsCursor(ctx, resolved.authors, noteTimelineKinds, req.Cursor, req.CursorID, req.Limit)
+		if len(events) == 0 {
+			queryAuthors := resolved.feedQueryAuthors()
+			if len(queryAuthors) > 0 {
+				events, _ = s.store.NewerSummariesByAuthorsCursor(ctx, queryAuthors, noteTimelineKinds, req.Cursor, req.CursorID, req.Limit)
+			}
 		}
 	} else {
 		events, _ = s.store.NewerSummariesByAuthorsCursor(ctx, resolved.authors, noteTimelineKinds, req.Cursor, req.CursorID, req.Limit)
+	}
+	if v := resolved.viewerForMuteFilter(); v != "" {
+		events = s.filterFeedEventsByViewerMutes(ctx, v, events)
 	}
 	if len(events) > req.Limit {
 		events = events[:req.Limit]
@@ -565,16 +636,17 @@ func (s *Server) feedNewerCount(ctx context.Context, req feedRequest) int {
 	} else if resolved.wotEnabled {
 		membership := newAuthorMembership(resolved.allAuthors)
 		events = s.scanNewerFeedEvents(ctx, membership, req.Cursor, req.CursorID, req.Limit)
-		if len(events) == 0 && len(resolved.authors) > 0 {
-			events, _ = s.store.NewerSummariesByAuthorsCursor(ctx, resolved.authors, noteTimelineKinds, req.Cursor, req.CursorID, req.Limit)
+		if len(events) == 0 {
+			queryAuthors := resolved.feedQueryAuthors()
+			if len(queryAuthors) > 0 {
+				events, _ = s.store.NewerSummariesByAuthorsCursor(ctx, queryAuthors, noteTimelineKinds, req.Cursor, req.CursorID, req.Limit)
+			}
 		}
 	} else {
 		events, _ = s.store.NewerSummariesByAuthorsCursor(ctx, resolved.authors, noteTimelineKinds, req.Cursor, req.CursorID, req.Limit)
 	}
-	if !resolved.loggedOut {
-		if v := resolved.viewerForMuteFilter(); v != "" {
-			events = s.filterFeedEventsByViewerMutes(ctx, v, events)
-		}
+	if v := resolved.viewerForMuteFilter(); v != "" {
+		events = s.filterFeedEventsByViewerMutes(ctx, v, events)
 	}
 	if len(events) > req.Limit {
 		events = events[:req.Limit]
@@ -582,53 +654,59 @@ func (s *Server) feedNewerCount(ctx context.Context, req feedRequest) int {
 	return len(events)
 }
 
-func (s *Server) fetchRankedFeedPage(ctx context.Context, authors []string, offset int, limit int, sortMode string, cacheOnly bool) ([]nostrx.Event, bool, int) {
-	if offset < 0 {
-		offset = 0
+func (s *Server) fetchRankedFeedPage(ctx context.Context, authors []string, after trendingRankKey, limit int, sortMode string, cacheOnly bool, allowGlobalFallback bool) ([]nostrx.Event, bool, trendingRankKey) {
+	if limit <= 0 {
+		return nil, false, after
 	}
 	timeframe := feedSortTimeframe(sortMode)
 	cohortKey := authorsCacheKey(authors)
-	if events, hasMore, nextOffset, ok := s.cachedTrendingFeedPage(ctx, timeframe, cohortKey, authors, offset, limit); ok {
-		return events, hasMore, nextOffset
+	if events, hasMore, nextAfter, ok := s.rankedTrendingFeedPageFromCache(ctx, timeframe, cohortKey, authors, after, limit); ok {
+		return events, hasMore, nextAfter
 	}
 	if cacheOnly {
 		if cohortKey != "" {
-			if events, hasMore, nextOffset, ok := s.cachedTrendingFeedPage(ctx, timeframe, "", nil, offset, limit); ok {
+			if events, hasMore, nextAfter, ok := s.rankedTrendingFeedPageFromCache(ctx, timeframe, "", nil, after, limit); ok {
 				s.metrics.Add("trending.cohort_global_fallback_cache_hit", 1)
-				return events, hasMore, nextOffset
+				if !allowGlobalFallback {
+					events = filterFeedEventsToAuthors(events, authors)
+				}
+				if len(events) > 0 {
+					return events, hasMore, nextAfter
+				}
+				s.metrics.Add("trending.cohort_global_fallback_cache_empty", 1)
 			}
-			pageLimit := limit + 1
-			since := feedSortSince(sortMode, time.Now())
-			events, _ := s.store.TrendingSummariesByKinds(ctx, noteTimelineKinds, since, nil, offset, pageLimit)
-			hasMore := len(events) > limit
-			if hasMore {
-				events = events[:limit]
-			}
-			if len(events) > 0 {
+			if events, hasMore, nextAfter, ok := s.fetchRankedSummariesPage(ctx, sortMode, authors, allowGlobalFallback, after, limit); ok {
 				s.metrics.Add("trending.cohort_global_fallback_db_hit", 1)
-				return events, hasMore, offset + len(events)
+				return events, hasMore, nextAfter
 			}
 		}
 		s.metrics.Add("trending.cache_miss.fast_empty", 1)
-		if offset == 0 {
-			return nil, false, 0
+		if after.id == "" {
+			return nil, false, after
 		}
-		return nil, false, offset
+		return nil, false, after
 	}
-	pageLimit := limit + 1
+	if events, hasMore, nextAfter, ok := s.fetchRankedSummariesPage(ctx, sortMode, authors, false, after, limit); ok {
+		return events, hasMore, nextAfter
+	}
+	if after.id == "" {
+		return nil, false, after
+	}
+	return nil, false, after
+}
+
+func (s *Server) fetchRankedSummariesPage(ctx context.Context, sortMode string, authors []string, allowGlobalAuthors bool, after trendingRankKey, limit int) ([]nostrx.Event, bool, trendingRankKey, bool) {
+	queryAuthors := authors
+	if allowGlobalAuthors {
+		queryAuthors = nil
+	}
 	since := feedSortSince(sortMode, time.Now())
-	events, _ := s.store.TrendingSummariesByKinds(ctx, noteTimelineKinds, since, authors, offset, pageLimit)
-	hasMore := len(events) > limit
-	if hasMore {
-		events = events[:limit]
+	events, _ := s.store.TrendingSummariesByKindsAfter(ctx, noteTimelineKinds, since, queryAuthors, after.score, after.createdAt, after.id, limit+1)
+	if len(events) == 0 {
+		return nil, false, after, false
 	}
-	if len(events) > 0 {
-		return events, hasMore, offset + len(events)
-	}
-	if offset == 0 {
-		return nil, false, 0
-	}
-	return nil, false, offset
+	events, hasMore := trimRankedOverfetch(events, limit)
+	return events, hasMore, s.trendingRankKeyForEvent(ctx, events[len(events)-1]), true
 }
 
 func (s *Server) refreshFeedForTrending(ctx context.Context, resolved requestAuthors, window int, relays []string) bool {
@@ -715,7 +793,11 @@ func (s *Server) resolveAuthorsAll(ctx context.Context, pubkey string, relays []
 	}
 	s.metrics.Add("authors.cache_miss", 1)
 	defer s.observe("authors.resolve", time.Now())
-	authors := append([]string(nil), s.following(ctx, decoded)...)
+	followLimit := maxFeedAuthors
+	if wot.Enabled && s != nil {
+		followLimit = max(maxFeedAuthors, s.cfg.WOTMaxAuthors)
+	}
+	authors := append([]string(nil), s.following(ctx, decoded, followLimit)...)
 	if len(authors) == 0 && s.store != nil {
 		// No follows in store yet; warmAuthor already queued kind-3 fetch.
 		s.metrics.Add("authors.cold_miss", 1)
@@ -951,22 +1033,48 @@ func (s *Server) scanNewerFeedEvents(ctx context.Context, membership authorMembe
 	return matched
 }
 
+// fetchWoTFeedPage serves recent WoT notes via indexed author queries first,
+// falling back to a global timeline scan only when the store has no matches.
+func (s *Server) fetchWoTFeedPage(ctx context.Context, viewer string, queryAuthors []string, membership authorMembership, cursor int64, cursorID string, limit int, relays []string, scope, cacheKey string) ([]nostrx.Event, bool) {
+	if len(queryAuthors) > 0 {
+		events, hasMore := s.fetchAuthorsPage(ctx, viewer, queryAuthors, cursor, cursorID, limit, relays, scope, cacheKey, nil)
+		if len(events) > 0 {
+			s.metrics.Add("feed.wot_sql_hit", 1)
+			return events, hasMore
+		}
+		s.metrics.Add("feed.wot_sql_miss_scan_fallback", 1)
+	}
+	return s.fetchScannedFeedPage(ctx, viewer, queryAuthors, membership, cursor, cursorID, limit, relays, scope, cacheKey)
+}
+
 func (s *Server) fetchScannedFeedPage(ctx context.Context, viewer string, authors []string, membership authorMembership, cursor int64, cursorID string, limit int, relays []string, scope, cacheKey string) ([]nostrx.Event, bool) {
 	defer s.observe("feed.scan_page", time.Now())
 	pageLimit := limit + 1
 	pageKey := feedRefreshKey(cacheKey, cursor, cursorID)
-	events, exhausted := s.scanRecentFeedEvents(ctx, membership, cursor, cursorID, limit)
-	events = s.hydrateTimelineEvents(ctx, events)
+	var muted map[string]struct{}
 	var muteReuse *map[string]struct{}
 	if strings.TrimSpace(viewer) != "" {
-		muted, muteErr := s.viewerMutePubkeySet(ctx, viewer)
+		var muteErr error
+		muted, muteErr = s.viewerMutePubkeySet(ctx, viewer)
 		if muteErr != nil {
 			slog.Warn("viewer mutes: MutedPubkeys failed", "viewer", short(viewer), "err", muteErr)
-			events = nil
-		} else {
-			muteReuse = &muted
-			events = s.filterEventsByViewerMutedSet(events, muted)
+			return nil, false
 		}
+		if len(muted) > 0 {
+			muteReuse = &muted
+		}
+	}
+	scanTarget := limit
+	if len(muted) > 0 {
+		scanTarget = limit * feedMuteTopUpMaxRounds
+	}
+	events, exhausted := s.scanRecentFeedEvents(ctx, membership, cursor, cursorID, scanTarget)
+	events = s.hydrateTimelineEvents(ctx, events)
+	if len(muted) > 0 {
+		events = s.filterEventsByViewerMutedSet(events, muted)
+	}
+	if len(events) > pageLimit {
+		events = events[:pageLimit]
 	}
 	if len(events) == 0 && len(authors) > 0 {
 		return s.fetchAuthorsPage(ctx, viewer, authors, cursor, cursorID, limit, relays, scope, cacheKey, muteReuse)
@@ -1017,12 +1125,55 @@ func (s *Server) fetchAuthorsPage(ctx context.Context, viewer string, authors []
 			}
 		}
 	}
-	events, _ := s.store.RecentSummariesByAuthorsCursor(ctx, authors, noteTimelineKinds, cursor, cursorID, pageLimit)
-	events = s.hydrateTimelineEvents(ctx, events)
+	var muted map[string]struct{}
 	if reuseMuteFilter != nil {
-		events = s.filterEventsByViewerMutedSet(events, *reuseMuteFilter)
-	} else {
-		events = s.filterFeedEventsByViewerMutes(ctx, viewer, events)
+		muted = *reuseMuteFilter
+	} else if strings.TrimSpace(viewer) != "" {
+		var muteErr error
+		muted, muteErr = s.viewerMutePubkeySet(ctx, viewer)
+		if muteErr != nil {
+			slog.Warn("viewer mutes: MutedPubkeys failed", "viewer", short(viewer), "err", muteErr)
+			return nil, false
+		}
+	}
+	events := make([]nostrx.Event, 0, pageLimit)
+	scanCursor := cursor
+	scanCursorID := cursorID
+	for round := 0; round < feedMuteTopUpMaxRounds && len(events) < pageLimit; round++ {
+		need := pageLimit - len(events)
+		fetchN := need
+		if len(muted) > 0 {
+			fetchN = need * 2
+			if fetchN < pageLimit {
+				fetchN = pageLimit
+			}
+		}
+		batch, _ := s.store.RecentSummariesByAuthorsCursor(ctx, authors, noteTimelineKinds, scanCursor, scanCursorID, fetchN)
+		if len(batch) == 0 {
+			break
+		}
+		tail := batch[len(batch)-1]
+		batch = s.hydrateTimelineEvents(ctx, batch)
+		if len(muted) > 0 {
+			batch = s.filterEventsByViewerMutedSet(batch, muted)
+		}
+		for _, ev := range batch {
+			events = append(events, ev)
+			if len(events) >= pageLimit {
+				break
+			}
+		}
+		if len(events) >= pageLimit {
+			break
+		}
+		if tail.CreatedAt == scanCursor && tail.ID == scanCursorID {
+			break
+		}
+		scanCursor = tail.CreatedAt
+		scanCursorID = tail.ID
+		if len(batch) < fetchN {
+			break
+		}
 	}
 	shouldRefresh := len(events) == 0 || s.store.ShouldRefresh(ctx, scope, pageKey, feedTTL)
 	fetchLimit := recentAuthorsFetchLimit(pageLimit)

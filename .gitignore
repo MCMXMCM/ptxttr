@@ -9,7 +9,11 @@ data/*.sqlite
 data/*.sqlite-*
 data/profile-debug/
 tmp/
+node_modules/
 dist/
+/test-results/
+/playwright-report/
+/playwright/.cache/
 deploy/environments/*.env
 !deploy/environments/*.example
 

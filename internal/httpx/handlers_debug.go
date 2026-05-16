@@ -118,7 +118,7 @@ func (s *Server) handleDebugProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	s.refreshAuthor(r.Context(), pubkey, s.cfg.DefaultRelays)
 	profile := s.profile(r.Context(), pubkey)
-	following := s.following(r.Context(), pubkey)
+	following := s.following(r.Context(), pubkey, maxFeedAuthors)
 	relayHints := s.userRelays(r.Context(), pubkey)
 	writeJSON(w, map[string]any{
 		"profile":         profile,

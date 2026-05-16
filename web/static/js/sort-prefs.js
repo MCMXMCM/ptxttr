@@ -1,4 +1,12 @@
 import { normalizedPubkey } from "./session.js";
+import { isTruthyToken, prefUnset } from "./prefs-utils.js";
+import {
+  applyDefaultViewerPrefsIfUnset,
+  DEFAULT_LOGGED_OUT_WOT_DEPTH,
+  DEFAULT_LOGGED_OUT_WOT_SEED_NPUB,
+} from "./viewer-defaults.js";
+
+export { isTruthyToken } from "./prefs-utils.js";
 
 const FEED_SORT_KEY = "ptxt_feed_sort";
 const READS_SORT_KEY = "ptxt_reads_sort";
@@ -30,14 +38,13 @@ function blossomURLsMatchPreset(list, preset) {
 const VALID = new Set(["recent", "trend24h", "trend7d"]);
 const VALID_TRENDING_TF = new Set(["24h", "1w"]);
 const MAX_WEB_OF_TRUST_DEPTH = 3;
-const DEFAULT_LOGGED_OUT_WOT_DEPTH = 3;
-const DEFAULT_LOGGED_OUT_WOT_SEED = "npub1sg6plzptd64u62a878hep2kev88swjh3tw00gjsfl8f237lmu63q0uf63m";
+const DEFAULT_LOGGED_OUT_WOT_SEED = DEFAULT_LOGGED_OUT_WOT_SEED_NPUB;
 
 export const WEB_OF_TRUST_SEED_PRESETS = [
   {
     id: "jack",
     label: "Jack Dorsey",
-    value: "npub1sg6plzptd64u62a878hep2kev88swjh3tw00gjsfl8f237lmu63q0uf63m",
+    value: DEFAULT_LOGGED_OUT_WOT_SEED_NPUB,
     bio: "cofounder of Twitter, cofounder and chairman of Block, and active Nostr user",
   },
   {
@@ -74,12 +81,6 @@ function normalize(value) {
 function normalizeTrendingTf(value) {
   const s = String(value || "").trim();
   return VALID_TRENDING_TF.has(s) ? s : "";
-}
-
-/** isTruthyToken matches the same truthy set as the server-side ParseBool helper. */
-export function isTruthyToken(value) {
-  const raw = String(value ?? "").trim().toLowerCase();
-  return raw === "1" || raw === "true" || raw === "on" || raw === "yes";
 }
 
 export function normalizeWebOfTrustDepth(value) {
@@ -131,6 +132,15 @@ export function setReadsSortPref(value) {
   }
 }
 
+/** Writes default viewer prefs when keys are unset (logged-out WoT on, media on). */
+export function ensureDefaultViewerPrefs() {
+  try {
+    applyDefaultViewerPrefsIfUnset();
+  } catch {
+    // ignore
+  }
+}
+
 export function getImageModePref() {
   try {
     const raw = String(localStorage.getItem(IMAGE_MODE_KEY) || "").trim().toLowerCase();
@@ -173,7 +183,7 @@ export function setThreadRenderModePref(mode) {
 export function getWebOfTrustEnabledPref() {
   try {
     const raw = localStorage.getItem(WEB_OF_TRUST_ENABLED_KEY);
-    if (raw == null) return !normalizedPubkey();
+    if (prefUnset(WEB_OF_TRUST_ENABLED_KEY)) return !normalizedPubkey();
     return isTruthyToken(raw);
   } catch {
     return false;
@@ -190,8 +200,10 @@ export function setWebOfTrustEnabledPref(enabled) {
 
 export function getWebOfTrustDepthPref() {
   try {
+    if (prefUnset(WEB_OF_TRUST_DEPTH_KEY) && !normalizedPubkey()) {
+      return DEFAULT_LOGGED_OUT_WOT_DEPTH;
+    }
     const raw = localStorage.getItem(WEB_OF_TRUST_DEPTH_KEY);
-    if (raw == null && !normalizedPubkey()) return DEFAULT_LOGGED_OUT_WOT_DEPTH;
     return normalizeWebOfTrustDepth(raw);
   } catch {
     return 1;

@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"maps"
+	"strings"
 	"time"
 
 	"ptxt-nstr/internal/nostrx"
@@ -232,6 +233,31 @@ func (s *Server) tryWarmDeferredGuestFeedFragmentIfCold(ctx context.Context, req
 	data := s.feedPageDataEx(ctx, req, false, feedPageDataOptions{lightStatsOnly: true})
 	if s.isCanonicalDefaultLoggedOutGuestFeedRequest(req) && len(data.Feed) > 0 {
 		_ = s.persistDefaultSeedGuestFeedSnapshot(ctx, req, &data)
+	}
+	s.warmGuestWoTCohortTrending(ctx, req)
+}
+
+// warmGuestWoTCohortTrending precomputes per-seed WoT trending_cache rows for
+// logged-out guests so the sidebar and trend sorts are not empty on cold start.
+func (s *Server) warmGuestWoTCohortTrending(ctx context.Context, req feedRequest) {
+	if s == nil || !req.WoT.Enabled {
+		return
+	}
+	seed := strings.TrimSpace(req.SeedPubkey)
+	if seed == "" {
+		return
+	}
+	resolved := s.resolveRequestAuthors(ctx, req.Pubkey, req.SeedPubkey, req.Relays, req.WoT)
+	if !resolved.wotEnabled || len(resolved.allAuthors) == 0 {
+		return
+	}
+	cohortKey := authorsCacheKey(resolved.allAuthors)
+	for _, tf := range []string{trending24h, trending1w} {
+		items, _, err := s.store.ReadTrendingCache(ctx, tf, cohortKey)
+		if err == nil && len(items) > 0 {
+			continue
+		}
+		s.refreshTrendingCacheAsync(tf, cohortKey, resolved.allAuthors)
 	}
 }
 

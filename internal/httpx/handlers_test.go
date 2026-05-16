@@ -190,6 +190,61 @@ func TestBuildThreadTreeDataFromRepliesMatchesBuildSelectedForOP(t *testing.T) {
 	}
 }
 
+func TestThreadSelectedExpectsFocusView(t *testing.T) {
+	root := testEvent("root", "alice", 1, nil)
+	if threadSelectedExpectsFocusView(root) {
+		t.Fatal("root note should not expect focus view")
+	}
+	reply := testEvent("reply", "bob", 2, [][]string{{"e", "root", "", "root"}, {"e", "root", "", "reply"}})
+	if !threadSelectedExpectsFocusView(reply) {
+		t.Fatal("reply marker should expect focus view")
+	}
+	legacy := testEvent("legacy", "carol", 3, [][]string{{"e", "root"}, {"e", "parent"}})
+	if !threadSelectedExpectsFocusView(legacy) {
+		t.Fatal("legacy e-tag reply should expect focus view")
+	}
+}
+
+func TestCollectThreadChainCandidatesIncludesSelectedTags(t *testing.T) {
+	rootID := strings.Repeat("a", 64)
+	parentID := strings.Repeat("b", 64)
+	selected := testEvent("sel", "bob", 2, [][]string{{"e", parentID}, {"e", rootID, "", "root"}})
+	got := collectThreadChainCandidates(rootID, selected, nil)
+	seen := make(map[string]bool, len(got))
+	for _, id := range got {
+		seen[id] = true
+	}
+	if !seen[parentID] {
+		t.Fatalf("expected parent from selected tags, got %v", got)
+	}
+}
+
+func TestHandleThreadHydrateIncompleteHeaderWhenAncestorMissing(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	root := testEvent("root", "alice", 1, nil)
+	if err := st.SaveEvent(ctx, root); err != nil {
+		t.Fatal(err)
+	}
+	selected := testEvent("selected", "erin", 5, [][]string{{"e", "root", "", "root"}, {"e", "missing", "", "reply"}})
+	if err := st.SaveEvent(ctx, selected); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/thread/"+selected.ID+"?fragment=hydrate", nil)
+	rr := httptest.NewRecorder()
+	srv.handleThread(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if got := rr.Header().Get("X-Ptxt-Thread-Incomplete"); got != "1" {
+		t.Fatalf("X-Ptxt-Thread-Incomplete = %q, want 1", got)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `data-thread-expects-focus="1"`) {
+		t.Fatalf("expected data-thread-expects-focus in hydrate body: %s", truncateForLog(body, 400))
+	}
+}
+
 func TestBuildThreadViewRepliesStopsWhenAncestorMissing(t *testing.T) {
 	root := testEvent("root", "alice", 1, nil)
 	selected := testEvent("selected", "erin", 5, [][]string{{"e", "root", "", "root"}, {"e", "missing", "", "reply"}})

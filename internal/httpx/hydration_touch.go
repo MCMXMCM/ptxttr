@@ -12,7 +12,7 @@ const (
 	hydrationTouchDebounceTTL       = 2 * time.Minute
 	hydrationTouchCacheMaxLen       = 32768
 	maxWarmFeedAuthors              = 16
-	maxWarmFeedThreads              = 12
+	maxWarmFeedThreads              = 24
 	maxWarmThreadProfileAuthors     = 24
 	maxWarmUserContactAuthors       = 24
 	recentProfileSeedScanLimit      = 64

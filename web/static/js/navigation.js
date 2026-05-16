@@ -35,15 +35,24 @@ import {
   threadTreeSkeletonMarkup,
 } from "./shell.js";
 import {
+  ensureDefaultViewerPrefs,
   feedSortForSession,
   getFeedSortPref,
 } from "./sort-prefs.js";
 import { initThreadPage, maybeScrollThreadPageToRootForNavigation, teardownThreadTreeConnector } from "./thread.js";
+import { isHydrateBundleUsable, threadPathNoteID } from "./thread-hydrate.js";
+import { createPendingTaskSlot } from "./pending-task.js";
+import { canonicalHomeFeedURL } from "./viewer-pref-url.js";
 import { addAsciiWidthHint } from "./ascii-width-hint.js";
 import {
   clearFragmentPrefetch,
   fragmentPrefetchCache as prefetchCache,
+  setFragmentPrefetchCache,
 } from "./prefetch.js";
+import {
+  prefetchTargetFromInteraction,
+  scheduleVisibleFeedThreadPrefetches,
+} from "./thread-prefetch.js";
 
 const main = document.querySelector("[data-nav-root]");
 
@@ -56,8 +65,9 @@ function effectiveFeedSortFromURL(url) {
   return feedSortForSession(pubkey, raw) || "recent";
 }
 const prefetchQueue = [];
+const prefetchPriorityQueue = [];
 let prefetchActive = 0;
-const maxPrefetchConcurrency = 2;
+const maxPrefetchConcurrency = 3;
 // Guest first-page fragments can exceed 12s on cold WoT cohort resolution; keep
 // under browser/proxy oddities while avoiding false timeouts on slow cache fills.
 const fragmentRequestTimeoutMs = 25000;
@@ -67,6 +77,8 @@ let feedPollTimer = 0;
 let feedPollInFlight = false;
 let profilePostsPollTimer = 0;
 let profilePostsPollInFlight = false;
+const feedNewerNotes = createPendingTaskSlot();
+const profileNewerPosts = createPendingTaskSlot();
 let asciiRefreshFrame = 0;
 let profileFollowBaseURL = null;
 let profileFollowControlsBound = false;
@@ -146,6 +158,10 @@ function feedHydrateReloadMarkAndReload() {
 }
 
 if (main) {
+  // Playwright e2e hooks (inert in production; names are unstable API).
+  window.__ptxtClearPrefetchForE2E = clearFragmentPrefetch;
+  window.__ptxtPrefetchKeys = () => [...prefetchCache.keys()];
+
   document.addEventListener("click", (event) => {
     const link = closestLink(event.target);
     if (!shouldInterceptLink(event, link, main)) return;
@@ -165,15 +181,18 @@ if (main) {
     void navigate(withRelays(href), { push: true, fromMainMenu: false });
   });
 
-  const prefetchEvents = ["pointerenter", "focus", "pointerdown"];
+  const prefetchEvents = ["pointerdown", "focus"];
   prefetchEvents.forEach((name) => {
     document.addEventListener(name, (event) => {
-      const link = closestLink(event.target);
-      if (!link) return;
-      const href = withRelays(link.href);
-      const route = routeKind(new URL(href, window.location.origin).pathname);
-      if (!route) return;
-      scheduleRoutePrefetch(href, route);
+      if (!(event.target instanceof Element)) return;
+      const target = prefetchTargetFromInteraction(
+        closestLink,
+        event.target,
+        withRelays,
+        routeKind,
+      );
+      if (!target) return;
+      scheduleRoutePrefetch(target.href, target.route, { priority: true });
     }, true);
   });
 
@@ -220,22 +239,21 @@ async function navigateImpl(href, { push, fromMainMenu = false }) {
   }
   const prevThreadPathNoteId =
     push && currentRoute === "thread" && route === "thread"
-      ? (() => {
-          const m = window.location.pathname.match(/^\/thread\/([^/]+)/);
-          return m ? m[1].toLowerCase() : "";
-        })()
+      ? threadPathNoteID(window.location.href)
       : "";
   // Only snapshot when we're leaving this URL via in-app navigation (push).
   // On popstate, location already reflects the destination while the DOM is
   // still the previous entry — snapshotting would corrupt the cache keyed
   // by the new URL and break back/forward restore.
   if (push && currentRoute === "feed" && main) {
+    await feedNewerNotes.awaitPending();
     snapshotFeed(withRelays(window.location.href), main);
   }
   if (push && currentRoute === "thread" && main) {
     snapshotThread(withRelays(window.location.href), main);
   }
   if (push && currentRoute === "profile" && main) {
+    await profileNewerPosts.awaitPending();
     snapshotProfile(withRelays(window.location.href), main);
   }
   if (route !== "feed") {
@@ -290,6 +308,7 @@ function canonicalURLFromLocation() {
 }
 
 async function bootstrapInitialRoute() {
+  ensureDefaultViewerPrefs();
   // Run before first fragment fetches: hydrateRoute calls loadFeedFragments
   // before initLayoutUI, so address-bar cleanup must happen here too.
   if (shouldSyncViewerPrefLocation(window.location.pathname)) {
@@ -313,10 +332,12 @@ async function bootstrapInitialRoute() {
     }
     return;
   }
+  let feedFragmentsLoaded = false;
   if (currentRoute === "feed" && feedHasServerLoader()) {
     const alreadyRetriedFeedHydrate = feedHydrateReloadAlreadyRetried();
     try {
       await hydrateRoute(currentRoute, url, { restoredFeed: false });
+      feedFragmentsLoaded = true;
       feedHydrateReloadClearFlags();
       return;
     } catch (error) {
@@ -330,10 +351,18 @@ async function bootstrapInitialRoute() {
     }
   }
   rehydrateRouteUI(currentRoute, url, false, { skipAsciiRefresh: true });
-  if (currentRoute === "feed" && !feedHasServerLoader()) {
-    void refreshVisibleFeedNoteMetadata(main, url);
+  if (currentRoute === "feed") {
+    if (feedHasServerLoader(main) && !feedFragmentsLoaded) {
+      try {
+        await loadFeedFragments(url);
+      } catch (error) {
+        console.error("Deferred feed load failed", error);
+      }
+    } else if (!feedHasServerLoader(main)) {
+      primeFeedDiscovery(url);
+    }
+    startFeedPolling(url, true);
   }
-  if (currentRoute === "feed") startFeedPolling(url, true);
 }
 
 async function hydrateRoute(route, url, options = {}) {
@@ -344,15 +373,15 @@ async function hydrateRoute(route, url, options = {}) {
     intraThreadHistory = false,
   } = options;
   if (route === "feed") {
-    if (restoredFeed) {
-      void refreshVisibleFeedNoteMetadata(main, url);
+    if (restoredFeed && !feedHasServerLoader(main)) {
+      primeFeedDiscovery(url);
     } else {
       await loadFeedFragments(url);
     }
   }
   if (route === "profile") {
     if (restoredProfile) {
-      void refreshVisibleFeedNoteMetadata(main, url, { feedSelector: "#user-panel-posts [data-feed]" });
+      primeFeedDiscovery(url, { feedSelector: "#user-panel-posts [data-feed]" });
     } else {
       await loadProfileFragments(url);
     }
@@ -390,6 +419,11 @@ function clearRouteSnapshots() {
   clearFeedSnapshots();
   clearThreadSnapshots();
   clearProfileSnapshots();
+}
+
+function primeFeedDiscovery(url, options = {}) {
+  void refreshVisibleFeedNoteMetadata(main, url, options);
+  scheduleVisibleFeedThreadPrefetches(main, scheduleRoutePrefetch, withRelays);
 }
 
 /**
@@ -867,28 +901,38 @@ async function loadFeedFragments(url) {
     invalidateFragmentPrefetch(url, "1");
     notes = await fetchFragment(url, "1");
   }
+  if (notes?.navigate) {
+    window.location.href = withRelays(notes.navigate);
+    return;
+  }
+  let notesBody = notes?.body || "";
   // Cold-start guard: fragment may briefly return empty while the background warmer
   // populates the canonical guest cache; retry a few times before clearing the loader.
-  if (hadDeferredLoader && !notes.body.includes('id="note-')) {
+  if (hadDeferredLoader && !notesBody.includes('id="note-')) {
     const backoffMs = [500, 1500, 3500];
     for (let i = 0; i < backoffMs.length; i += 1) {
       await new Promise((resolve) => setTimeout(resolve, backoffMs[i]));
       invalidateFragmentPrefetch(url, "1");
       try {
         notes = await fetchFragment(url, "1");
+        if (notes?.navigate) {
+          window.location.href = withRelays(notes.navigate);
+          return;
+        }
+        notesBody = notes?.body || "";
       } catch {
         continue;
       }
-      if (notes.body.includes('id="note-')) break;
+      if (notesBody.includes('id="note-')) break;
     }
   }
 
-  replaceListFragmentBody(feed, notes.body, {
+  replaceListFragmentBody(feed, notesBody, {
     rowSelector: ".note[id^='note-']",
     fragmentMarker: 'id="note-',
   });
   const button = main.querySelector("[data-load-more]:not([data-feed-url=\"/reads\"])");
-  if (button) {
+  if (button && notes) {
     button.dataset.cursor = notes.cursor;
     button.dataset.cursorId = notes.cursorID;
     button.dataset.hasMore = notes.hasMore ? "1" : "0";
@@ -909,7 +953,7 @@ async function loadFeedFragments(url) {
       if (trendingTarget) trendingTarget.innerHTML = trending.body;
     })
     .catch(() => {});
-  void refreshVisibleFeedNoteMetadata(main, url);
+  primeFeedDiscovery(url);
 
   if (notes.snapshotStarter) {
     window.setTimeout(() => {
@@ -929,7 +973,7 @@ async function loadFeedFragments(url) {
             loadBtn.dataset.hasMore = n2.hasMore ? "1" : "0";
             loadBtn.hidden = !n2.hasMore;
           }
-          void refreshVisibleFeedNoteMetadata(main, url);
+          primeFeedDiscovery(url);
         })
         .catch(() => {});
     }, 1500);
@@ -975,48 +1019,40 @@ function bindNewNotesButton(url) {
     button.disabled = false;
     button.removeAttribute("aria-busy");
   };
-  button.addEventListener("click", async () => {
-    if (button.dataset.loading === "1") return;
-    setLoadingState(true);
-    try {
-      const newer = await fetchNewerNotes(url, { includeBody: true });
-      const feed = main.querySelector("[data-feed]");
-      if (feed && newer.body) {
-        prependNewNotes(feed, newer.body);
-        void refreshVisibleFeedNoteMetadata(main, url);
-      }
-      const top = feedTopCursor(main);
-      button.dataset.topCursor = top.cursor;
-      button.dataset.topCursorId = top.cursorID;
-      button.dataset.pendingCount = "0";
-      button.hidden = true;
-    } catch {
-      // Keep the existing button text/count visible so retry is obvious.
-      button.hidden = false;
-    } finally {
-      setLoadingState(false);
-    }
+  button.addEventListener("click", () => {
+    void feedNewerNotes.track(loadFeedNewerNotes(url, button, setLoadingState));
   });
   const top = feedTopCursor(main);
   button.dataset.topCursor = top.cursor;
   button.dataset.topCursorId = top.cursorID;
 }
 
-function normalizeRestoredFeedControls() {
-  const loadMore = main.querySelector("[data-load-more]:not([data-feed-url=\"/reads\"])");
-  if (loadMore && loadMore.dataset.loading === "1") {
-    delete loadMore.dataset.loading;
-    loadMore.classList.remove("is-pressed");
-    loadMore.disabled = false;
-    loadMore.removeAttribute("aria-busy");
-  }
-  if (loadMore && loadMore.disabled && loadMore.dataset.hasMore !== "0") {
-    loadMore.disabled = false;
+async function loadFeedNewerNotes(url, button, setLoadingState) {
+  if (button.dataset.loading === "1") return;
+  setLoadingState(true);
+  try {
+    const newer = await fetchNewerNotes(url, { includeBody: true });
+    const feed = main.querySelector("[data-feed]");
+    if (feed && newer.body) {
+      prependNewNotes(feed, newer.body);
+      void refreshVisibleFeedNoteMetadata(main, url);
+    }
+    const top = feedTopCursor(main);
+    button.dataset.topCursor = top.cursor;
+    button.dataset.topCursorId = top.cursorID;
+    button.dataset.pendingCount = "0";
+    button.hidden = true;
+    snapshotFeed(withRelays(window.location.href), main);
+  } catch {
+    // Keep the existing button text/count visible so retry is obvious.
+    button.hidden = false;
+  } finally {
+    setLoadingState(false);
   }
 }
 
-function normalizeRestoredProfileLoadMore() {
-  const loadMore = main.querySelector("#user-panel-posts [data-load-more]");
+function normalizeRestoredLoadMore(selector) {
+  const loadMore = main.querySelector(selector);
   if (!loadMore) return;
   if (loadMore.dataset.loading === "1") {
     delete loadMore.dataset.loading;
@@ -1033,10 +1069,10 @@ function rehydrateRouteUI(route, url, restoredFeed, options = {}) {
   const { skipAsciiRefresh = false, restoredProfile = false } = options;
   syncPreservedShellChromeFromURL(main, url);
   if (route === "feed" && restoredFeed) {
-    normalizeRestoredFeedControls();
+    normalizeRestoredLoadMore("[data-load-more]:not([data-feed-url=\"/reads\"])");
   }
   if (route === "profile" && restoredProfile) {
-    normalizeRestoredProfileLoadMore();
+    normalizeRestoredLoadMore("#user-panel-posts [data-load-more]");
     main.querySelectorAll("[data-profile-tab]").forEach((el) => {
       delete el.dataset.bound;
     });
@@ -1141,30 +1177,35 @@ function bindProfileNewNotesButton(url) {
     button.disabled = false;
     button.removeAttribute("aria-busy");
   };
-  button.addEventListener("click", async () => {
-    if (button.dataset.loading === "1") return;
-    setLoadingState(true);
-    try {
-      const newer = await fetchProfileNewerPosts(url, { includeBody: true });
-      const feed = main.querySelector("#user-panel-posts [data-feed]");
-      if (feed && newer.body) {
-        prependNewNotes(feed, newer.body);
-        void refreshVisibleFeedNoteMetadata(main, url, { feedSelector: "#user-panel-posts [data-feed]" });
-      }
-      const top = profilePostsTopCursor(main);
-      button.dataset.topCursor = top.cursor;
-      button.dataset.topCursorId = top.cursorID;
-      button.dataset.pendingCount = "0";
-      button.hidden = true;
-    } catch {
-      button.hidden = false;
-    } finally {
-      setLoadingState(false);
-    }
+  button.addEventListener("click", () => {
+    void profileNewerPosts.track(loadProfileNewerPosts(url, button, setLoadingState));
   });
   const top = profilePostsTopCursor(main);
   button.dataset.topCursor = top.cursor;
   button.dataset.topCursorId = top.cursorID;
+}
+
+async function loadProfileNewerPosts(url, button, setLoadingState) {
+  if (button.dataset.loading === "1") return;
+  setLoadingState(true);
+  try {
+    const newer = await fetchProfileNewerPosts(url, { includeBody: true });
+    const feed = main.querySelector("#user-panel-posts [data-feed]");
+    if (feed && newer.body) {
+      prependNewNotes(feed, newer.body);
+      void refreshVisibleFeedNoteMetadata(main, url, { feedSelector: "#user-panel-posts [data-feed]" });
+    }
+    const top = profilePostsTopCursor(main);
+    button.dataset.topCursor = top.cursor;
+    button.dataset.topCursorId = top.cursorID;
+    button.dataset.pendingCount = "0";
+    button.hidden = true;
+    snapshotProfile(withRelays(window.location.href), main);
+  } catch {
+    button.hidden = false;
+  } finally {
+    setLoadingState(false);
+  }
 }
 
 function startProfilePostsPolling(url, runImmediately) {
@@ -1278,6 +1319,7 @@ async function loadProfileFragments(url) {
     button.dataset.hasMore = posts.hasMore ? "1" : "0";
     button.hidden = !posts.hasMore;
   }
+  primeFeedDiscovery(url, { feedSelector: "#user-panel-posts [data-feed]" });
 }
 
 function bindProfileFollowListControls(baseURL) {
@@ -1337,9 +1379,23 @@ async function refreshFollowListFragment(fragment, query, page) {
 }
 
 async function loadThreadFragments(url) {
-  const bundle = await fetchFragment(url, "hydrate");
-  if (bundle.navigate) {
-    window.location.href = withRelays(bundle.navigate);
+  const selectedID = threadPathNoteID(url);
+  const backoffMs = [0, 500, 1500, 3500];
+  let bundle = null;
+  for (let attempt = 0; attempt < backoffMs.length; attempt += 1) {
+    if (backoffMs[attempt] > 0) {
+      await new Promise((resolve) => setTimeout(resolve, backoffMs[attempt]));
+      invalidateFragmentPrefetch(url, "hydrate");
+    }
+    bundle = await fetchFragment(url, "hydrate");
+    if (bundle.navigate) {
+      window.location.href = withRelays(bundle.navigate);
+      return;
+    }
+    if (isHydrateBundleUsable(bundle, selectedID)) break;
+  }
+  if (!isHydrateBundleUsable(bundle, selectedID)) {
+    window.location.href = withRelays(`${url.pathname}${url.search}${url.hash}`);
     return;
   }
   replaceThreadShellContent(bundle.body);
@@ -1394,23 +1450,27 @@ const PREFETCH_FRAGMENTS = {
   tag: ["main"],
 };
 
-function scheduleRoutePrefetch(href, route) {
+function scheduleRoutePrefetch(href, route, options = {}) {
   const url = new URL(href, window.location.origin);
   if (url.origin !== window.location.origin) {
     return;
   }
+  const priority = options.priority === true;
   const fragments = PREFETCH_FRAGMENTS[route] || ["main"];
   fragments.forEach((fragment) => {
     const key = fragmentKey(url, fragment);
     if (prefetchCache.has(key)) return;
-    prefetchQueue.push(() => fetchFragment(url, fragment));
+    const job = () => fetchFragment(url, fragment);
+    if (priority) prefetchPriorityQueue.push(job);
+    else prefetchQueue.push(job);
   });
   runPrefetchQueue();
 }
 
 function runPrefetchQueue() {
-  while (prefetchActive < maxPrefetchConcurrency && prefetchQueue.length) {
-    const job = prefetchQueue.shift();
+  while (prefetchActive < maxPrefetchConcurrency) {
+    const job = prefetchPriorityQueue.shift() || prefetchQueue.shift();
+    if (!job) break;
     prefetchActive += 1;
     Promise.resolve(job())
       .catch(() => {})
@@ -1422,6 +1482,8 @@ function runPrefetchQueue() {
 }
 
 function canonicalFragmentBaseURL(baseURL) {
+  const home = canonicalHomeFeedURL(baseURL);
+  if (home) return home;
   const u = new URL(baseURL, window.location.origin);
   stripViewerPrefSearchParams(u);
   return u;
@@ -1461,20 +1523,30 @@ async function fetchFragment(baseURL, fragment) {
       };
     }
     if (!response.ok) throw new Error(`fragment ${fragment} failed`);
-    return {
-      body: await response.text(),
+    const threadIncomplete = response.headers.get("X-Ptxt-Thread-Incomplete") === "1";
+    const body = await response.text();
+    const result = {
+      body,
       navigate: "",
       cursor: response.headers.get("X-Ptxt-Cursor") || "",
       cursorID: response.headers.get("X-Ptxt-Cursor-Id") || "",
       hasMore: response.headers.get("X-Ptxt-Has-More") === "1",
       snapshotStarter: response.headers.get("X-Ptxt-Feed-Snapshot-Starter") === "1",
+      threadIncomplete,
     };
+    if (fragment === "hydrate") {
+      const selectedID = threadPathNoteID(canonical);
+      if (!isHydrateBundleUsable(result, selectedID)) {
+        prefetchCache.delete(key);
+      }
+    }
+    return result;
   }).catch((error) => {
     clearTimeout(abortTimer);
     prefetchCache.delete(key);
     throw error;
   });
-  prefetchCache.set(key, request);
+  setFragmentPrefetchCache(key, request);
   const out = await withFragmentTimeout(request, key);
   if (out.navigate) {
     prefetchCache.delete(key);

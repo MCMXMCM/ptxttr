@@ -41,7 +41,9 @@ func deferGuestLoggedOutFeedFirstPage(req feedRequest) bool {
 func (s *Server) homeFeedShellPageData(ctx context.Context, req feedRequest) FeedPageData {
 	data := s.feedHeadingData(req)
 	tf := normalizeTrendingTimeframe(req.Timeframe)
-	trending := s.trendingData(ctx, tf, req.Relays, true)
+	resolved := s.resolveRequestAuthors(ctx, req.Pubkey, req.SeedPubkey, req.Relays, req.WoT)
+	trendCohort, trendAuthors := resolved.trendingScope()
+	trending := s.trendingData(ctx, tf, trendCohort, trendAuthors, req.Relays, true)
 	profEvents := make([]nostrx.Event, 0, len(trending))
 	for _, item := range trending {
 		profEvents = append(profEvents, item.Event)

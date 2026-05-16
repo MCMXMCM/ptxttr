@@ -78,7 +78,9 @@ func (s *Server) baseFeedPageFromSnapshotShell(ctx context.Context, req feedRequ
 	}
 	if includeTrending {
 		// Cache-only: never block first paint on synchronous trending recompute.
-		data.Trending = s.trendingData(ctx, timeframe, req.Relays, true)
+		resolved := s.resolveRequestAuthors(ctx, req.Pubkey, req.SeedPubkey, req.Relays, req.WoT)
+		trendCohort, trendAuthors := resolved.trendingScope()
+		data.Trending = s.trendingData(ctx, timeframe, trendCohort, trendAuthors, req.Relays, true)
 		profEvents := make([]nostrx.Event, 0, len(data.Trending))
 		for _, item := range data.Trending {
 			profEvents = append(profEvents, item.Event)

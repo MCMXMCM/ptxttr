@@ -86,6 +86,63 @@ func (s *Store) TrendingSummariesByKinds(ctx context.Context, kinds []int, since
 	return events, rows.Err()
 }
 
+// TrendingSummariesByKindsAfter returns notes ranked by direct reply count using keyset
+// pagination (score, created_at, id). Pass empty afterID for the first page.
+func (s *Store) TrendingSummariesByKindsAfter(ctx context.Context, kinds []int, since int64, authors []string, afterScore int, afterCreated int64, afterID string, limit int) ([]nostrx.Event, error) {
+	if len(kinds) == 0 {
+		return nil, nil
+	}
+	if limit <= 0 || limit > nostrx.MaxRelayQueryLimit {
+		limit = nostrx.DefaultRelayQueryLimit
+	}
+	query := fmt.Sprintf(`SELECT e.id, e.pubkey, e.created_at, e.kind, e.content, COUNT(*) AS reply_count
+		FROM note_links nl
+		JOIN events e ON e.id = nl.parent_id
+		WHERE nl.parent_id != '' AND nl.parent_id != nl.note_id AND nl.created_at >= ?
+		AND e.kind IN (%s)`, placeholders(len(kinds)))
+	args := make([]any, 0, 1+len(kinds)+len(authors)+8)
+	args = append(args, since)
+	for _, kind := range kinds {
+		args = append(args, kind)
+	}
+	if len(authors) > 0 {
+		query += fmt.Sprintf(" AND e.pubkey IN (%s)", placeholders(len(authors)))
+		for _, author := range authors {
+			args = append(args, author)
+		}
+	}
+	query += `
+		GROUP BY e.id, e.pubkey, e.created_at, e.kind, e.content`
+	if afterID != "" {
+		query += `
+		HAVING (
+			COUNT(*) < ? OR
+			(COUNT(*) = ? AND e.created_at < ?) OR
+			(COUNT(*) = ? AND e.created_at = ? AND e.id < ?)
+		)`
+		args = append(args, afterScore, afterScore, afterCreated, afterScore, afterCreated, afterID)
+	}
+	query += `
+		ORDER BY reply_count DESC, e.created_at DESC, e.id DESC
+		LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	events := make([]nostrx.Event, 0, limit)
+	for rows.Next() {
+		var event nostrx.Event
+		var replyCount int
+		if err := rows.Scan(&event.ID, &event.PubKey, &event.CreatedAt, &event.Kind, &event.Content, &replyCount); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
+}
+
 func (s *Store) ReadTrendingCache(ctx context.Context, timeframe string, cohortKey string) ([]TrendingItem, int64, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT note_id, reply_count, computed_at
 		FROM trending_cache

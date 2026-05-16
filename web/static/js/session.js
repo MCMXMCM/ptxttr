@@ -1,4 +1,16 @@
 import { nip19 } from "../lib/nostr-tools.js";
+import {
+  applyRelayParamsToURL,
+  stripViewerPrefSearchParams,
+} from "./viewer-pref-url.js";
+import { isTruthyToken } from "./prefs-utils.js";
+import {
+  applyDefaultViewerPrefsIfUnset,
+  DEFAULT_LOGGED_OUT_WOT_DEPTH,
+  DEFAULT_LOGGED_OUT_WOT_SEED_NPUB,
+} from "./viewer-defaults.js";
+
+export { applyRelayParamsToURL, stripViewerPrefSearchParams };
 
 const KEY = "ptxt_nostr_session";
 const RELAYS = "ptxt_relays";
@@ -38,6 +50,22 @@ const HEADER_FEED_TRENDING_TF = "X-Ptxt-Tf";
 const HEADER_READS_TRENDING_TF = "X-Ptxt-Reads-Tf";
 const HEADER_WOT_ENABLED = "X-Ptxt-Wot";
 const HEADER_WOT_DEPTH = "X-Ptxt-Wot-Depth";
+
+function loggedOutWotEnabledForTransport() {
+  const raw = readLocalStorageString(WEB_OF_TRUST_ENABLED_KEY);
+  if (raw === "") return true;
+  if (raw == null) return true;
+  return isTruthyToken(raw);
+}
+
+function loggedOutWotDepthForTransport() {
+  const raw = readLocalStorageString(WEB_OF_TRUST_DEPTH_KEY);
+  if (raw === "" || raw == null) return String(DEFAULT_LOGGED_OUT_WOT_DEPTH);
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n)) return String(DEFAULT_LOGGED_OUT_WOT_DEPTH);
+  return String(Math.min(3, Math.max(1, n)));
+}
+
 const LOGIN_METHOD_META = {
   readonly: { label: "Npub Login", canSign: false, readOnly: true, needsExtension: false },
   nip07: { label: "Browser Extension", canSign: true, readOnly: false, needsExtension: true },
@@ -219,9 +247,15 @@ function urlWithCacheBust(input, token) {
 export function sessionHeaders(extra, requestPath = "") {
   const headers = new Headers(extra || {});
   const pubkey = normalizedPubkey();
-  if (pubkey) headers.set(HEADER_VIEWER_PUBKEY, pubkey);
-  const seed = storedWotSeed();
-  if (seed) headers.set(HEADER_WOT_SEED, seed);
+  if (pubkey) {
+    headers.set(HEADER_VIEWER_PUBKEY, pubkey);
+  } else {
+    applyDefaultViewerPrefsIfUnset();
+    headers.set(HEADER_WOT_ENABLED, loggedOutWotEnabledForTransport() ? "1" : "0");
+    headers.set(HEADER_WOT_DEPTH, loggedOutWotDepthForTransport());
+    const seed = storedWotSeed() || DEFAULT_LOGGED_OUT_WOT_SEED_NPUB;
+    headers.set(HEADER_WOT_SEED, seed);
+  }
   const relays = relayParam();
   if (relays) headers.set(HEADER_RELAYS, relays);
   const sort = storedSortForPath(requestPath);
@@ -230,10 +264,14 @@ export function sessionHeaders(extra, requestPath = "") {
   if (tf) headers.set(HEADER_FEED_TRENDING_TF, tf);
   const readsTf = readLocalStorageString(READS_TRENDING_TF_KEY);
   if (readsTf) headers.set(HEADER_READS_TRENDING_TF, readsTf);
-  const wotRaw = readLocalStorageString(WEB_OF_TRUST_ENABLED_KEY);
-  if (wotRaw) headers.set(HEADER_WOT_ENABLED, wotRaw);
-  const wotDepth = readLocalStorageString(WEB_OF_TRUST_DEPTH_KEY);
-  if (wotDepth) headers.set(HEADER_WOT_DEPTH, wotDepth);
+  if (pubkey) {
+    const wotRaw = readLocalStorageString(WEB_OF_TRUST_ENABLED_KEY);
+    if (wotRaw) headers.set(HEADER_WOT_ENABLED, wotRaw);
+    const wotDepth = readLocalStorageString(WEB_OF_TRUST_DEPTH_KEY);
+    if (wotDepth) headers.set(HEADER_WOT_DEPTH, wotDepth);
+    const seed = storedWotSeed();
+    if (seed) headers.set(HEADER_WOT_SEED, seed);
+  }
   return headers;
 }
 
@@ -269,33 +307,6 @@ export function isFeedLikePath(pathname) {
 /** True when the address bar may carry legacy viewer-pref query params to scrub. */
 export function shouldSyncViewerPrefLocation(pathname) {
   return isFeedLikePath(pathname) || pathname === "/settings";
-}
-
-/**
- * No-op kept for backwards compatibility with callers that still pass URLs
- * through this helper. Relays are now sent as the `X-Ptxt-Relays` header via
- * `fetchWithSession()`, so server-bound URLs no longer need a `relays` query
- * string. We additionally strip any stale `relays` / `relay` parameters so
- * routes that were called before this refactor do not leak the values back
- * into the address bar.
- */
-export function applyRelayParamsToURL(url) {
-  if (!url?.searchParams) return;
-  url.searchParams.delete("relays");
-  url.searchParams.delete("relay");
-}
-
-// Legacy viewer-pref keys that used to live on feed-like URLs. Fragment and
-// SPA fetches must omit them; sessionHeaders() sends the values as X-Ptxt-*.
-const VIEWER_PREF_QUERY_KEYS = ["pubkey", "seed_pubkey", "sort", "tf", "reads_tf", "wot", "wot_depth"];
-
-/** Removes relay + legacy viewer-pref query keys from `url` in place. */
-export function stripViewerPrefSearchParams(url) {
-  if (!url?.searchParams) return;
-  applyRelayParamsToURL(url);
-  for (const k of VIEWER_PREF_QUERY_KEYS) {
-    url.searchParams.delete(k);
-  }
 }
 
 export function loginMethodMeta(method) {

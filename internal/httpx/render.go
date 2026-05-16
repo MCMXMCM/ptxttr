@@ -229,8 +229,9 @@ type ThreadPageData struct {
 	BackThreadID     string
 	BackNoteID       string
 	BackReadID       string
-	FocusedView      bool
-	HiddenReplies    int
+	FocusedView          bool
+	SelectedExpectsFocus bool
+	HiddenReplies        int
 	ReplyCursor      int64
 	ReplyCursorID    string
 	HasMore          bool

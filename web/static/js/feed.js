@@ -6,6 +6,7 @@ import { bindProfileStatLinks } from "./profile-tabs.js";
 import { initViewMore } from "./notes.js";
 import { syncBookmarkState } from "./bookmarks.js";
 import { feedSortForSession, getFeedSortPref } from "./sort-prefs.js";
+import { notifyFeedNotesChanged } from "./thread-prefetch.js";
 
 let initialized = false;
 const loadMoreRequestTimeoutMs = 12000;
@@ -160,6 +161,7 @@ export function initFeedLoadMore(root = document) {
       const appended = isReads ? appendReadArticles(feed, html) : appendNewNotes(feed, html);
       if (appended > 0 && !isReads) {
         void refreshVisibleFeedNoteMetadata(document, new URL(window.location.href));
+        notifyFeedNotesChanged(feed);
       }
       const sortMode = feedSortForSession(normalizedPubkey(), getFeedSortPref()) || "recent";
       const last = cursorFromHeaders ? null : feed.querySelector(".note:last-of-type");
@@ -278,6 +280,7 @@ export function prependNewNotes(feed, html) {
     initViewMore(feed);
     void syncBookmarkState(document);
     wireAvatarImageFallbacks(feed);
+    notifyFeedNotesChanged(feed);
   }
   return prepended;
 }

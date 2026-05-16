@@ -355,30 +355,20 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		resolvedByID[id] = event
 		return event
 	}
-	rootID := resolveThreadRootID(*selected, resolveEvent)
-	if rootID == "" {
-		rootID = selected.ID
-	}
-	root := selected
-	if fetchedRoot := resolveEvent(rootID); fetchedRoot != nil {
-		root = fetchedRoot
-	}
-	// Prefer NIP-10 explicit root when the parent walk stalled on the selected
-	// note or the marker names a strict ancestor of the resolved anchor—not
-	// when a bogus root tag points at an intermediate (see
-	// TestThreadSummaryRepairsBogusExplicitRootMarkerFromAncestorChain).
-	if dec := thread.ExplicitRootID(*selected); dec != "" && dec != selected.ID {
-		if ev := resolveEvent(dec); ev != nil && ev.ID != root.ID {
-			if root.ID == selected.ID || explicitRootIsAboveResolvedRoot(dec, *root, resolveEvent) {
-				root = ev
+	// Hydrate navigations from the feed often land on a reply before its parent
+	// chain is in the store; prefetch tagged ancestors from relays first so root
+	// resolution and focus mode are correct on the first response.
+	if fragment == "hydrate" && allowThreadRelayFetch {
+		earlyCandidates := collectThreadChainCandidates("", *selected, nil)
+		if len(earlyCandidates) > 0 {
+			for id, event := range s.eventsByIDEx(r.Context(), earlyCandidates, threadRelays, true) {
+				if event != nil {
+					resolvedByID[id] = event
+				}
 			}
 		}
 	}
-	parentID := thread.ParentID(root.ID, *selected)
-	// Use root.ID (resolved anchor), not rootID from the parent walk.
-	if parentID != "" && parentID != root.ID && parentID != selected.ID {
-		_ = resolveEvent(parentID)
-	}
+	root, parentID := applyThreadRootAnchor(*selected, resolveEvent)
 	refreshIDs := []string{root.ID, selected.ID}
 	if parentID != "" && parentID != root.ID {
 		refreshIDs = append(refreshIDs, parentID)
@@ -388,7 +378,8 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	}
 	cursor, _ := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
 	cursorID := r.URL.Query().Get("cursor_id")
-	fullReplyWalk := !repliesPaginationFragment && cursor == 0 && cursorID == ""
+	// SPA hydrate only needs the first linear page; full tree walks load with ?fragment=tree.
+	fullReplyWalk := !repliesPaginationFragment && cursor == 0 && cursorID == "" && fragment != "hydrate"
 	var replies []nostrx.Event
 	var fullReplies []nostrx.Event
 	var nextCursor int64
@@ -481,10 +472,62 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	}
 	chainCandidates := collectThreadChainCandidates(root.ID, *selected, chainReplyEvents)
 	if len(chainCandidates) > 0 {
-		prefetched := s.eventsByIDFromStore(r.Context(), chainCandidates)
+		var prefetched map[string]*nostrx.Event
+		if fragment == "hydrate" && allowThreadRelayFetch {
+			prefetched = s.eventsByIDEx(r.Context(), chainCandidates, threadRelays, true)
+		} else {
+			prefetched = s.eventsByIDFromStore(r.Context(), chainCandidates)
+		}
 		for _, candidateID := range chainCandidates {
 			if prefetched[candidateID] != nil {
 				resolvedByID[candidateID] = prefetched[candidateID]
+			}
+		}
+	}
+	if fragment == "hydrate" && allowThreadRelayFetch && needsView && cursor == 0 && cursorID == "" && !repliesPaginationFragment {
+		prevRootID := root.ID
+		root, parentID = applyThreadRootAnchor(*selected, resolveEvent)
+		if root.ID != prevRootID {
+			if fullReplyWalk {
+				fullReplies, _ = s.threadTreeReplies(r.Context(), root.ID, repliesPaginationFragment, threadRelays)
+				replies, nextCursor, nextID, hasMore = linearFirstPageFromFullReplies(fullReplies, *root, *selected)
+			} else {
+				replyParents := []string{root.ID}
+				replies, nextCursor, nextID, hasMore = s.threadRepliesPage(r.Context(), cursor, cursorID, 25, repliesPaginationFragment, threadRelays, replyParents...)
+				if selected.ID != root.ID {
+					subReplies, subNext, subNextID, subHasMore := s.threadRepliesPage(
+						r.Context(), 0, "", 25, repliesPaginationFragment, threadRelays, selected.ID,
+					)
+					replies = mergeThreadReplyPages(replies, subReplies)
+					if !hasMore && subHasMore {
+						nextCursor, nextID = subNext, subNextID
+					}
+					hasMore = hasMore || subHasMore
+				}
+			}
+			if mutedLoadErr == nil && len(mutedForThread) > 0 {
+				replies = s.filterEventsByViewerMutedSet(replies, mutedForThread)
+				if fullReplyWalk {
+					fullReplies = s.filterEventsByViewerMutedSet(fullReplies, mutedForThread)
+				}
+			}
+			all = append([]nostrx.Event(nil), *root, *selected)
+			if fullReplyWalk {
+				all = append(all, fullReplies...)
+			} else {
+				all = append(all, replies...)
+			}
+			if repliesPaginationFragment {
+				referenced, allWithRefs = s.referencedHydrationFromStore(r.Context(), all)
+			} else if !allowThreadRelayFetch {
+				referenced, allWithRefs = s.referencedHydrationFromStore(r.Context(), all)
+			} else {
+				referenced, allWithRefs = s.referencedHydration(r.Context(), all, threadRelays)
+			}
+			profileEvents = append([]nostrx.Event(nil), allWithRefs...)
+			chainReplyEvents = replies
+			if fullReplyWalk {
+				chainReplyEvents = fullReplies
 			}
 		}
 	}
@@ -496,10 +539,12 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		traversalPath = buildTraversalPath(*root, *selected, view, resolveEvent)
 		// Tree view is always rooted at the thread OP (full reply tree to thread.MaxDepth);
 		// URL path / hash only affects TreeSelectedID (highlight), not the subtree root.
-		if fullReplyWalk {
-			treeData = buildThreadTreeDataFromReplies(*root, fullReplies)
-		} else if !repliesPaginationFragment {
-			treeData = s.buildThreadTreeData(r.Context(), *root, repliesPaginationFragment, threadRelays, mutedForThread)
+		if fragment != "hydrate" {
+			if fullReplyWalk {
+				treeData = buildThreadTreeDataFromReplies(*root, fullReplies)
+			} else if !repliesPaginationFragment {
+				treeData = s.buildThreadTreeData(r.Context(), *root, repliesPaginationFragment, threadRelays, mutedForThread)
+			}
 		}
 		profileEvents = appendThreadProfileEvents(profileEvents, view, traversalPath)
 		profileEvents = appendThreadTreeProfileEvents(profileEvents, treeData)
@@ -547,6 +592,8 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	// /api/reaction-stats in thread.js initThreadPage().
 	reactionTotals, reactionViewers := s.reactionMapsForEvents(r.Context(), reactionEvents, "")
 
+	selectedExpectsFocus := threadSelectedExpectsFocusView(*selected)
+
 	data := ThreadPageData{
 		BasePageData:     s.basePageData(r, "Thread", "thread", "feed-shell"),
 		Thread:           view,
@@ -566,8 +613,9 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		BackThreadID:     backThreadID,
 		BackNoteID:       backNoteID,
 		BackReadID:       backReadID,
-		FocusedView:      view.FocusMode,
-		HiddenReplies:    hiddenReplies,
+		FocusedView:          view.FocusMode,
+		SelectedExpectsFocus: selectedExpectsFocus,
+		HiddenReplies:        hiddenReplies,
 		ReplyCursor:      nextCursor,
 		ReplyCursorID:    nextID,
 		HasMore:          hasMore,
@@ -575,6 +623,9 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	switch fragment {
 	case "hydrate":
 		setPaginationHeaders(w, nextCursor, nextID, hasMore)
+		if selectedExpectsFocus && !data.FocusedView {
+			w.Header().Set("X-Ptxt-Thread-Incomplete", "1")
+		}
 		s.render(w, "thread_hydrate", data)
 		return
 	case "summary":
@@ -1190,6 +1241,64 @@ func extractEventIDs(events []nostrx.Event) []string {
 	return ids
 }
 
+// applyThreadRootAnchor resolves the thread OP and immediate parent for selected.
+func applyThreadRootAnchor(selected nostrx.Event, resolveEvent func(string) *nostrx.Event) (*nostrx.Event, string) {
+	rootID := resolveThreadRootID(selected, resolveEvent)
+	if rootID == "" {
+		rootID = selected.ID
+	}
+	root := selected
+	if fetchedRoot := resolveEvent(rootID); fetchedRoot != nil {
+		root = *fetchedRoot
+	}
+	if dec := thread.ExplicitRootID(selected); dec != "" && dec != selected.ID {
+		if ev := resolveEvent(dec); ev != nil && ev.ID != root.ID {
+			if root.ID == selected.ID || explicitRootIsAboveResolvedRoot(dec, root, resolveEvent) {
+				root = *ev
+			}
+		}
+	}
+	parentID := thread.ParentID(root.ID, selected)
+	if parentID != "" && parentID != root.ID && parentID != selected.ID {
+		_ = resolveEvent(parentID)
+	}
+	return &root, parentID
+}
+
+// threadSelectedExpectsFocusView reports whether the selected note is a thread
+// reply and should render in focus mode with a parent above it.
+func threadSelectedExpectsFocusView(selected nostrx.Event) bool {
+	if selected.Kind != nostrx.KindTextNote {
+		return false
+	}
+	if isQuotePost(selected) {
+		return false
+	}
+	for _, tag := range selected.Tags {
+		if len(tag) < 4 || tag[0] != "e" {
+			continue
+		}
+		if strings.EqualFold(tag[3], "reply") {
+			return true
+		}
+	}
+	if dec := thread.ExplicitRootID(selected); dec != "" && dec != selected.ID {
+		return true
+	}
+	if p := thread.ParentID("", selected); p != "" && p != selected.ID {
+		return true
+	}
+	for _, tag := range selected.Tags {
+		if len(tag) < 2 || tag[0] != "e" {
+			continue
+		}
+		if ref := thread.NormalizeHexEventID(tag[1]); ref != "" && ref != selected.ID {
+			return true
+		}
+	}
+	return false
+}
+
 func collectThreadChainCandidates(rootID string, selected nostrx.Event, replies []nostrx.Event) []string {
 	seen := make(map[string]bool, len(replies)+8)
 	candidates := make([]string, 0, len(replies)+8)
@@ -1201,6 +1310,13 @@ func collectThreadChainCandidates(rootID string, selected nostrx.Event, replies 
 		candidates = append(candidates, id)
 	}
 	appendID(thread.ParentID(rootID, selected))
+	appendID(thread.RootID(selected))
+	appendID(thread.ExplicitRootID(selected))
+	for _, tag := range selected.Tags {
+		if len(tag) >= 2 && tag[0] == "e" {
+			appendID(tag[1])
+		}
+	}
 	for _, reply := range replies {
 		appendID(thread.ParentID(rootID, reply))
 		appendID(thread.RootID(reply))

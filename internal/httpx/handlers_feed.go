@@ -371,7 +371,10 @@ func (s *Server) handleTrending(w http.ResponseWriter, r *http.Request) {
 	timeframe := normalizeTrendingTimeframe(feedTrendingTfFromRequest(r))
 	fragment := strings.TrimSpace(r.URL.Query().Get("fragment"))
 	cacheOnly := fragment != ""
-	trending := s.trendingData(r.Context(), timeframe, s.requestRelays(r), cacheOnly)
+	req := s.feedRequestFromHTTP(r)
+	resolved := s.resolveRequestAuthors(r.Context(), req.Pubkey, req.SeedPubkey, req.Relays, req.WoT)
+	trendCohort, trendAuthors := resolved.trendingScope()
+	trending := s.trendingData(r.Context(), timeframe, trendCohort, trendAuthors, s.requestRelays(r), cacheOnly)
 	events := make([]nostrx.Event, 0, len(trending))
 	for _, item := range trending {
 		events = append(events, item.Event)

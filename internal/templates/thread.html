@@ -229,7 +229,7 @@
 {{end}}
 
 {{define "thread_shell_content"}}
-<section class="feed-column">
+<section class="feed-column"{{if .SelectedExpectsFocus}} data-thread-expects-focus="1"{{end}}>
   <section id="thread-summary" data-thread-fragment="summary">
     {{template "thread_summary" .}}
   </section>

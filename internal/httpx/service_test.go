@@ -3558,18 +3558,177 @@ func TestFetchRankedFeedPageUsesTrendingCacheForLoggedOut(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events, hasMore, next := srv.fetchRankedFeedPage(ctx, nil, 0, 2, feedSortTrend7d, true)
-	if len(events) != 2 {
-		t.Fatalf("len(events) = %d, want 2", len(events))
+	page1, hasMore, after := srv.fetchRankedFeedPage(ctx, nil, trendingRankKey{}, 2, feedSortTrend7d, true, true)
+	if len(page1) != 2 {
+		t.Fatalf("len(page1) = %d, want 2", len(page1))
 	}
-	if events[0].ID != "note-c" || events[1].ID != "note-a" {
-		t.Fatalf("unexpected cached order: %#v", events)
+	if page1[0].ID != "note-c" || page1[1].ID != "note-a" {
+		t.Fatalf("unexpected cached order: %#v", page1)
 	}
 	if !hasMore {
 		t.Fatalf("expected hasMore=true")
 	}
-	if next != 2 {
-		t.Fatalf("next = %d, want 2", next)
+	if after.id != "note-a" {
+		t.Fatalf("after.id = %q, want note-a", after.id)
+	}
+
+	page2, hasMore2, _ := srv.fetchRankedFeedPage(ctx, nil, after, 5, feedSortTrend7d, true, true)
+	if len(page2) != 1 || page2[0].ID != "note-b" {
+		t.Fatalf("page2 = %#v, want [note-b]", page2)
+	}
+	if hasMore2 {
+		t.Fatalf("expected hasMore=false on last page")
+	}
+	if page1[0].ID == page2[0].ID {
+		t.Fatal("page2 overlapped page1")
+	}
+}
+
+func TestRankedFeedKeysetCursorFromHeaders(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	for index, spec := range []struct {
+		id      string
+		replies int
+	}{
+		{"note-top", 5},
+		{"note-mid", 3},
+		{"note-low", 1},
+	} {
+		if err := st.SaveEvent(ctx, nostrx.Event{
+			ID:        spec.id,
+			PubKey:    fmt.Sprintf("%064x", index+10),
+			CreatedAt: now - int64(index),
+			Kind:      nostrx.KindTextNote,
+			Content:   spec.id,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for r := 0; r < spec.replies; r++ {
+			reply := nostrx.Event{
+				ID:        fmt.Sprintf("%s-r%d", spec.id, r),
+				PubKey:    fmt.Sprintf("%064x", index+100+r),
+				CreatedAt: now + int64(r),
+				Kind:      nostrx.KindTextNote,
+				Tags:      [][]string{{"e", spec.id, "", "root"}, {"e", spec.id, "", "reply"}},
+				Content:   "reply",
+			}
+			if err := st.SaveEvent(ctx, reply); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := st.WriteTrendingCache(ctx, trending24h, "", []store.TrendingItem{
+		{NoteID: "note-top", ReplyCount: 5},
+		{NoteID: "note-mid", ReplyCount: 3},
+		{NoteID: "note-low", ReplyCount: 1},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	data := srv.feedData(ctx, feedRequest{Limit: 1, SortMode: feedSortTrend24h})
+	if len(data.Feed) != 1 || data.Feed[0].ID != "note-top" {
+		t.Fatalf("first page = %#v, want note-top", data.Feed)
+	}
+	if !data.HasMore || data.CursorID != "note-top" {
+		t.Fatalf("cursor = (%d, %q), hasMore=%v", data.Cursor, data.CursorID, data.HasMore)
+	}
+
+	page2 := srv.feedData(ctx, feedRequest{Limit: 10, SortMode: feedSortTrend24h, Cursor: data.Cursor, CursorID: data.CursorID})
+	ids := make([]string, 0, len(page2.Feed))
+	for _, ev := range page2.Feed {
+		ids = append(ids, ev.ID)
+	}
+	if ids[0] == "note-top" {
+		t.Fatalf("page2 duplicated anchor: %#v", ids)
+	}
+	want := []string{"note-mid", "note-low"}
+	if len(ids) != len(want) {
+		t.Fatalf("page2 ids = %#v, want %#v", ids, want)
+	}
+	for i := range want {
+		if ids[i] != want[i] {
+			t.Fatalf("page2 ids = %#v, want %#v", ids, want)
+		}
+	}
+}
+
+func TestRankedFeedMutePaginationAdvancesPastSkippedRankedNotes(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	viewer := strings.Repeat("a", 64)
+	muted := strings.Repeat("b", 64)
+	good := strings.Repeat("c", 64)
+
+	if err := st.SaveEvent(ctx, nostrx.Event{
+		ID:        strings.Repeat("d", 64),
+		PubKey:    viewer,
+		CreatedAt: now + 1,
+		Kind:      nostrx.KindMuteList,
+		Tags:      [][]string{{"p", muted}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	specs := []struct {
+		id      string
+		pub     string
+		replies int
+	}{
+		{"note-muted-top", muted, 100},
+		{"note-good-1", good, 90},
+		{"note-good-2", good, 80},
+		{"note-muted-mid", muted, 70},
+		{"note-good-3", good, 60},
+		{"note-good-4", good, 50},
+	}
+	for _, spec := range specs {
+		if err := st.SaveEvent(ctx, nostrx.Event{
+			ID:        spec.id,
+			PubKey:    spec.pub,
+			CreatedAt: now - int64(spec.replies),
+			Kind:      nostrx.KindTextNote,
+			Content:   spec.id,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items := make([]store.TrendingItem, 0, len(specs))
+	for _, spec := range specs {
+		items = append(items, store.TrendingItem{NoteID: spec.id, ReplyCount: spec.replies})
+	}
+	if err := st.WriteTrendingCache(ctx, trending24h, "", items, now); err != nil {
+		t.Fatal(err)
+	}
+	page1 := srv.feedPageDataEx(ctx, feedRequest{Pubkey: viewer, Limit: 2, SortMode: feedSortTrend24h}, true, feedPageDataOptions{})
+	if len(page1.Feed) != 2 {
+		t.Fatalf("page1 len = %d, want 2: %#v", len(page1.Feed), page1.Feed)
+	}
+	if page1.Feed[0].ID != "note-good-1" || page1.Feed[1].ID != "note-good-2" {
+		t.Fatalf("page1 ids = [%s, %s], want [note-good-1, note-good-2]", page1.Feed[0].ID, page1.Feed[1].ID)
+	}
+	if !page1.HasMore {
+		t.Fatal("expected page1 hasMore")
+	}
+
+	page2 := srv.feedPageDataEx(ctx, feedRequest{
+		Pubkey:   viewer,
+		Limit:    2,
+		SortMode: feedSortTrend24h,
+		Cursor:   page1.Cursor,
+		CursorID: page1.CursorID,
+	}, true, feedPageDataOptions{})
+	if len(page2.Feed) != 2 {
+		t.Fatalf("page2 len = %d, want 2: %#v", len(page2.Feed), page2.Feed)
+	}
+	if page2.Feed[0].ID != "note-good-3" || page2.Feed[1].ID != "note-good-4" {
+		t.Fatalf("page2 ids = [%s, %s], want [note-good-3, note-good-4]", page2.Feed[0].ID, page2.Feed[1].ID)
+	}
+	for _, ev := range page2.Feed {
+		if ev.PubKey == muted {
+			t.Fatalf("page2 included muted author note %q", ev.ID)
+		}
 	}
 }
 
@@ -3611,7 +3770,7 @@ func TestTrendingDataMissReturnsFastEmptyAndWarmsAsync(t *testing.T) {
 		}
 	}
 
-	trending := srv.trendingData(ctx, trending24h, nil, true)
+	trending := srv.trendingData(ctx, trending24h, "", nil, nil, true)
 	if len(trending) != 0 {
 		t.Fatalf("expected fast-empty on cache miss, got %#v", trending)
 	}
@@ -3622,7 +3781,7 @@ func TestTrendingDataMissReturnsFastEmptyAndWarmsAsync(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if computedAt > 0 && len(items) == 1 && items[0].NoteID == "note-parent" {
+		if computedAt > 0 && len(items) >= 1 && items[0].NoteID == "note-parent" {
 			break
 		}
 		if time.Now().After(deadline) {

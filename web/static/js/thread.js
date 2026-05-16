@@ -903,6 +903,15 @@ function refreshThreadViewerReactionState(root = document) {
   void refreshVisibleFeedReactionStats(root, null, "", { ids });
 }
 
+function refreshThreadViewerReactionStateDeferred(root = document) {
+  const run = () => refreshThreadViewerReactionState(root);
+  if (typeof requestIdleCallback === "function") {
+    requestIdleCallback(run, { timeout: 1500 });
+  } else {
+    setTimeout(run, 0);
+  }
+}
+
 export function initThreadPage() {
   attachListeners();
   applyTreeMediaMode();
@@ -913,7 +922,7 @@ export function initThreadPage() {
   });
   bindThreadTreeConnectorObserver();
   scheduleThreadTreeConnectorGeometry();
-  refreshThreadViewerReactionState();
+  refreshThreadViewerReactionStateDeferred();
   if (!hashListenerBound) {
     hashListenerBound = true;
     window.addEventListener("hashchange", focusFromHash);

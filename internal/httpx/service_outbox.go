@@ -86,7 +86,7 @@ func (s *Server) outboxSeedRelays(ctx context.Context, viewer string, authors []
 	seedPubkeys = append(seedPubkeys, authors...)
 	if viewer != "" {
 		seedPubkeys = append(seedPubkeys, viewer)
-		seedPubkeys = append(seedPubkeys, s.following(ctx, viewer)...)
+		seedPubkeys = append(seedPubkeys, s.following(ctx, viewer, maxFeedAuthors)...)
 		seedPubkeys = append(seedPubkeys, s.followers(ctx, viewer, s.cfg.OutboxFoFSeeds)...)
 		if fof, err := s.store.SecondHopFollowingPubkeys(ctx, viewer, s.cfg.OutboxFoFSeeds); err == nil {
 			seedPubkeys = append(seedPubkeys, fof...)

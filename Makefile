@@ -5,8 +5,21 @@ ARTIFACT_BUCKET ?= your-artifact-bucket
 run:
 	go run ./cmd/server
 
+JS_SNAPSHOT_TESTS = web/static/js/feed-snapshot-keys.test.js web/static/js/profile-snapshot-keys.test.js web/static/js/prefetch.test.js web/static/js/thread-hydrate.test.js web/static/js/thread-prefetch.test.js
+
 test:
 	go test ./...
+	$(MAKE) test-js
+
+test-js:
+	node --test $(JS_SNAPSHOT_TESTS)
+
+test-e2e:
+	@env -i HOME="$$HOME" PATH="$$PATH" USER="$$USER" LOGNAME="$$LOGNAME" \
+		GOMODCACHE="$$HOME/go/pkg/mod" GOCACHE="$$HOME/Library/Caches/go-build" \
+		go build -o /tmp/ptxt-e2e-server ./cmd/server
+	npx playwright install chromium
+	PTXT_E2E_SERVER=/tmp/ptxt-e2e-server npm run test:e2e
 
 fmt:
 	gofmt -w cmd internal
