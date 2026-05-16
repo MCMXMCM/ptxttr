@@ -10,7 +10,7 @@
   "info": {
     "companyName": "Plain Text Nostr",
     "productName": "Plain Text Nostr",
-    "productVersion": "0.1.0",
+    "productVersion": "0.3.0",
     "copyright": "Plain Text Nostr contributors",
     "comments": "Local Nostr reader / writer (desktop build)"
   }
