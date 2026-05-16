@@ -180,7 +180,6 @@ Private keys never leave the browser:
 
 - read-only pubkey,
 - NIP-07 (browser extension),
-- NIP-46 connection boundary — saves a bunker / nostrconnect string and pubkey but does not yet open a remote-signer transport,
 - session-only private key,
 - ephemeral key.
 
@@ -271,7 +270,6 @@ With debug enabled:
 
 ## Known limitations
 
-- NIP-46 is intentionally a UI/session boundary in this PoC. It saves the connection string and pubkey but does not open a remote-signer transport or request signatures.
 - Publishing exists for a small set of kinds (notes, reactions, bookmarks, reads); zaps, media proxying, and richer notifications are deferred.
 - The curated logged-out feed seed should be reviewed before production use.
 - Feed pagination uses both event timestamp and event id as a cursor tie-breaker.

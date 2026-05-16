@@ -39,11 +39,10 @@ const HEADER_READS_TRENDING_TF = "X-Ptxt-Reads-Tf";
 const HEADER_WOT_ENABLED = "X-Ptxt-Wot";
 const HEADER_WOT_DEPTH = "X-Ptxt-Wot-Depth";
 const LOGIN_METHOD_META = {
-  readonly: { label: "Npub Login", canSign: false, readOnly: true, needsExtension: false, needsRemoteSigner: false },
-  nip07: { label: "Browser Extension", canSign: true, readOnly: false, needsExtension: true, needsRemoteSigner: false },
-  yolo: { label: "Nsec Login", canSign: true, readOnly: false, needsExtension: false, needsRemoteSigner: false },
-  ephemeral: { label: "Sign up", canSign: true, readOnly: false, needsExtension: false, needsRemoteSigner: false },
-  nip46: { label: "Remote Signer", canSign: false, readOnly: false, needsExtension: false, needsRemoteSigner: true },
+  readonly: { label: "Npub Login", canSign: false, readOnly: true, needsExtension: false },
+  nip07: { label: "Browser Extension", canSign: true, readOnly: false, needsExtension: true },
+  yolo: { label: "Nsec Login", canSign: true, readOnly: false, needsExtension: false },
+  ephemeral: { label: "Sign up", canSign: true, readOnly: false, needsExtension: false },
 };
 
 let sessionCacheRaw = null;
@@ -305,7 +304,6 @@ export function loginMethodMeta(method) {
     canSign: false,
     readOnly: false,
     needsExtension: false,
-    needsRemoteSigner: false,
   };
 }
 
@@ -590,11 +588,11 @@ function navigateApp(href) {
 function normalizeSessionState(value) {
   if (!value || typeof value !== "object") return {};
   const method = String(value.method || "").toLowerCase();
+  if (method === "nip46") return {};
   const meta = loginMethodMeta(method);
   const pubkey = normalizePubkey(value.pubkey);
   const npub = String(value.npub || "").trim();
-  const bunker = String(value.bunker || "").trim();
-  if (!method && !pubkey && !npub && !bunker) return {};
+  if (!method && !pubkey && !npub) return {};
   let profileLabel = String(value.profileLabel || "").trim();
   if (profileLabel.length > 128) profileLabel = profileLabel.slice(0, 128);
   if (!pubkey) profileLabel = "";
@@ -603,12 +601,12 @@ function normalizeSessionState(value) {
     method,
     pubkey,
     npub,
-    bunker,
     canSign: Boolean(value.canSign ?? meta.canSign),
     readOnly: Boolean(value.readOnly ?? meta.readOnly),
     needsExtension: Boolean(value.needsExtension ?? meta.needsExtension),
-    needsRemoteSigner: Boolean(value.needsRemoteSigner ?? meta.needsRemoteSigner),
   };
+  delete out.bunker;
+  delete out.needsRemoteSigner;
   if (profileLabel) out.profileLabel = profileLabel;
   else delete out.profileLabel;
   return out;
