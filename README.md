@@ -2,8 +2,6 @@
 
 A small Go Nostr web app built around server-side relay aggregation, a SQLite event cache (including web-of-trust follow edges), Go HTML templates, vanilla JavaScript, and plain CSS.
 
-The server fans out to a bounded set of relays, persists every raw event into SQLite, projects derived state (profiles, follow lists, relay hints, reply counts, trending, bookmarks, reads) into typed tables, expands web-of-trust reachability from the `follow_edges` projection inside SQLite, and wraps each resolved author set in a small bloom filter for cheap negative membership checks before exact lookups. Hot projection reads also use a bounded in-process LRU (relay hints, profiles, reply stats) with hit/miss counters on `/debug/metrics`. Pages render from local cache first; relay traffic warms the cache in the background.
-
 **Try it in the browser:** open [plaintextnostr.com](https://plaintextnostr.com) for a quick look. The hosted site runs the same server-side aggregation and cache as this repo; you are **trusting that server** to connect to relays and aggregate notes on your behalf. If you want relay traffic and SQLite aggregation to stay **on your own machine**, use the **macOS desktop app** below (or run `go run ./cmd/server` locally).
 
 **Operators:** hosted AWS / CloudFront deployment is optional and documented in [`deploy/README.md`](deploy/README.md).
@@ -110,7 +108,9 @@ One durable database file lives under `data/` by default:
 +--------------------------+
 ```
 
-### Read path
+
+The server fans out to a bounded set of relays, persists every raw event into SQLite, projects derived state (profiles, follow lists, relay hints, reply counts, trending, bookmarks, reads) into typed tables, expands web-of-trust reachability from the `follow_edges` projection inside SQLite, and wraps each resolved author set in a small bloom filter for cheap negative membership checks before exact lookups. Hot projection reads also use a bounded in-process LRU (relay hints, profiles, reply stats) with hit/miss counters on `/debug/metrics`. Pages render from local cache first; relay traffic warms the cache in the background.
+
 
 1. The browser issues an HTTP request (`/`, `/feed`, `/u/<id>`, `/thread/<id>`, `/reads`, `/bookmarks`, `/notifications`, `/trending`, `/api/...`). Sessions and the active pubkey live in a cookie; the browser never speaks websocket itself.
 2. `internal/httpx` parses the request into a `feedRequest`, resolves the viewer, and clamps relay/wot parameters.
@@ -268,16 +268,6 @@ With debug enabled:
 - `/debug/profile?pubkey=<npub-or-hex>` — refreshes and returns one profile summary.
 - `/debug/firehose` — recent relay activity sample.
 - `/debug/pprof/*` — standard pprof handlers.
-
-## MVP scope
-
-- Server-rendered home, login, relays, user, event, thread, reads, bookmarks, notifications, trending, search, and settings pages.
-- SQLite WAL cache for raw events, tags, relay sightings, relay status, profile / follow / relay-hint / reply-count / trending projections, hydration targets, bookmarks, and reads.
-- SQLite-backed web-of-trust expansion over projected follow edges for opt-in feed filtering.
-- Relay fan-out, event dedupe, profile / contact / recent-note fetches, outbox-style routing, and thread assembly on the Go server.
-- Login modes that keep private keys in the browser (see above).
-- Curated logged-out feed (whitelist), bounded relay selection (defaults + up to 8 user-added), NIP-65 suggestions, cursor-and-fragment pagination.
-- Idle-gated background hydration and trending sweepers, in-flight warm queue with key-level dedupe, request-scoped timeouts, persisted NIP-11 relay status, and per-relay query counters.
 
 ## Known limitations
 
