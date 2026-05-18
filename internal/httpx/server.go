@@ -23,6 +23,10 @@ type Server struct {
 	// crawler for outbox routing; set by successful prewarmLoggedOutSeedNow.
 	seedCrawlViewerHex string
 	seedCrawlViewerMu  sync.RWMutex
+	// loggedOutSeedCenterHex is the bootstrap WoT center whose resolved-author
+	// cache must be invalidated when the seed-contact frontier expands.
+	loggedOutSeedCenterHex string
+	loggedOutSeedCenterMu  sync.RWMutex
 	store              *store.Store
 	nostr              *nostrx.Client
 	templates          *template.Template
@@ -47,7 +51,10 @@ type Server struct {
 	backgroundWG       sync.WaitGroup
 	lastRequestAt      atomic.Int64
 	activeRequests     atomic.Int64
-	maintenanceRunning atomic.Bool
+	maintenanceSeed      atomic.Bool
+	maintenanceViewer    atomic.Bool
+	maintenanceHydration atomic.Bool
+	maintenanceTrending  atomic.Bool
 	userAsyncQueue     chan func()
 	relayWriteSem      chan struct{}
 
@@ -55,6 +62,10 @@ type Server struct {
 	healthLastOK      atomic.Bool
 	healthLastProbeMS atomic.Int64
 	healthDegraded    atomic.Bool
+
+	nip50Mu         sync.Mutex
+	nip50FallbackAt []time.Time
+	seedCrawlIndex  atomic.Uint64
 }
 
 func New(cfg config.Config, st *store.Store, nostrClient *nostrx.Client) (*Server, error) {
@@ -97,7 +108,11 @@ func New(cfg config.Config, st *store.Store, nostrClient *nostrx.Client) (*Serve
 	nostrClient.SetIngestVerifyParallel(cfg.IngestVerifyParallel)
 	nostrClient.SetNegentropyCache(st)
 	nostrClient.SetRelayMaxOutboundConns(cfg.RelayMaxOutboundConns)
-	server.warmer = newWarmQueue(server, 2)
+	warmWorkers := cfg.WarmWorkers
+	if warmWorkers <= 0 {
+		warmWorkers = 2
+	}
+	server.warmer = newWarmQueue(server, warmWorkers, cfg.WarmQueueCapacity)
 	for range userAsyncWorkerCount {
 		server.runBackground(server.runUserAsyncWorker)
 	}
@@ -117,6 +132,9 @@ func New(cfg config.Config, st *store.Store, nostrClient *nostrx.Client) (*Serve
 		server.runBackground(server.runDefaultSeedGuestFeedHotLoop)
 	}
 	server.runBackground(server.runSeedCrawler)
+	if cfg.ViewerCrawlerEnabled {
+		server.runBackground(server.runViewerCrawler)
+	}
 	if cfg.HealthProbeEnabled {
 		if base, ok := healthProbeBaseURL(cfg.Addr); ok {
 			server.healthLastOK.Store(true)
@@ -203,6 +221,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc("/debug/event", s.handleDebugEvent)
 		mux.HandleFunc("/debug/profile", s.handleDebugProfile)
 		mux.HandleFunc("/debug/firehose", s.handleDebugFirehose)
+		mux.HandleFunc("/debug/seed-note", s.handleDebugSeedNote)
 	}
 	// pprof + expvar live on a separate listener bound to PprofAddr (default
 	// 127.0.0.1:6060) regardless of cfg.Debug so on-host triage (SSM/SSH)

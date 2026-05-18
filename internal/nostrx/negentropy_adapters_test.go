@@ -10,6 +10,20 @@ import (
 	fnostr "fiatjaf.com/nostr"
 )
 
+func TestNostrFilterFromQueryCoreMapsSearch(t *testing.T) {
+	f, err := nostrFilterFromQueryCore(Query{
+		Kinds:  []int{KindTextNote},
+		Search: "abc123",
+		Limit:  10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Search != "abc123" {
+		t.Fatalf("Search = %q, want abc123", f.Search)
+	}
+}
+
 func TestNegentropyFilterFromQuery(t *testing.T) {
 	pk, err := fnostr.PubKeyFromHex("a" + strings.Repeat("b", 63))
 	if err != nil {

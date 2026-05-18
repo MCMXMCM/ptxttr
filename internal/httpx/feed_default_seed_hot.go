@@ -268,7 +268,7 @@ func (s *Server) tryPeriodicCanonicalDefaultSeedGuestFeed(ctx context.Context) {
 	if s == nil {
 		return
 	}
-	s.tryRunMaintenanceWork(func() {
+	s.tryRunMaintenanceWork(maintenanceLaneSeed, func() {
 		if s.store != nil && !s.store.ShouldRefresh(ctx, defaultSeedGuestFeedScope, defaultSeedGuestPeriodicAttemptKey, defaultSeedGuestPeriodicThrottle) {
 			return
 		}

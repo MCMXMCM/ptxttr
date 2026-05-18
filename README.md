@@ -256,12 +256,23 @@ Useful environment variables (all optional):
 | `PTXT_DB` | `data/ptxt-nstr.sqlite` | SQLite path. |
 | `PTXT_RELAYS` | `wss://relay.primal.net,wss://relay.damus.io,wss://nos.lol` | Default relay set. |
 | `PTXT_METADATA_RELAYS` | `PTXT_RELAYS` | Preferred relays for profile / follow / relay-list hydration. |
-| `PTXT_CURATED_PUBKEYS` | — | Comma-separated hex pubkeys for the logged-out feed. |
+| `PTXT_INDEXER_RELAYS` | `wss://relay.nostr.band,wss://relay.primal.net` | Indexer relays for thread reply discovery (second pass). |
+| `PTXT_INDEXER_NIP50_RELAYS` | `wss://relay.nostr.band,wss://relay.primal.net` | Relays for NIP-50 thread reply fallback (excludes search-only relays). |
+| `PTXT_INDEXER_MAX_RELAYS` | `6` | Cap on indexer relay fan-out per fetch. |
+| `PTXT_CURATED_PUBKEYS` | — | Comma-separated hex pubkeys or npubs added to seed bootstrap and background crawl. |
+| `PTXT_THREAD_MAX_RELAYS` | `16` | Cap on merged relays for thread hydration (primary pass). |
+| `PTXT_THREAD_OUTBOX_MAX_ROUTE_GROUPS` | `8` | Grouped outbox fan-out cap for thread reply authors. |
+| `PTXT_THREAD_OUTBOX_MAX_RELAYS_PER_AUTHOR` | `PTXT_OUTBOX_MAX_RELAYS_PER_AUTHOR` | Per-author relay cap in thread outbox groups. |
+| `PTXT_THREAD_CONTEXT_WARM_MAX_IDS` | `48` | Max ancestor/referenced note IDs warmed after `?fragment=hydrate`. |
+| `PTXT_HYDRATION_NOTE_REPLIES_BATCH` | `16` | `noteReplies` targets processed per hydration sweeper tick. |
 | `PTXT_REQUEST_TIMEOUT_MS` | `3500` | Per-relay timeout in `nostrx.Client`. The outer HTTP handler context uses `max(5s, relayTimeout+2s)` (see `internal/httpx/middleware.go`). |
 | `PTXT_RELAY_MAX_OUTBOUND_CONNS` | `48` | Process-wide cap on concurrent relay WebSocket operations (`nostrx` acquire/release around each dial). Set to `0` for unlimited (tests only). |
-| `PTXT_WARM_JOB_TIMEOUT_MS` | `45000` | Hard wall-clock cap per warm-queue job. |
+| `PTXT_WARM_JOB_TIMEOUT_MS` | `90000` | Hard wall-clock cap per warm-queue job. |
 | `PTXT_WARM_MAX_AUTHORS_PER_JOB` | `16` | Max authors processed per warm `authors` job; remainder is re-enqueued. |
-| `PTXT_WARM_MAX_NOTE_IDS_PER_JOB` | `12` | Max note IDs per warm `noteReplies` / `noteReactions` job; remainder is re-enqueued. |
+| `PTXT_WARM_MAX_NOTE_IDS_PER_JOB` | `32` | Max note IDs per warm `noteReplies` / `noteReactions` job; remainder is re-enqueued. |
+| `PTXT_WARM_WORKERS` | `4` | Warm-queue worker goroutines. |
+| `PTXT_WARM_QUEUE_CAPACITY` | `256` | Warm job channel buffer (jobs dropped when full). |
+| `PTXT_NIP50_FALLBACK_RATE` | `30` | Max background NIP-50 reply fallbacks per minute. |
 | `PTXT_HEALTH_PROBE_ENABLED` | `false` | When `1`/`true`, periodically `GET` the app over loopback (see path/timeout below) and set `degraded` in `/healthz` after repeated failures. |
 | `PTXT_HEALTH_PROBE_INTERVAL` | `30s` | Delay between self-probes. |
 | `PTXT_HEALTH_PROBE_PATH` | `/healthz` | URL path for the self-probe. Keep this cheap; `/healthz` only pings SQLite and does not call relays. |
@@ -283,8 +294,14 @@ Useful environment variables (all optional):
 | `PTXT_SEED_CRAWLER_AUTHOR_BATCH` | `16` | Stale seed contacts processed per tick. |
 | `PTXT_SEED_CRAWLER_FETCH_LIMIT` | `60` | Max notes fetched per author per seed tick. |
 | `PTXT_SEED_CRAWLER_AUTHOR_NOTE_LOOKBACK` | `2880h` | Oldest `created_at` for those notes (`Since` on the relay filter; default 120 days). Set to `0` or `0s` to disable (count limit still applies). |
-| `PTXT_SEED_CRAWLER_REPLY_WARM_LIMIT` | `24` | Reply threads warmed per author per tick. |
+| `PTXT_SEED_CRAWLER_REPLY_WARM_LIMIT` | `48` | Reply threads warmed per author per tick. |
 | `PTXT_SEED_CONTACT_FOLLOW_ENQUEUE_PER_TICK` | `120` | Follow pubkeys enqueued per contact when expanding the seed frontier. |
+| `PTXT_KNOWN_VIEWER_MAX` | `512` | Max durable `knownViewer` rows (signed-in users to background-crawl). |
+| `PTXT_VIEWER_CRAWLER_ENABLED` | `true` | Background crawl for previously signed-in viewers. |
+| `PTXT_VIEWER_CRAWLER_INTERVAL` | `30s` | Delay between viewer crawler ticks. |
+| `PTXT_VIEWER_CRAWLER_BATCH` | `8` | Known viewers processed per tick. |
+| `PTXT_VIEWER_CRAWLER_REPLY_WARM_LIMIT` | `24` | Thread warms per viewer per tick. |
+| `PTXT_VIEWER_CRAWLER_FOLLOW_ENQUEUE_PER_TICK` | `80` | Follow pubkeys enqueued into the seed frontier per viewer tick. |
 | `PTXT_SQLITE_MAX_OPEN_CONNS` | `max(10, runtime.NumCPU())` | SQLite pool max-open when unset (WAL read concurrency). |
 | `PTXT_SQLITE_MAX_IDLE_CONNS` | `max(4, runtime.NumCPU()/2)` | SQLite pool max-idle when unset. |
 | `PTXT_SQLITE_CACHE_KIB` | `32768` | SQLite page-cache target in KiB (`PRAGMA cache_size=-N`). |

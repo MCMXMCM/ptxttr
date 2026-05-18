@@ -86,6 +86,7 @@ func TestPrewarmLoggedOutSeedNowEnqueuesAllSeedFollowsAcrossPages(t *testing.T) 
 	srv, _ := newTestServer(t, testServerOptions{relayTimeout: 50 * time.Millisecond})
 	ctx := context.Background()
 	srv.cfg.SeedBootstrapFollowEnqueueLimit = 2
+	srv.cfg.SeedBootstrapFollowEnqueueMaxTotal = 10
 
 	tags := make(fnostr.Tags, 0, 5)
 	for i := 0; i < 5; i++ {
@@ -275,7 +276,6 @@ func TestCrawlSeedTickInvalidatesSeedAuthorCacheAfterGraphExpansion(t *testing.T
 	if err := srv.prewarmLoggedOutSeedNow(ctx, seedNPub, defaultLoggedOutWOTDepth); err != nil {
 		t.Fatalf("prewarmLoggedOutSeedNow() error = %v", err)
 	}
-
 	before, _, loggedOut := srv.resolveAuthorsAll(ctx, seedNPub, nil, webOfTrustOptions{Enabled: true, Depth: 2})
 	if loggedOut {
 		t.Fatal("resolveAuthorsAll() unexpectedly logged out")
@@ -331,7 +331,7 @@ func TestPrewarmDefaultLoggedOutSeedMarksRefreshedOnSuccess(t *testing.T) {
 	if err := srv.prewarmBootstrapLoggedOutSeed(ctx, seedNPub, defaultLoggedOutWOTDepth); err != nil {
 		t.Fatalf("prewarmBootstrapLoggedOutSeed() error = %v", err)
 	}
-	if srv.store.ShouldRefresh(ctx, "bootstrap", defaultLoggedOutSeedBootstrapKey, defaultLoggedOutSeedBootstrapTTL) {
+	if srv.store.ShouldRefresh(ctx, "bootstrap", bootstrapFetchLogKey(seedNPub), defaultLoggedOutSeedBootstrapTTL) {
 		t.Fatal("expected bootstrap marked refreshed after successful prewarm")
 	}
 	// Second call within TTL should no-op without error.

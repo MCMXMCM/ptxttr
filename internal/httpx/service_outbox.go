@@ -9,11 +9,44 @@ import (
 )
 
 func (s *Server) groupAuthorsForOutbox(ctx context.Context, viewer string, authors []string, relays []string) []outboxRouteGroup {
+	maxGroups := s.cfg.OutboxMaxRouteGroups
+	if maxGroups <= 0 {
+		maxGroups = 6
+	}
+	maxRelays := s.cfg.OutboxMaxRelaysPerAuthor
+	if maxRelays <= 0 {
+		maxRelays = nostrx.MaxRelays
+	}
+	return s.groupAuthorsByRelayHints(ctx, viewer, authors, relays, maxGroups, maxRelays)
+}
+
+func (s *Server) groupAuthorsForThreadOutbox(ctx context.Context, viewer string, replyAuthors []string, baseRelays []string) []outboxRouteGroup {
+	if s == nil {
+		return nil
+	}
+	maxGroups := s.cfg.ThreadOutboxMaxRouteGroups
+	if maxGroups <= 0 {
+		maxGroups = 8
+	}
+	maxRelays := s.cfg.ThreadOutboxMaxRelaysPerAuthor
+	if maxRelays <= 0 {
+		maxRelays = s.cfg.OutboxMaxRelaysPerAuthor
+	}
+	if maxRelays <= 0 {
+		maxRelays = nostrx.MaxRelays
+	}
+	return s.groupAuthorsByRelayHints(ctx, viewer, replyAuthors, baseRelays, maxGroups, maxRelays)
+}
+
+func (s *Server) groupAuthorsByRelayHints(ctx context.Context, viewer string, authors []string, baseRelays []string, maxGroups, maxRelays int) []outboxRouteGroup {
+	if s == nil || s.store == nil {
+		return nil
+	}
 	keys := uniqueNonEmptyStrings(authors)
 	if len(keys) == 0 {
 		return nil
 	}
-	seedRelays := s.outboxSeedRelays(ctx, viewer, keys, relays)
+	seedRelays := s.outboxSeedRelays(ctx, viewer, keys, baseRelays)
 	contactHints, _ := s.store.ContactRelayHintsForOwner(ctx, viewer, keys, s.cfg.OutboxFoFSeeds)
 	observedHints, _ := s.store.ObservedRelaysForAuthors(ctx, keys, []int{
 		nostrx.KindTextNote,
@@ -22,10 +55,6 @@ func (s *Server) groupAuthorsForOutbox(ctx context.Context, viewer string, autho
 		nostrx.KindRelayListMetadata,
 	}, 2)
 	hintSets, _ := s.store.RelayHintsByUsageForPubkeys(ctx, keys)
-	maxRelays := s.cfg.OutboxMaxRelaysPerAuthor
-	if maxRelays <= 0 {
-		maxRelays = nostrx.MaxRelays
-	}
 
 	grouped := make(map[string]*outboxRouteGroup)
 	for _, author := range keys {
@@ -41,7 +70,7 @@ func (s *Server) groupAuthorsForOutbox(ctx context.Context, viewer string, autho
 			append(set.All, seedRelays...)...,
 		), maxRelays)
 		if len(authorRelays) == 0 {
-			authorRelays = nostrx.NormalizeRelayList(append([]string(nil), relays...), maxRelays)
+			authorRelays = nostrx.NormalizeRelayList(append([]string(nil), baseRelays...), maxRelays)
 		}
 		key := strings.Join(authorRelays, ",")
 		group := grouped[key]
@@ -63,22 +92,32 @@ func (s *Server) groupAuthorsForOutbox(ctx context.Context, viewer string, autho
 		}
 		return len(groups[i].authors) > len(groups[j].authors)
 	})
-	maxGroups := s.cfg.OutboxMaxRouteGroups
-	if maxGroups <= 0 {
-		maxGroups = 6
-	}
 	if len(groups) > maxGroups {
 		overflowAuthors := make([]string, 0, len(keys))
 		for index := maxGroups - 1; index < len(groups); index++ {
 			overflowAuthors = append(overflowAuthors, groups[index].authors...)
 		}
-		fallbackRelays := nostrx.NormalizeRelayList(append(append([]string(nil), relays...), seedRelays...), maxRelays)
+		fallbackRelays := nostrx.NormalizeRelayList(append(append([]string(nil), baseRelays...), seedRelays...), maxRelays)
 		groups = append(groups[:maxGroups-1], outboxRouteGroup{
 			authors: clampAuthors(uniqueNonEmptyStrings(overflowAuthors)),
 			relays:  fallbackRelays,
 		})
 	}
 	return groups
+}
+
+func (s *Server) appendThreadOutboxRelayHints(ctx context.Context, viewer, rootID string, merged []string) []string {
+	if s == nil || s.store == nil || rootID == "" {
+		return merged
+	}
+	authors, err := s.store.DistinctAuthorsUnderRoot(ctx, rootID, 48)
+	if err != nil || len(authors) == 0 {
+		return merged
+	}
+	for _, group := range s.groupAuthorsForThreadOutbox(ctx, viewer, authors, merged) {
+		merged = append(merged, group.relays...)
+	}
+	return merged
 }
 
 func (s *Server) outboxSeedRelays(ctx context.Context, viewer string, authors []string, requestRelays []string) []string {

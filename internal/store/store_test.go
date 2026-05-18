@@ -1356,6 +1356,29 @@ func TestSeedContactSuccessLeavesDurableDedupeUntilReTouched(t *testing.T) {
 	}
 }
 
+func TestKnownViewerFrontierTouchAndStaleBatch(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, ctx)
+	pk := strings.Repeat("v", 64)
+	if err := st.TouchKnownViewer(ctx, pk, 3); err != nil {
+		t.Fatal(err)
+	}
+	batch, err := st.StaleKnownViewerBatch(ctx, time.Now().Unix(), 10, 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch) != 1 || batch[0].EntityType != EntityTypeKnownViewer || batch[0].EntityID != pk {
+		t.Fatalf("unexpected batch: %#v", batch)
+	}
+	count, err := st.CountStaleHydration(ctx, EntityTypeKnownViewer, time.Now().Unix())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("CountStaleHydration = %d, want 1", count)
+	}
+}
+
 func TestEventsMentioningPubkeyExcludesSelfAndDedupesPTags(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t, ctx)

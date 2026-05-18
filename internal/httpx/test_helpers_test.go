@@ -57,7 +57,13 @@ func newTestServer(t *testing.T, opts testServerOptions) (*Server, *store.Store)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	srv, err := New(config.Config{RequestTimeout: opts.requestTimeout, WOTMaxAuthors: 240}, st, nostrx.NewClient(nil, opts.relayTimeout))
+	srv, err := New(config.Config{
+		RequestTimeout:       opts.requestTimeout,
+		WOTMaxAuthors:        240,
+		HydrationEnabled:     false,
+		SeedCrawlerEnabled:   false,
+		ViewerCrawlerEnabled: false,
+	}, st, nostrx.NewClient(nil, opts.relayTimeout))
 	if err != nil {
 		t.Fatal(err)
 	}

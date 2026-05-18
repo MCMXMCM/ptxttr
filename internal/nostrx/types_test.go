@@ -393,6 +393,20 @@ func TestRelayPolicyStateExpiresAndClears(t *testing.T) {
 	}
 }
 
+func TestFilterAvailableRelaysSkipsBlocked(t *testing.T) {
+	client := NewClient([]string{"wss://good.example", "wss://bad.example"}, time.Second)
+	now := time.Now()
+	client.recordRelayPolicyRejection("wss://bad.example", "auth", "challenge", now)
+	got := client.FilterAvailableRelays([]string{
+		"wss://good.example",
+		"wss://bad.example",
+		"wss://good.example",
+	})
+	if len(got) != 1 || got[0] != "wss://good.example" {
+		t.Fatalf("FilterAvailableRelays = %#v, want only good relay", got)
+	}
+}
+
 func BenchmarkDedupeEventsSorted(b *testing.B) {
 	events := make([]Event, 0, 400)
 	for index := 0; index < 400; index++ {

@@ -59,7 +59,7 @@ func (s *Server) runActiveViewerTrendingHotLoop() {
 }
 
 func (s *Server) warmActiveViewerTrending(ctx context.Context) {
-	s.tryRunMaintenanceWork(func() {
+	s.tryRunMaintenanceWork(maintenanceLaneTrending, func() {
 		s.warmActiveViewerTrendingBody(ctx)
 	})
 }

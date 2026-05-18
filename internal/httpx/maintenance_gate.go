@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 )
 
@@ -22,10 +23,18 @@ const (
 	userAsyncQueueCapacity = 64
 )
 
-// tryRunMaintenanceWork runs fn when no other maintenance job holds the global
-// gate and the foreground is not actively serving requests. Skipped ticks
-// increment metrics for tuning.
-func (s *Server) tryRunMaintenanceWork(fn func()) {
+type maintenanceLane int
+
+const (
+	maintenanceLaneSeed maintenanceLane = iota
+	maintenanceLaneViewer
+	maintenanceLaneHydration
+	maintenanceLaneTrending
+)
+
+// tryRunMaintenanceWork runs fn when no other job holds the lane gate and the
+// foreground is not actively serving requests. Skipped ticks increment metrics.
+func (s *Server) tryRunMaintenanceWork(lane maintenanceLane, fn func()) {
 	if s == nil || fn == nil {
 		return
 	}
@@ -33,12 +42,28 @@ func (s *Server) tryRunMaintenanceWork(fn func()) {
 		s.metrics.Add("bg.maintenance_deferred_hot", 1)
 		return
 	}
-	if !s.maintenanceRunning.CompareAndSwap(false, true) {
+	gate := s.maintenanceGate(lane)
+	if gate == nil || !gate.CompareAndSwap(false, true) {
 		s.metrics.Add("bg.maintenance_skipped_busy", 1)
 		return
 	}
-	defer s.maintenanceRunning.Store(false)
+	defer gate.Store(false)
 	fn()
+}
+
+func (s *Server) maintenanceGate(lane maintenanceLane) *atomic.Bool {
+	switch lane {
+	case maintenanceLaneSeed:
+		return &s.maintenanceSeed
+	case maintenanceLaneViewer:
+		return &s.maintenanceViewer
+	case maintenanceLaneHydration:
+		return &s.maintenanceHydration
+	case maintenanceLaneTrending:
+		return &s.maintenanceTrending
+	default:
+		return nil
+	}
 }
 
 func (s *Server) foregroundBusy() bool {

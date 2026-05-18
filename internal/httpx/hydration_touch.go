@@ -113,7 +113,15 @@ func authorWarmTargets(pubkeys []string) []store.HydrationTarget {
 }
 
 func noteReplyWarmTargets(eventIDs []string) []store.HydrationTarget {
-	return noteEntityWarmTargets("noteReplies", 3, eventIDs)
+	return noteReplyWarmTargetsForViewer("", eventIDs)
+}
+
+func noteReplyWarmTargetsForViewer(viewer string, eventIDs []string) []store.HydrationTarget {
+	priority := 3
+	if viewer != "" {
+		priority = 4
+	}
+	return noteEntityWarmTargets("noteReplies", priority, eventIDs)
 }
 
 func noteReactionWarmTargets(eventIDs []string) []store.HydrationTarget {

@@ -25,6 +25,44 @@ type Config struct {
 	DefaultRelays  []string
 	// MetadataRelays are preferred for profile/follow/relay-list hydration.
 	MetadataRelays []string
+	// IndexerRelays are heavy indexers used for thread reply discovery (second pass).
+	IndexerRelays []string
+	// IndexerNIP50Relays are relays that accept NIP-50 search (excludes search-only relays like search.nos.today that reject note-id queries).
+	IndexerNIP50Relays []string
+	// IndexerMaxRelays caps the indexer relay tier per fetch.
+	IndexerMaxRelays int
+	// IndexerNIP50MaxRelays caps the NIP-50 fallback relay tier.
+	IndexerNIP50MaxRelays int
+	// CuratedPubkeys are extra hex pubkeys to bootstrap and crawl (PTXT_CURATED_PUBKEYS).
+	CuratedPubkeys []string
+	// ThreadMaxRelays caps merged relays for thread hydration (primary pass).
+	ThreadMaxRelays int
+	// ThreadOutboxMaxRouteGroups caps grouped outbox fan-out for thread reply authors.
+	ThreadOutboxMaxRouteGroups int
+	// ThreadOutboxMaxRelaysPerAuthor caps per-author relays in thread outbox groups.
+	ThreadOutboxMaxRelaysPerAuthor int
+	// ThreadContextWarmMaxIDs caps ancestor/referenced IDs warmed after hydrate.
+	ThreadContextWarmMaxIDs int
+	// HydrationNoteRepliesBatch caps noteReplies targets per hydration sweeper tick.
+	HydrationNoteRepliesBatch int
+	// WarmWorkers is the number of warm-queue worker goroutines.
+	WarmWorkers int
+	// WarmQueueCapacity is the warm job channel buffer size.
+	WarmQueueCapacity int
+	// NIP50FallbackRatePerMin caps background NIP-50 reply fallbacks per minute.
+	NIP50FallbackRatePerMin int
+	// KnownViewerMax caps durable knownViewer hydration rows.
+	KnownViewerMax int
+	// ViewerCrawlerEnabled runs background crawl for previously signed-in viewers.
+	ViewerCrawlerEnabled bool
+	// ViewerCrawlerInterval is the delay between viewer crawler ticks.
+	ViewerCrawlerInterval time.Duration
+	// ViewerCrawlerBatch caps known viewers processed per tick.
+	ViewerCrawlerBatch int
+	// ViewerCrawlerReplyWarmLimit caps thread warms per viewer per tick.
+	ViewerCrawlerReplyWarmLimit int
+	// ViewerCrawlerFollowEnqueuePerTick caps follows enqueued per viewer tick.
+	ViewerCrawlerFollowEnqueuePerTick int
 	// OutboxMaxRelaysPerAuthor caps per-author relay candidates for routing.
 	OutboxMaxRelaysPerAuthor int
 	// OutboxMaxRouteGroups limits grouped relay fetch fanout per request.
@@ -60,9 +98,14 @@ type Config struct {
 	SeedCrawlerAuthorNoteLookback time.Duration
 	// SeedCrawlerReplyWarmLimit caps thread-reply warms per author per tick.
 	SeedCrawlerReplyWarmLimit int
-	// SeedBootstrapFollowEnqueueLimit bounds the SQLite page size used while
-	// enqueueing Jack's direct follows at startup.
+	// SeedBootstrapFollowEnqueueLimit bounds the SQLite page size while enqueueing seed follows at startup.
 	SeedBootstrapFollowEnqueueLimit int
+	// SeedBootstrapFollowEnqueueMaxTotal caps total follows enqueued per seed at bootstrap (pages stop after this).
+	SeedBootstrapFollowEnqueueMaxTotal int
+	// SeedFrontierPauseThreshold skips or reduces bootstrap enqueue when stale seedContact rows exceed this.
+	SeedFrontierPauseThreshold int
+	// SeedBootstrapSecondaryMaxTotal caps bootstrap frontier enqueue for non-primary named seeds.
+	SeedBootstrapSecondaryMaxTotal int
 	// SeedContactMaxFailCount excludes seedContact rows from background work
 	// after this many consecutive failures until re-touched.
 	SeedContactMaxFailCount int
@@ -134,6 +177,14 @@ func Load() Config {
 		"wss://nos.lol",
 	})
 	metadataRelays := splitEnv("PTXT_METADATA_RELAYS", defaultRelays)
+	indexerRelays := splitEnv("PTXT_INDEXER_RELAYS", []string{
+		"wss://relay.nostr.band",
+		"wss://relay.primal.net",
+	})
+	indexerNIP50Relays := splitEnv("PTXT_INDEXER_NIP50_RELAYS", []string{
+		"wss://relay.nostr.band",
+		"wss://relay.primal.net",
+	})
 
 	cfg := Config{
 		Addr:                            env("PTXT_ADDR", ":8080"),
@@ -143,6 +194,16 @@ func Load() Config {
 		CompactOnStart:                  boolEnv("PTXT_COMPACT_ON_START", false),
 		DefaultRelays:                   nostrx.NormalizeRelayList(defaultRelays, nostrx.MaxRelays),
 		MetadataRelays:                  nostrx.NormalizeRelayList(metadataRelays, nostrx.MaxRelays),
+		IndexerRelays:                   nostrx.NormalizeRelayList(indexerRelays, 6),
+		IndexerNIP50Relays:             nostrx.NormalizeRelayList(indexerNIP50Relays, 4),
+		IndexerMaxRelays:                intEnv("PTXT_INDEXER_MAX_RELAYS", 6),
+		IndexerNIP50MaxRelays:           intEnv("PTXT_INDEXER_NIP50_MAX_RELAYS", 4),
+		CuratedPubkeys:                  splitPubkeyEnv("PTXT_CURATED_PUBKEYS"),
+		ThreadMaxRelays:                 intEnv("PTXT_THREAD_MAX_RELAYS", 16),
+		ThreadOutboxMaxRouteGroups:      intEnv("PTXT_THREAD_OUTBOX_MAX_ROUTE_GROUPS", 8),
+		ThreadOutboxMaxRelaysPerAuthor:  intEnv("PTXT_THREAD_OUTBOX_MAX_RELAYS_PER_AUTHOR", 0),
+		ThreadContextWarmMaxIDs:         intEnv("PTXT_THREAD_CONTEXT_WARM_MAX_IDS", 48),
+		HydrationNoteRepliesBatch:       intEnv("PTXT_HYDRATION_NOTE_REPLIES_BATCH", 16),
 		OutboxMaxRelaysPerAuthor:        intEnv("PTXT_OUTBOX_MAX_RELAYS_PER_AUTHOR", nostrx.MaxRelays),
 		OutboxMaxRouteGroups:            intEnv("PTXT_OUTBOX_MAX_ROUTE_GROUPS", 6),
 		OutboxFoFSeeds:                  intEnv("PTXT_OUTBOX_FOF_SEEDS", 40),
@@ -158,8 +219,11 @@ func Load() Config {
 		SeedCrawlerAuthorBatch:          intEnv("PTXT_SEED_CRAWLER_AUTHOR_BATCH", 16),
 		SeedCrawlerFetchLimit:           intEnv("PTXT_SEED_CRAWLER_FETCH_LIMIT", 60),
 		SeedCrawlerAuthorNoteLookback:   seedAuthorNoteLookbackEnv("PTXT_SEED_CRAWLER_AUTHOR_NOTE_LOOKBACK", 120*24*time.Hour),
-		SeedCrawlerReplyWarmLimit:       intEnv("PTXT_SEED_CRAWLER_REPLY_WARM_LIMIT", 24),
-		SeedBootstrapFollowEnqueueLimit: intEnv("PTXT_SEED_BOOTSTRAP_FOLLOW_ENQUEUE_LIMIT", 400),
+		SeedCrawlerReplyWarmLimit:       intEnv("PTXT_SEED_CRAWLER_REPLY_WARM_LIMIT", 48),
+		SeedBootstrapFollowEnqueueLimit:   intEnv("PTXT_SEED_BOOTSTRAP_FOLLOW_ENQUEUE_LIMIT", 80),
+		SeedBootstrapFollowEnqueueMaxTotal: intEnv("PTXT_SEED_BOOTSTRAP_FOLLOW_ENQUEUE_MAX_TOTAL", 80),
+		SeedFrontierPauseThreshold:        intEnv("PTXT_SEED_FRONTIER_PAUSE_THRESHOLD", 1500),
+		SeedBootstrapSecondaryMaxTotal:  intEnv("PTXT_SEED_BOOTSTRAP_SECONDARY_MAX_TOTAL", 40),
 		SeedContactMaxFailCount:         intEnv("PTXT_SEED_CONTACT_MAX_FAIL_COUNT", 12),
 		SeedContactFollowEnqueuePerTick: intEnv("PTXT_SEED_CONTACT_FOLLOW_ENQUEUE_PER_TICK", 120),
 		TrendingSweepInterval:           durationEnvDuration("PTXT_TRENDING_SWEEP_INTERVAL", 5*time.Minute),
@@ -172,9 +236,18 @@ func Load() Config {
 		CoalesceBuckets:                 intEnv("PTXT_COALESCE_BUCKETS", DefaultCoalesceBuckets),
 		CoalesceTimeout:                 durationEnv("PTXT_COALESCE_TIMEOUT_MS", 4000*time.Millisecond),
 		RelayMaxOutboundConns:           relayMaxOutboundConnsEnv(),
-		WarmJobTimeout:                  durationEnv("PTXT_WARM_JOB_TIMEOUT_MS", 45_000*time.Millisecond),
+		WarmJobTimeout:                  durationEnv("PTXT_WARM_JOB_TIMEOUT_MS", 90_000*time.Millisecond),
 		WarmMaxAuthorsPerJob:            intEnv("PTXT_WARM_MAX_AUTHORS_PER_JOB", 16),
-		WarmMaxNoteIDsPerJob:            intEnv("PTXT_WARM_MAX_NOTE_IDS_PER_JOB", 12),
+		WarmMaxNoteIDsPerJob:            intEnv("PTXT_WARM_MAX_NOTE_IDS_PER_JOB", 32),
+		WarmWorkers:                     intEnv("PTXT_WARM_WORKERS", 4),
+		WarmQueueCapacity:               intEnv("PTXT_WARM_QUEUE_CAPACITY", 256),
+		NIP50FallbackRatePerMin:         intEnv("PTXT_NIP50_FALLBACK_RATE", 30),
+		KnownViewerMax:                  intEnv("PTXT_KNOWN_VIEWER_MAX", 512),
+		ViewerCrawlerEnabled:            boolEnv("PTXT_VIEWER_CRAWLER_ENABLED", true),
+		ViewerCrawlerInterval:           durationEnvDuration("PTXT_VIEWER_CRAWLER_INTERVAL", 30*time.Second),
+		ViewerCrawlerBatch:              intEnv("PTXT_VIEWER_CRAWLER_BATCH", 8),
+		ViewerCrawlerReplyWarmLimit:     intEnv("PTXT_VIEWER_CRAWLER_REPLY_WARM_LIMIT", 24),
+		ViewerCrawlerFollowEnqueuePerTick: intEnv("PTXT_VIEWER_CRAWLER_FOLLOW_ENQUEUE_PER_TICK", 80),
 		HealthProbeEnabled:              boolEnv("PTXT_HEALTH_PROBE_ENABLED", false),
 		HealthProbeInterval:             durationEnvDuration("PTXT_HEALTH_PROBE_INTERVAL", 30*time.Second),
 		HealthProbePath:                 env("PTXT_HEALTH_PROBE_PATH", "/healthz"),
@@ -260,6 +333,28 @@ func env(key, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// splitPubkeyEnv parses comma-separated hex pubkeys or npubs from env.
+func splitPubkeyEnv(key string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return nil
+	}
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		pk, err := nostrx.DecodeIdentifier(part)
+		if err == nil && pk != "" {
+			out = append(out, pk)
+			continue
+		}
+		slog.Warn("ignored invalid pubkey in env", "key", key, "value", part, "err", err)
+	}
+	return out
 }
 
 func splitEnv(key string, fallback []string) []string {

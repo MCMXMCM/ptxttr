@@ -50,6 +50,18 @@ const (
 
 var noteTimelineKinds = []int{nostrx.KindTextNote, nostrx.KindRepost}
 
+// allBootstrapSeedPubkeys returns sorted hex pubkeys for every named logged-out seed.
+func allBootstrapSeedPubkeys() []string {
+	keys := make([]string, 0, len(loggedOutWOTSeedNamesByPubkey))
+	for pk := range loggedOutWOTSeedNamesByPubkey {
+		if pk != "" {
+			keys = append(keys, pk)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
 var loggedOutWOTSeedNamesByPubkey = func() map[string]string {
 	type namedSeed struct {
 		name string
@@ -777,6 +789,7 @@ func (s *Server) resolveAuthorsAll(ctx context.Context, pubkey string, relays []
 	// cohort gets resolved, so it doubles as the activity signal feeding the
 	// per-viewer trending hot loop (see trending_active_viewers.go).
 	s.activeViewers.Touch(decoded, wot, now)
+	s.touchKnownViewer(ctx, decoded)
 	if cached, ok := s.resolvedAuthors.get(cacheKey, now); ok {
 		s.metrics.Add("authors.cache_hit", 1)
 		return cached, decoded, false
@@ -1360,6 +1373,9 @@ func (s *Server) refreshCached(ctx context.Context, scope, key string, ttl time.
 
 func (s *Server) refreshAuthor(ctx context.Context, pubkey string, relays []string) {
 	authorRelays := s.authorMetadataRelays(ctx, pubkey, relays)
+	if s.nostr != nil {
+		authorRelays = s.nostr.FilterAvailableRelays(authorRelays)
+	}
 	result := s.refreshCached(ctx, "author", pubkey, 10*time.Minute, authorRelays, nostrx.Query{
 		Authors: []string{pubkey},
 		Kinds: []int{
@@ -1509,6 +1525,13 @@ func (s *Server) referencedHydrationFromStore(ctx context.Context, events []nost
 		combined = append(combined, event)
 	}
 	return referenced, combined
+}
+
+func (s *Server) threadReferencedHydration(ctx context.Context, events []nostrx.Event, relays []string, storeOnly, allowRelay bool) (map[string]nostrx.Event, []nostrx.Event) {
+	if storeOnly || !allowRelay {
+		return s.referencedHydrationFromStore(ctx, events)
+	}
+	return s.referencedHydration(ctx, events, relays)
 }
 
 func (s *Server) hydrateTimelineEvents(ctx context.Context, events []nostrx.Event) []nostrx.Event {

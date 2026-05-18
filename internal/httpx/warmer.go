@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"ptxt-nstr/internal/nostrx"
 	"ptxt-nstr/internal/store"
 )
 
@@ -32,13 +33,16 @@ type warmQueue struct {
 	wg      sync.WaitGroup
 }
 
-func newWarmQueue(server *Server, workers int) *warmQueue {
+func newWarmQueue(server *Server, workers, capacity int) *warmQueue {
 	if workers <= 0 {
 		workers = 1
 	}
+	if capacity <= 0 {
+		capacity = 128
+	}
 	queue := &warmQueue{
 		server:  server,
-		ch:      make(chan warmJob, 128),
+		ch:      make(chan warmJob, capacity),
 		pending: make(map[string]struct{}),
 	}
 	for range workers {
@@ -112,6 +116,22 @@ func (q *warmQueue) close() {
 	q.wg.Wait()
 }
 
+func (q *warmQueue) depth() int {
+	if q == nil {
+		return 0
+	}
+	return len(q.ch)
+}
+
+func (q *warmQueue) pendingCount() int {
+	if q == nil {
+		return 0
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.pending)
+}
+
 func (s *Server) handleWarmJob(ctx context.Context, job warmJob) {
 	maxAuthors := s.cfg.WarmMaxAuthorsPerJob
 	if maxAuthors <= 0 {
@@ -156,9 +176,9 @@ func (s *Server) handleWarmJob(ctx context.Context, job warmJob) {
 					s.requeueWarmNotesOnTimeout(ctx, "noteReplies", append(append([]string(nil), head[i:]...), tail...), job.relays)
 					return
 				}
-				s.refreshReplies(ctx, eventID, job.relays)
+				s.refreshRepliesBackground(ctx, eventID, job.viewer, nil, job.relays)
 			}
-			s.enqueueWarmNotes("noteReplies", tail, job.relays)
+			s.enqueueWarmNotesForViewer(job.viewer, "noteReplies", tail, job.relays)
 			s.metrics.Add("warm.noteReplies.chunked", 1)
 			return
 		}
@@ -166,7 +186,7 @@ func (s *Server) handleWarmJob(ctx context.Context, job warmJob) {
 			if ctx.Err() != nil {
 				return
 			}
-			s.refreshReplies(ctx, eventID, job.relays)
+			s.refreshRepliesBackground(ctx, eventID, job.viewer, nil, job.relays)
 		}
 	case "noteReactions":
 		ids := job.eventIDs
@@ -279,6 +299,34 @@ func (s *Server) warmRecent(viewer string, authors []string, before int64, limit
 }
 
 func (s *Server) warmThread(eventIDs []string, relays []string) {
+	s.warmThreadForViewer("", eventIDs, relays)
+}
+
+func (s *Server) warmThreadsFromRecentSummaries(viewer string, baseRelays []string, recent []nostrx.Event, limit int) {
+	if s == nil || len(recent) == 0 {
+		return
+	}
+	nWarm := min(limit, len(recent))
+	ids := make([]string, 0, nWarm)
+	mergedRelays := append([]string(nil), baseRelays...)
+	for i := 0; i < nWarm; i++ {
+		if recent[i].ID == "" {
+			continue
+		}
+		ids = append(ids, recent[i].ID)
+		mergedRelays = append(mergedRelays, s.threadRelays(baseRelays, recent[i])...)
+	}
+	if len(ids) == 0 {
+		return
+	}
+	maxRelays := s.cfg.ThreadMaxRelays
+	if maxRelays <= 0 {
+		maxRelays = 16
+	}
+	s.warmThreadForViewer(viewer, ids, nostrx.NormalizeRelayList(mergedRelays, maxRelays))
+}
+
+func (s *Server) warmThreadForViewer(viewer string, eventIDs []string, relays []string) {
 	if s == nil || s.warmer == nil {
 		return
 	}
@@ -295,10 +343,24 @@ func (s *Server) warmThread(eventIDs []string, relays []string) {
 		return
 	}
 	sort.Strings(ids)
-	s.touchHydrationTargets(s.ctx, noteReplyWarmTargets(ids))
+	s.touchHydrationTargets(s.ctx, noteReplyWarmTargetsForViewer(viewer, ids))
 	s.touchHydrationTargets(s.ctx, noteReactionWarmTargets(ids))
-	s.enqueueWarmNotes("noteReplies", ids, relays)
-	s.enqueueWarmNotes("noteReactions", ids, relays)
+	s.enqueueWarmNotesForViewer(viewer, "noteReplies", ids, relays)
+	s.enqueueWarmNotesForViewer(viewer, "noteReactions", ids, relays)
+}
+
+func (s *Server) enqueueWarmNotesForViewer(viewer, kind string, ids []string, relays []string) {
+	if s == nil || s.warmer == nil || len(ids) == 0 {
+		return
+	}
+	sort.Strings(ids)
+	s.warmer.enqueue(warmJob{
+		key:      kind + ":" + strings.Join(ids, ","),
+		kind:     kind,
+		viewer:   viewer,
+		eventIDs: append([]string(nil), ids...),
+		relays:   append([]string(nil), relays...),
+	})
 }
 
 func trimWarmStrings(values []string, limit int) []string {

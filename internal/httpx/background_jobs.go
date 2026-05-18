@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"ptxt-nstr/internal/nostrx"
 	"ptxt-nstr/internal/store"
 )
 
@@ -58,8 +59,27 @@ func (s *Server) warmHydrationAuthors(ctx context.Context, items []store.Hydrati
 	}
 }
 
-func (s *Server) warmHydrationThreads(_ context.Context, items []store.HydrationTarget, baseRelays []string) {
-	s.warmThread(uniqueHydrationIDs(items), baseRelays)
+func (s *Server) warmHydrationThreads(ctx context.Context, items []store.HydrationTarget, baseRelays []string) {
+	ids := uniqueHydrationIDs(items)
+	if len(ids) == 0 {
+		return
+	}
+	if len(ids) == 1 {
+		relays := s.threadHydrationRelaysForNoteID(ctx, "", ids[0], baseRelays)
+		s.warmThreadForViewer("", ids, relays)
+		return
+	}
+	byID, _ := s.store.GetEvents(ctx, ids)
+	merged := append([]string(nil), baseRelays...)
+	for _, id := range ids {
+		event := byID[id]
+		merged = append(merged, s.threadHydrationRelays(ctx, "", event, event, nil)...)
+	}
+	maxRelays := s.cfg.ThreadMaxRelays
+	if maxRelays <= 0 {
+		maxRelays = 16
+	}
+	s.warmThreadForViewer("", ids, nostrx.NormalizeRelayList(merged, maxRelays))
 }
 
 func (s *Server) sweepHydrationBatch(ctx context.Context, baseRelays []string, batch hydrationBatch) {

@@ -22,7 +22,7 @@ func (s *Server) runSeedCrawler() {
 		interval = 30 * time.Second
 	}
 	for {
-		s.tryRunMaintenanceWork(s.crawlSeedTick)
+		s.tryRunMaintenanceWork(maintenanceLaneSeed, s.crawlSeedTick)
 		select {
 		case <-s.ctx.Done():
 			return
@@ -90,11 +90,22 @@ func (s *Server) crawlSeedTick() {
 			break
 		}
 
+		followsBefore := 0
+		if follows, err := s.store.FollowingPubkeys(ctx, pubkey, 8); err == nil {
+			followsBefore = len(follows)
+		}
 		s.refreshAuthor(ctx, pubkey, nil)
+		if follows, err := s.store.FollowingPubkeys(ctx, pubkey, 8); err == nil && len(follows) > followsBefore {
+			if _, err := s.enqueueSeedContactFrontier(ctx, pubkey, 2, enqueuePageSize); err != nil {
+				slog.Debug("seed contact enqueue follows", "pubkey", pubkey, "err", err)
+			}
+			s.invalidateLoggedOutSeedCenter()
+			graphExpanded = true
+		}
 
-		relays := s.outboxSeedRelays(ctx, viewer, []string{pubkey}, nil)
+		relays := s.filterCrawlerRelays(s.outboxSeedRelays(ctx, viewer, []string{pubkey}, nil))
 		if len(relays) == 0 {
-			relays = append([]string(nil), s.cfg.DefaultRelays...)
+			relays = s.crawlRelays(nil)
 		}
 		n := s.refreshRecent(ctx, viewer, []string{pubkey}, 0, fetchLimit, relays, noteSince)
 		if n > 0 {
@@ -115,31 +126,11 @@ func (s *Server) crawlSeedTick() {
 			continue
 		}
 
-		if followReady {
-			if _, err := s.enqueueSeedContactFrontier(ctx, pubkey, 2, enqueuePageSize); err != nil {
-				slog.Debug("seed contact enqueue follows", "pubkey", pubkey, "err", err)
-			}
-			graphExpanded = true // batch invalidate once after the loop
-		}
-
 		recent, qerr := s.store.RecentSummariesByAuthorsCursor(ctx, []string{pubkey}, noteTimelineKinds, 0, "", replyWarmLimit)
 		if qerr != nil {
 			slog.Debug("seed crawler recent summaries", "err", qerr)
 		} else {
-			nWarm := min(replyWarmLimit, len(recent))
-			ids := make([]string, 0, nWarm)
-			mergedRelays := append([]string(nil), relays...)
-			for i := 0; i < nWarm; i++ {
-				if recent[i].ID == "" {
-					continue
-				}
-				ids = append(ids, recent[i].ID)
-				mergedRelays = append(mergedRelays, s.threadRelays(relays, recent[i])...)
-			}
-			if len(ids) > 0 {
-				mergedRelays = nostrx.NormalizeRelayList(mergedRelays, nostrx.MaxRelays)
-				s.warmThread(ids, mergedRelays)
-			}
+			s.warmThreadsFromRecentSummaries(viewer, relays, recent, replyWarmLimit)
 		}
 
 		if err := s.store.MarkHydrationAttempt(ctx, store.EntityTypeSeedContact, pubkey, true, seedContactHydrationSuccessBackoff); err != nil {
@@ -151,7 +142,35 @@ func (s *Server) crawlSeedTick() {
 	}
 	s.metrics.Add("crawler.seed.refresh_events", refreshEvents)
 	if graphExpanded {
-		s.invalidateResolvedSeedAuthors(viewer)
+		s.invalidateLoggedOutSeedCenter()
+	}
+}
+
+func (s *Server) setLoggedOutSeedCenterHex(pk string) {
+	if s == nil || pk == "" {
+		return
+	}
+	s.loggedOutSeedCenterMu.Lock()
+	s.loggedOutSeedCenterHex = pk
+	s.loggedOutSeedCenterMu.Unlock()
+}
+
+func (s *Server) getLoggedOutSeedCenter() string {
+	if s == nil {
+		return ""
+	}
+	s.loggedOutSeedCenterMu.RLock()
+	defer s.loggedOutSeedCenterMu.RUnlock()
+	return s.loggedOutSeedCenterHex
+}
+
+func (s *Server) invalidateLoggedOutSeedCenter() {
+	if center := s.getLoggedOutSeedCenter(); center != "" {
+		s.invalidateResolvedViewerAuthors(center)
+		return
+	}
+	if center := s.seedCrawlViewerPubkey(); center != "" {
+		s.invalidateResolvedViewerAuthors(center)
 	}
 }
 
@@ -164,6 +183,11 @@ func (s *Server) seedCrawlViewerPubkey() string {
 	s.seedCrawlViewerMu.RUnlock()
 	if v != "" {
 		return v
+	}
+	seeds := allBootstrapSeedPubkeys()
+	if len(seeds) > 0 {
+		idx := s.seedCrawlIndex.Add(1) % uint64(len(seeds))
+		return seeds[idx]
 	}
 	pk, err := nostrx.DecodeIdentifier(defaultLoggedOutWOTSeedNPub)
 	if err != nil {

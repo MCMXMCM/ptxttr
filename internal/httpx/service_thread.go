@@ -18,15 +18,6 @@ func sortThreadRepliesStable(events []nostrx.Event) {
 	})
 }
 
-func (s *Server) refreshReplies(ctx context.Context, eventID string, relays []string) {
-	result := s.refreshCached(ctx, "thread", eventID, threadTTL, relays, nostrx.Query{
-		Kinds: []int{nostrx.KindTextNote},
-		Tags:  map[string][]string{"e": {eventID}},
-		Limit: 200,
-	})
-	_ = s.store.MarkHydrationAttempt(ctx, "noteReplies", eventID, result >= 0, noteRepliesHydrationRetryWindow)
-}
-
 func (s *Server) refreshReactionsForNote(ctx context.Context, eventID string, relays []string) {
 	if eventID == "" {
 		return

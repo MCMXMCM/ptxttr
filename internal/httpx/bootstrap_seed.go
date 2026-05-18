@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ptxt-nstr/internal/nostrx"
+	"ptxt-nstr/internal/store"
 )
 
 const (
@@ -27,11 +28,51 @@ func (s *Server) runDefaultSeedPrewarmLoop() {
 	}
 	delay := seedBootstrapRetryInitial
 	for {
-		ctx, cancel := context.WithTimeout(s.ctx, seedBootstrapAttemptTimeout)
-		err := s.prewarmDefaultLoggedOutSeed(ctx)
-		cancel()
-		if err == nil {
+		var lastErr error
+		seeds := allBootstrapSeedPubkeys()
+		seeds = append(seeds, s.cfg.CuratedPubkeys...)
+		seeds = uniqueNonEmptyStrings(seeds)
+		if len(seeds) == 0 {
+			seeds = []string{""}
+		}
+		okCount := 0
+		var optionalFailed int64
+		defaultOK := false
+		for _, seedPK := range seeds {
+			seedID := nostrx.EncodeNPub(seedPK)
+			if seedPK == "" {
+				seedID = defaultLoggedOutWOTSeedNPub
+			}
+			requireDefault := seedPK == "" || isDefaultLoggedOutSeed(seedID)
+			ctx, cancel := context.WithTimeout(s.ctx, seedBootstrapAttemptTimeout)
+			err := s.prewarmBootstrapLoggedOutSeed(ctx, seedID, defaultLoggedOutWOTDepth)
+			cancel()
+			if err != nil {
+				if requireDefault {
+					lastErr = err
+				} else {
+					optionalFailed++
+					slog.Warn("optional seed bootstrap failed", "seed", seedID, "err", err)
+				}
+				continue
+			}
+			okCount++
+			if requireDefault {
+				defaultOK = true
+			}
+		}
+		if defaultOK {
+			if optionalFailed > 0 {
+				s.metrics.Add("crawler.seed.optional_bootstrap_failed", optionalFailed)
+			}
+			s.metrics.Add("crawler.seed.multi_bootstrap", int64(okCount))
+			// Clear pinned viewer so crawlSeedTick round-robins across seeds.
+			s.setSeedCrawlViewerHex("")
 			return
+		}
+		err := lastErr
+		if err == nil {
+			err = fmt.Errorf("no seeds bootstrapped")
 		}
 		if s.ctx.Err() != nil {
 			return
@@ -54,14 +95,23 @@ func (s *Server) prewarmDefaultLoggedOutSeed(ctx context.Context) error {
 // given npub/hex seed and WoT depth, then marks the shared bootstrap fetch_log
 // key on full success only. Used for the default Jack seed in production and
 // for tests with a synthetic relay-backed seed.
+func bootstrapFetchLogKey(seed string) string {
+	pk, err := nostrx.DecodeIdentifier(seed)
+	if err != nil || pk == "" {
+		return defaultLoggedOutSeedBootstrapKey
+	}
+	return "logged-out-seed-" + pk
+}
+
 func (s *Server) prewarmBootstrapLoggedOutSeed(ctx context.Context, seed string, depth int) error {
 	if s == nil || s.store == nil || s.nostr == nil {
 		return nil
 	}
-	if !s.store.ShouldRefresh(ctx, "bootstrap", defaultLoggedOutSeedBootstrapKey, defaultLoggedOutSeedBootstrapTTL) {
+	logKey := bootstrapFetchLogKey(seed)
+	if !s.store.ShouldRefresh(ctx, "bootstrap", logKey, defaultLoggedOutSeedBootstrapTTL) {
 		return nil
 	}
-	refreshKey := "bootstrap:" + defaultLoggedOutSeedBootstrapKey
+	refreshKey := "bootstrap:" + logKey
 	if !s.beginRefresh(refreshKey) {
 		return nil
 	}
@@ -69,7 +119,7 @@ func (s *Server) prewarmBootstrapLoggedOutSeed(ctx context.Context, seed string,
 	if err := s.prewarmLoggedOutSeedNow(ctx, seed, depth); err != nil {
 		return err
 	}
-	s.store.MarkRefreshed(ctx, "bootstrap", defaultLoggedOutSeedBootstrapKey)
+	s.store.MarkRefreshed(ctx, "bootstrap", logKey)
 	if seed == defaultLoggedOutWOTSeedNPub && depth == defaultLoggedOutWOTDepth {
 		s.scheduleCanonicalDefaultSeedGuestFeedWarmOneShot()
 	}
@@ -117,6 +167,10 @@ func (s *Server) seedContactFollowGraphPresent(ctx context.Context, pubkey strin
 }
 
 func (s *Server) enqueueSeedContactFrontier(ctx context.Context, owner string, priority int, pageSize int) (int, error) {
+	return s.enqueueSeedContactFrontierCapped(ctx, owner, priority, pageSize, 0)
+}
+
+func (s *Server) enqueueSeedContactFrontierCapped(ctx context.Context, owner string, priority int, pageSize, maxTotal int) (int, error) {
 	if s == nil || s.store == nil || owner == "" {
 		return 0, nil
 	}
@@ -126,7 +180,16 @@ func (s *Server) enqueueSeedContactFrontier(ctx context.Context, owner string, p
 	total := 0
 	after := ""
 	for {
-		follows, err := s.store.FollowingPubkeysAfter(ctx, owner, after, pageSize)
+		if maxTotal > 0 && total >= maxTotal {
+			return total, nil
+		}
+		fetchSize := pageSize
+		if maxTotal > 0 {
+			if remaining := maxTotal - total; remaining < fetchSize {
+				fetchSize = remaining
+			}
+		}
+		follows, err := s.store.FollowingPubkeysAfter(ctx, owner, after, fetchSize)
 		if err != nil {
 			return total, err
 		}
@@ -138,10 +201,48 @@ func (s *Server) enqueueSeedContactFrontier(ctx context.Context, owner string, p
 		}
 		total += len(follows)
 		after = follows[len(follows)-1]
-		if len(follows) < pageSize {
+		if len(follows) < fetchSize {
 			return total, nil
 		}
 	}
+}
+
+func (s *Server) bootstrapFollowEnqueueLimits(ctx context.Context, seed string) (pageSize, maxTotal int, skip bool) {
+	pageSize = s.cfg.SeedBootstrapFollowEnqueueLimit
+	if pageSize <= 0 {
+		pageSize = 80
+	}
+	maxTotal = s.cfg.SeedBootstrapFollowEnqueueMaxTotal
+	isPrimary := isDefaultLoggedOutSeed(seed)
+	if !isPrimary {
+		secondary := s.cfg.SeedBootstrapSecondaryMaxTotal
+		if secondary <= 0 {
+			secondary = 40
+		}
+		if maxTotal <= 0 {
+			maxTotal = secondary
+		} else if secondary < maxTotal {
+			maxTotal = secondary
+		}
+	} else if maxTotal <= 0 {
+		maxTotal = 80
+	}
+	threshold := s.cfg.SeedFrontierPauseThreshold
+	if threshold <= 0 {
+		threshold = 1500
+	}
+	if stale, err := s.store.CountStaleHydration(ctx, store.EntityTypeSeedContact, time.Now().Unix()); err == nil && stale > threshold {
+		s.metrics.Add("crawler.seed.frontier_paused", 1)
+		if isPrimary {
+			const reduced = 20
+			if maxTotal > reduced {
+				maxTotal = reduced
+			}
+		} else {
+			skip = true
+		}
+	}
+	return pageSize, maxTotal, skip
 }
 
 func (s *Server) prewarmLoggedOutSeedNow(ctx context.Context, seed string, _ int) error {
@@ -161,18 +262,21 @@ func (s *Server) prewarmLoggedOutSeedNow(ctx context.Context, seed string, _ int
 		return err
 	}
 
-	pageSize := s.cfg.SeedBootstrapFollowEnqueueLimit
-	if pageSize <= 0 {
-		pageSize = 400
+	pageSize, maxTotal, skipEnqueue := s.bootstrapFollowEnqueueLimits(ctx, seed)
+	enqueued := 0
+	if !skipEnqueue {
+		enqueued, err = s.enqueueSeedContactFrontierCapped(ctx, seedPubkey, 3, pageSize, maxTotal)
+		if err != nil {
+			return fmt.Errorf("jack seed bootstrap: enqueue seed contacts: %w", err)
+		}
 	}
-	enqueued, err := s.enqueueSeedContactFrontier(ctx, seedPubkey, 3, pageSize)
-	if err != nil {
-		return fmt.Errorf("jack seed bootstrap: enqueue seed contacts: %w", err)
-	}
-	if enqueued == 0 {
+	if isDefaultLoggedOutSeed(seed) && enqueued == 0 {
 		return fmt.Errorf("jack seed bootstrap: no follows to enqueue for seed frontier")
 	}
-	s.setSeedCrawlViewerHex(seedPubkey)
+	s.setLoggedOutSeedCenterHex(seedPubkey)
+	if isDefaultLoggedOutSeed(seed) || s.seedCrawlViewerPubkey() == "" {
+		s.setSeedCrawlViewerHex(seedPubkey)
+	}
 	s.invalidateResolvedSeedAuthors(seedPubkey)
 	return nil
 }

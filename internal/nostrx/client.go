@@ -120,6 +120,7 @@ type Query struct {
 	Authors []string
 	Kinds   []int
 	Tags    map[string][]string
+	Search  string
 	Since   int64
 	Until   int64
 	Limit   int
@@ -153,6 +154,28 @@ func NewClient(relays []string, timeout time.Duration) *Client {
 		relaysByURL: make(map[string]*relayMetrics),
 		relayPolicy: make(map[string]relayPolicyState),
 	}
+}
+
+// FilterAvailableRelays returns relays that are not currently in policy backoff.
+func (c *Client) FilterAvailableRelays(relays []string) []string {
+	if c == nil || len(relays) == 0 {
+		return relays
+	}
+	now := time.Now()
+	seen := make(map[string]bool, len(relays))
+	out := make([]string, 0, len(relays))
+	for _, relay := range relays {
+		normalized, err := NormalizeRelayURL(relay)
+		if err != nil || seen[normalized] {
+			continue
+		}
+		seen[normalized] = true
+		if c.relayPolicyBlocked(normalized, now) {
+			continue
+		}
+		out = append(out, normalized)
+	}
+	return out
 }
 
 // SetNegentropyCache sets the local cache for NIP-77 download sync; nil disables it.
@@ -315,7 +338,7 @@ func (c *Client) FetchFrom(ctx context.Context, relays []string, query Query) ([
 		return nil, err
 	}
 	filter.Tags = fnostr.TagMap(query.Tags)
-	if len(query.IDs) == 0 && len(query.Authors) == 0 && len(query.Kinds) == 0 && len(query.Tags) == 0 {
+	if len(query.IDs) == 0 && len(query.Authors) == 0 && len(query.Kinds) == 0 && len(query.Tags) == 0 && strings.TrimSpace(query.Search) == "" {
 		return nil, errors.New("refusing unconstrained relay query")
 	}
 	var events []Event

@@ -16,7 +16,7 @@ func (s *Server) runHydrationSweeper() {
 }
 
 func (s *Server) sweepHydrationTargets(ctx context.Context) {
-	s.tryRunMaintenanceWork(func() {
+	s.tryRunMaintenanceWork(maintenanceLaneHydration, func() {
 		s.sweepHydrationTargetsBody(ctx)
 	})
 }
@@ -25,9 +25,13 @@ func (s *Server) sweepHydrationTargetsBody(ctx context.Context) {
 	baseRelays := append(append([]string(nil), s.cfg.DefaultRelays...), s.cfg.MetadataRelays...)
 	baseRelays = nostrx.NormalizeRelayList(baseRelays, nostrx.MaxRelays)
 	s.seedProfileHydrationFromRecent(ctx)
+	noteRepliesBatch := s.cfg.HydrationNoteRepliesBatch
+	if noteRepliesBatch <= 0 {
+		noteRepliesBatch = 16
+	}
 	for _, batch := range []hydrationBatch{
 		{entityType: "profile", limit: 8, metric: "hydration.swept.profile", warm: s.warmHydrationAuthors},
-		{entityType: "noteReplies", limit: 8, metric: "hydration.swept.noteReplies", warm: s.warmHydrationThreads},
+		{entityType: "noteReplies", limit: noteRepliesBatch, metric: "hydration.swept.noteReplies", warm: s.warmHydrationThreads},
 		{entityType: "followGraph", limit: 6, metric: "hydration.swept.followGraph", warm: s.warmHydrationAuthors},
 		{entityType: "relayHints", limit: 6, metric: "hydration.swept.relayHints", warm: s.warmHydrationAuthors},
 	} {

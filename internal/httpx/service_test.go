@@ -2714,11 +2714,11 @@ func TestFeedDataDefaultSeedTrendFallsBackToGlobalAndSkipsEmptyGuestCache(t *tes
 	}
 
 	fallback := srv.feedData(ctx, req)
-	if len(fallback.Feed) != 1 {
-		t.Fatalf("expected one global fallback trend note, got %#v", fallback.Feed)
+	if len(fallback.Feed) == 0 {
+		t.Fatalf("expected global fallback trend feed, got %#v", fallback.Feed)
 	}
 	if fallback.Feed[0].ID != note.ID {
-		t.Fatalf("fallback feed note id = %q, want %q", fallback.Feed[0].ID, note.ID)
+		t.Fatalf("fallback feed top note id = %q, want root %q; feed=%#v", fallback.Feed[0].ID, note.ID, fallback.Feed)
 	}
 }
 

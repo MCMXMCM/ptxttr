@@ -39,6 +39,9 @@ type HydrationTarget struct {
 // EntityTypeSeedContact queues pubkeys for background WoT seed graph BFS.
 const EntityTypeSeedContact = "seedContact"
 
+// EntityTypeKnownViewer queues pubkeys that have signed in for background crawl.
+const EntityTypeKnownViewer = "knownViewer"
+
 // HydrationTargetKey is the composite key used when deduping targets in memory and in the httpx touch debouncer.
 func HydrationTargetKey(t HydrationTarget) string {
 	return t.EntityType + "\x00" + t.EntityID
@@ -1182,6 +1185,137 @@ func (s *Store) TouchSeedContactFrontier(ctx context.Context, pubkeys []string, 
 		}
 	}
 	return tx.Commit()
+}
+
+// TouchKnownViewer records a signed-in viewer for background crawl.
+func (s *Store) TouchKnownViewer(ctx context.Context, pubkey string, priority int) error {
+	if s == nil || pubkey == "" {
+		return nil
+	}
+	return s.TouchKnownViewerFrontier(ctx, []string{pubkey}, priority)
+}
+
+// StaleKnownViewerBatch returns knownViewer rows due for background work.
+func (s *Store) StaleKnownViewerBatch(ctx context.Context, now int64, limit int, maxFailExclusive int) ([]HydrationTarget, error) {
+	if s == nil {
+		return nil, nil
+	}
+	if now <= 0 {
+		now = time.Now().Unix()
+	}
+	if limit <= 0 {
+		limit = 8
+	}
+	if maxFailExclusive <= 0 {
+		maxFailExclusive = 12
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT entity_type, entity_id, priority
+		FROM hydration_state
+		WHERE entity_type = ? AND (next_retry_at = 0 OR next_retry_at <= ?)
+		AND status != 'ok'
+		AND fail_count < ?
+		ORDER BY priority DESC, last_success_at ASC, last_attempt_at ASC
+		LIMIT ?`, EntityTypeKnownViewer, now, maxFailExclusive, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []HydrationTarget
+	for rows.Next() {
+		var target HydrationTarget
+		if err := rows.Scan(&target.EntityType, &target.EntityID, &target.Priority); err != nil {
+			return nil, err
+		}
+		out = append(out, target)
+	}
+	return out, rows.Err()
+}
+
+// TouchKnownViewerFrontier upserts knownViewer hydration rows.
+func (s *Store) TouchKnownViewerFrontier(ctx context.Context, pubkeys []string, priority int) error {
+	if s == nil || len(pubkeys) == 0 {
+		return nil
+	}
+	targets := make([]HydrationTarget, 0, len(pubkeys))
+	seen := make(map[string]bool, len(pubkeys))
+	for _, pk := range pubkeys {
+		if pk == "" || seen[pk] {
+			continue
+		}
+		seen[pk] = true
+		targets = append(targets, HydrationTarget{
+			EntityType: EntityTypeKnownViewer,
+			EntityID:   pk,
+			Priority:   priority,
+		})
+	}
+	ordered := NormalizeHydrationTargets(targets)
+	if len(ordered) == 0 {
+		return nil
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO hydration_state(
+			entity_type, entity_id, status, last_attempt_at, last_success_at, next_retry_at, fail_count, priority
+		) VALUES (?, ?, 'pending', 0, 0, 0, 0, ?)
+		ON CONFLICT(entity_type, entity_id) DO UPDATE SET
+			priority = MAX(hydration_state.priority, excluded.priority),
+			fail_count = 0,
+			next_retry_at = 0,
+			status = 'pending'`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = stmt.Close() }()
+	for _, target := range ordered {
+		if _, err := stmt.ExecContext(ctx, target.EntityType, target.EntityID, target.Priority); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// CountStaleHydration returns rows due for work for the given entity type.
+func (s *Store) CountStaleHydration(ctx context.Context, entityType string, now int64) (int, error) {
+	if s == nil || entityType == "" {
+		return 0, nil
+	}
+	if now <= 0 {
+		now = time.Now().Unix()
+	}
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM hydration_state
+		WHERE entity_type = ? AND (next_retry_at = 0 OR next_retry_at <= ?) AND status != 'ok'`,
+		entityType, now).Scan(&count)
+	return count, err
+}
+
+// TrimKnownViewers deletes lowest-priority knownViewer rows over maxRows.
+func (s *Store) TrimKnownViewers(ctx context.Context, maxRows int) error {
+	if s == nil || maxRows <= 0 {
+		return nil
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	var count int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM hydration_state WHERE entity_type = ?`,
+		EntityTypeKnownViewer).Scan(&count); err != nil {
+		return err
+	}
+	if count <= maxRows {
+		return nil
+	}
+	excess := count - maxRows
+	_, err := s.db.ExecContext(ctx, `DELETE FROM hydration_state WHERE rowid IN (
+		SELECT rowid FROM hydration_state WHERE entity_type = ?
+		ORDER BY priority ASC, last_success_at ASC, last_attempt_at ASC
+		LIMIT ?)`, EntityTypeKnownViewer, excess)
+	return err
 }
 
 // DeleteHydrationState removes one hydration_state row.

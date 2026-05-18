@@ -328,7 +328,8 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	backNoteID := r.URL.Query().Get("back_note")
 	backReadID := r.URL.Query().Get("back_read")
 	treeNoteID := thread.NormalizeHexEventID(r.URL.Query().Get("tree_note"))
-	threadRelays := s.threadRelays(relays, *selected)
+	var hydrateStoreFirst bool
+	threadRelays := s.threadHydrationRelays(r.Context(), viewerPub, nil, selected, relays)
 	resolvedByID := map[string]*nostrx.Event{selected.ID: selected}
 	missingByID := map[string]bool{}
 	resolveEvent := func(id string) *nostrx.Event {
@@ -358,7 +359,8 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	// Hydrate navigations from the feed often land on a reply before its parent
 	// chain is in the store; prefetch tagged ancestors from relays first so root
 	// resolution and focus mode are correct on the first response.
-	if fragment == "hydrate" && allowThreadRelayFetch {
+	if fragment == "hydrate" && allowThreadRelayFetch &&
+		!s.threadHydrateStoreFirst(r.Context(), fragment, probableThreadRootID(*selected)) {
 		earlyCandidates := collectThreadChainCandidates("", *selected, nil)
 		if len(earlyCandidates) > 0 {
 			for id, event := range s.eventsByIDEx(r.Context(), earlyCandidates, threadRelays, true) {
@@ -369,24 +371,32 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	root, parentID := applyThreadRootAnchor(*selected, resolveEvent)
+	if fragment == "hydrate" {
+		hydrateStoreFirst = s.threadHydrateStoreFirst(r.Context(), fragment, root.ID)
+		if hydrateStoreFirst {
+			s.metrics.Add("thread.hydrate.store_first", 1)
+		}
+	}
+	threadRelays = s.threadHydrationRelays(r.Context(), viewerPub, root, selected, relays)
 	refreshIDs := []string{root.ID, selected.ID}
 	if parentID != "" && parentID != root.ID {
 		refreshIDs = append(refreshIDs, parentID)
 	}
-	if allowThreadRelayFetch {
-		s.warmThread(refreshIDs, threadRelays)
+	if allowThreadRelayFetch && !hydrateStoreFirst {
+		s.warmThreadForViewer(viewerPub, refreshIDs, threadRelays)
 	}
 	cursor, _ := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
 	cursorID := r.URL.Query().Get("cursor_id")
 	// SPA hydrate only needs the first linear page; full tree walks load with ?fragment=tree.
 	fullReplyWalk := !repliesPaginationFragment && cursor == 0 && cursorID == "" && fragment != "hydrate"
+	threadRepliesStoreOnly := repliesPaginationFragment || hydrateStoreFirst
 	var replies []nostrx.Event
 	var fullReplies []nostrx.Event
 	var nextCursor int64
 	var nextID string
 	var hasMore bool
 	if fullReplyWalk {
-		fullReplies, _ = s.threadTreeReplies(r.Context(), root.ID, repliesPaginationFragment, threadRelays)
+		fullReplies, _ = s.threadTreeReplies(r.Context(), root.ID, threadRepliesStoreOnly, threadRelays)
 		replies, nextCursor, nextID, hasMore = linearFirstPageFromFullReplies(fullReplies, *root, *selected)
 	} else {
 		// Always load direct replies to the thread root so BuildSelected can place
@@ -395,10 +405,10 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		// empty linear list when findFocusPath fails (e.g. missing ancestor in the
 		// store) while still showing the OP's top-level conversation.
 		replyParents := []string{root.ID}
-		replies, nextCursor, nextID, hasMore = s.threadRepliesPage(r.Context(), cursor, cursorID, 25, repliesPaginationFragment, threadRelays, replyParents...)
+		replies, nextCursor, nextID, hasMore = s.threadRepliesPage(r.Context(), cursor, cursorID, 25, threadRepliesStoreOnly, threadRelays, replyParents...)
 		if selected.ID != root.ID && cursor == 0 && cursorID == "" {
 			subReplies, subNext, subNextID, subHasMore := s.threadRepliesPage(
-				r.Context(), 0, "", 25, repliesPaginationFragment, threadRelays, selected.ID,
+				r.Context(), 0, "", 25, threadRepliesStoreOnly, threadRelays, selected.ID,
 			)
 			replies = mergeThreadReplyPages(replies, subReplies)
 			if !hasMore && subHasMore {
@@ -435,19 +445,13 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	}
 	var referenced map[string]nostrx.Event
 	var allWithRefs []nostrx.Event
-	if repliesPaginationFragment {
-		referenced, allWithRefs = s.referencedHydrationFromStore(r.Context(), all)
-	} else if !allowThreadRelayFetch {
-		referenced, allWithRefs = s.referencedHydrationFromStore(r.Context(), all)
-	} else {
-		referenced, allWithRefs = s.referencedHydration(r.Context(), all, threadRelays)
-	}
-	if fragment == "hydrate" {
+	referenced, allWithRefs = s.threadReferencedHydration(r.Context(), all, threadRelays, threadRepliesStoreOnly, allowThreadRelayFetch)
+	if fragment == "hydrate" && !hydrateStoreFirst {
 		warmReplies := replies
 		if fullReplyWalk {
 			warmReplies = fullReplies
 		}
-		s.scheduleThreadHydrateContextWarm(*selected, warmReplies, threadRelays)
+		s.scheduleThreadHydrateContextWarm(root.ID, *selected, warmReplies, threadRelays)
 	}
 	needsParticipants := fragment == "" || fragment == "participants" || fragment == "hydrate"
 	needsView := fragment != "participants"
@@ -473,7 +477,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	chainCandidates := collectThreadChainCandidates(root.ID, *selected, chainReplyEvents)
 	if len(chainCandidates) > 0 {
 		var prefetched map[string]*nostrx.Event
-		if fragment == "hydrate" && allowThreadRelayFetch {
+		if fragment == "hydrate" && allowThreadRelayFetch && !hydrateStoreFirst {
 			prefetched = s.eventsByIDEx(r.Context(), chainCandidates, threadRelays, true)
 		} else {
 			prefetched = s.eventsByIDFromStore(r.Context(), chainCandidates)
@@ -489,14 +493,14 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		root, parentID = applyThreadRootAnchor(*selected, resolveEvent)
 		if root.ID != prevRootID {
 			if fullReplyWalk {
-				fullReplies, _ = s.threadTreeReplies(r.Context(), root.ID, repliesPaginationFragment, threadRelays)
+				fullReplies, _ = s.threadTreeReplies(r.Context(), root.ID, threadRepliesStoreOnly, threadRelays)
 				replies, nextCursor, nextID, hasMore = linearFirstPageFromFullReplies(fullReplies, *root, *selected)
 			} else {
 				replyParents := []string{root.ID}
-				replies, nextCursor, nextID, hasMore = s.threadRepliesPage(r.Context(), cursor, cursorID, 25, repliesPaginationFragment, threadRelays, replyParents...)
+				replies, nextCursor, nextID, hasMore = s.threadRepliesPage(r.Context(), cursor, cursorID, 25, threadRepliesStoreOnly, threadRelays, replyParents...)
 				if selected.ID != root.ID {
 					subReplies, subNext, subNextID, subHasMore := s.threadRepliesPage(
-						r.Context(), 0, "", 25, repliesPaginationFragment, threadRelays, selected.ID,
+						r.Context(), 0, "", 25, threadRepliesStoreOnly, threadRelays, selected.ID,
 					)
 					replies = mergeThreadReplyPages(replies, subReplies)
 					if !hasMore && subHasMore {
@@ -517,13 +521,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 			} else {
 				all = append(all, replies...)
 			}
-			if repliesPaginationFragment {
-				referenced, allWithRefs = s.referencedHydrationFromStore(r.Context(), all)
-			} else if !allowThreadRelayFetch {
-				referenced, allWithRefs = s.referencedHydrationFromStore(r.Context(), all)
-			} else {
-				referenced, allWithRefs = s.referencedHydration(r.Context(), all, threadRelays)
-			}
+			referenced, allWithRefs = s.threadReferencedHydration(r.Context(), all, threadRelays, threadRepliesStoreOnly, allowThreadRelayFetch)
 			profileEvents = append([]nostrx.Event(nil), allWithRefs...)
 			chainReplyEvents = replies
 			if fullReplyWalk {
@@ -663,13 +661,30 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	s.render(w, "thread", data)
 }
 
-func (s *Server) scheduleThreadHydrateContextWarm(selected nostrx.Event, replies []nostrx.Event, relays []string) {
+func (s *Server) scheduleThreadHydrateContextWarm(rootID string, selected nostrx.Event, replies []nostrx.Event, relays []string) {
 	if s == nil {
 		return
 	}
+	rootID = thread.NormalizeHexEventID(rootID)
+	if rootID == "" {
+		rootID = thread.NormalizeHexEventID(probableThreadRootID(selected))
+	}
+	if rootID == "" || s.threadHydrateContextReady(s.ctx, rootID) {
+		return
+	}
+	pinned := []string{rootID, selected.ID}
 	ids := collectThreadChainCandidates("", selected, replies)
 	ids = append(ids, collectReferencedEventIDs(append([]nostrx.Event{selected}, replies...))...)
-	ids = limitedStrings(uniqueNonEmptyStable(ids), 24)
+	maxIDs := s.cfg.ThreadContextWarmMaxIDs
+	if maxIDs <= 0 {
+		maxIDs = 48
+	}
+	room := maxIDs - len(pinned)
+	if room < 0 {
+		room = 0
+	}
+	ids = limitedStrings(uniqueNonEmptyStable(ids), room)
+	ids = uniqueNonEmptyStable(append(pinned, ids...))
 	if len(ids) == 0 {
 		return
 	}
@@ -677,8 +692,16 @@ func (s *Server) scheduleThreadHydrateContextWarm(selected nostrx.Event, replies
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
+	if warmTimeout := s.cfg.WarmJobTimeout; warmTimeout > timeout {
+		timeout = warmTimeout
+	}
 	s.runBackgroundWithTimeout("thread hydrate context warm", timeout, func(ctx context.Context) error {
-		_ = s.eventsByID(ctx, ids, relays)
+		loaded := s.eventsByID(ctx, ids, relays)
+		if threadHydrateWarmIDsComplete(ids, loaded) {
+			s.markThreadHydrateContextWarmed(ctx, rootID)
+		} else {
+			s.metrics.Add("thread.hydrate.warm_incomplete", 1)
+		}
 		return nil
 	})
 }

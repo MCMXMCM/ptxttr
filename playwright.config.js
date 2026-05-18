@@ -1,7 +1,7 @@
 // @ts-check
 import { defineConfig } from "@playwright/test";
 
-const port = Number(process.env.PTXT_E2E_PORT || 8080);
+const port = Number(process.env.PTXT_E2E_PORT || 18080);
 const baseURL = `http://127.0.0.1:${port}`;
 
 export default defineConfig({
@@ -18,7 +18,7 @@ export default defineConfig({
   webServer: {
     command: "bash scripts/e2e-webserver.sh",
     url: baseURL,
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
     timeout: 180_000,
     cwd: import.meta.dirname,
   },

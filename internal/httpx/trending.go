@@ -14,7 +14,7 @@ func (s *Server) runTrendingSweeper() {
 }
 
 func (s *Server) recomputeTrending(ctx context.Context) {
-	s.tryRunMaintenanceWork(func() {
+	s.tryRunMaintenanceWork(maintenanceLaneTrending, func() {
 		defer s.observe("trending.recompute", time.Now())
 		now := time.Now()
 		minRecompute := s.cfg.TrendingMinRecompute

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	fnostr "fiatjaf.com/nostr"
 )
@@ -49,6 +50,7 @@ func nostrFilterFromQueryCore(q Query) (fnostr.Filter, error) {
 		IDs:     idsFromHex(q.IDs),
 		Authors: pubkeysFromHex(q.Authors),
 		Kinds:   kindsFromInts(q.Kinds),
+		Search:  strings.TrimSpace(q.Search),
 		Limit:   q.Limit,
 	}
 	if len(q.IDs) > 0 && len(filter.IDs) == 0 {
