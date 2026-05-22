@@ -217,8 +217,9 @@ When profiling shows a slow plan, prefer (in order): tighten the query, add a **
 
 - **Hydration sweeper** (`hydrator.go`, every `PTXT_HYDRATION_SWEEP_INTERVAL`, default 5 min). Pulls stale `hydration_targets` rows for `profile`, `noteReplies`, `followGraph`, and `relayHints` and warms against the metadata + default relay set. Logged-out seed note hydration uses the separate `seedContact` crawler ([`seed_crawler.go`](internal/httpx/seed_crawler.go)); tune it with `PTXT_SEED_CRAWLER_*` in the table below.
 - **Trending sweeper** (`trending.go`, every `PTXT_TRENDING_SWEEP_INTERVAL`, default 5 min). Recomputes the 24h and 1w trending tables from `reply_counts` and persists them into `trending_cache`, but only if the existing cache is older than `PTXT_TRENDING_MIN_RECOMPUTE` (default 20 min).
+- **Hot feed crawler** (`hot_feed_crawler.go`, every `PTXT_HOT_FEED_CRAWLER_INTERVAL`, default 45s). Pulls recent note heads for the default logged-out web-of-trust cohort and recently active signed-in viewers, then refreshes first-page feed snapshots and cohort trending rows. It is bounded by author/cohort/fetch limits and by `PTXT_EVENT_RETENTION`, so it keeps latest browsing fast without trying to mirror deep history.
 - **Projection rebuild** (one-shot, only if `PTXT_REBUILD_PROJECTIONS=1`). Rewrites every projection table from raw events. Useful after schema changes.
-- **Warm queue** (`warmer.go`, 2 workers). Coalesces warm requests by key so simultaneous viewers asking for the same author/thread/event only spawn one relay round trip. Each job has a wall-clock timeout and per-kind work caps (`PTXT_WARM_*`); oversized jobs re-enqueue the tail.
+- **Warm queue** (`warmer.go`, 4 workers by default). Coalesces warm requests by key so simultaneous viewers asking for the same author/thread/event only spawn one relay round trip. Each job has a wall-clock timeout and per-kind work caps (`PTXT_WARM_*`); oversized jobs re-enqueue the tail.
 
 ### Outbox-style routing
 
@@ -264,7 +265,7 @@ Useful environment variables (all optional):
 | `PTXT_THREAD_OUTBOX_MAX_ROUTE_GROUPS` | `8` | Grouped outbox fan-out cap for thread reply authors. |
 | `PTXT_THREAD_OUTBOX_MAX_RELAYS_PER_AUTHOR` | `PTXT_OUTBOX_MAX_RELAYS_PER_AUTHOR` | Per-author relay cap in thread outbox groups. |
 | `PTXT_THREAD_CONTEXT_WARM_MAX_IDS` | `48` | Max ancestor/referenced note IDs warmed after `?fragment=hydrate`. |
-| `PTXT_HYDRATION_NOTE_REPLIES_BATCH` | `16` | `noteReplies` targets processed per hydration sweeper tick. |
+| `PTXT_HYDRATION_NOTE_REPLIES_BATCH` | `32` | `noteReplies` targets processed per hydration sweeper tick. |
 | `PTXT_REQUEST_TIMEOUT_MS` | `3500` | Per-relay timeout in `nostrx.Client`. The outer HTTP handler context uses `max(5s, relayTimeout+2s)` (see `internal/httpx/middleware.go`). |
 | `PTXT_RELAY_MAX_OUTBOUND_CONNS` | `48` | Process-wide cap on concurrent relay WebSocket operations (`nostrx` acquire/release around each dial). Set to `0` for unlimited (tests only). |
 | `PTXT_WARM_JOB_TIMEOUT_MS` | `90000` | Hard wall-clock cap per warm-queue job. |
@@ -287,7 +288,14 @@ Useful environment variables (all optional):
 | `PTXT_HYDRATION_SWEEP_INTERVAL` | `5m` | Delay between hydration sweeps. |
 | `PTXT_TRENDING_SWEEP_INTERVAL` | `5m` | Delay between trending sweep passes. |
 | `PTXT_TRENDING_MIN_RECOMPUTE` | `20m` | Minimum age before trending cache recomputes. |
-| `PTXT_ACTIVE_VIEWER_TRENDING` | `false` | When `1`/`true`, runs the per-active-viewer trending warm loop (extra SQLite load). Recommended in production so signed-in WoT trend feeds and sidebars stay populated. |
+| `PTXT_ACTIVE_VIEWER_TRENDING` | `true` | Runs the per-active-viewer trending warm loop so signed-in WoT trend feeds and sidebars stay populated. Set to `0`/`false` on very small instances to reduce SQLite load. |
+| `PTXT_HOT_FEED_CRAWLER_ENABLED` | `true` | Continuously warm recent note heads for default-seed WoT and active signed-in cohorts. |
+| `PTXT_HOT_FEED_CRAWLER_INTERVAL` | `45s` | Delay between hot-feed crawl ticks. |
+| `PTXT_HOT_FEED_CRAWLER_COHORT_LIMIT` | `8` | Max cohorts processed per hot-feed tick, including the default guest cohort. |
+| `PTXT_HOT_FEED_CRAWLER_AUTHOR_LIMIT` | `80` | Max authors refreshed per cohort per tick; large WoT cohorts rotate across ticks. |
+| `PTXT_HOT_FEED_CRAWLER_FETCH_LIMIT` | `80` | Max recent notes requested per author batch. |
+| `PTXT_HOT_FEED_CRAWLER_LOOKBACK` | `36h` | Oldest `created_at` for hot note-head relay queries. |
+| `PTXT_HOT_FEED_CRAWLER_SNAPSHOT_THROTTLE` | `2m` | Minimum interval between first-page snapshot rebuilds for a cohort. |
 | `PTXT_WOT_MAX_AUTHORS` | `240` | Cap on direct follows seeded into WoT resolution and on SQL `IN` feed queries; larger cohorts use batched author queries. |
 | `PTXT_SEED_CRAWLER_ENABLED` | `true` | Keep the WoT seed crawler running in the background. |
 | `PTXT_SEED_CRAWLER_INTERVAL` | `20s` | Delay between crawler ticks. |
@@ -300,7 +308,7 @@ Useful environment variables (all optional):
 | `PTXT_VIEWER_CRAWLER_ENABLED` | `true` | Background crawl for previously signed-in viewers. |
 | `PTXT_VIEWER_CRAWLER_INTERVAL` | `30s` | Delay between viewer crawler ticks. |
 | `PTXT_VIEWER_CRAWLER_BATCH` | `8` | Known viewers processed per tick. |
-| `PTXT_VIEWER_CRAWLER_REPLY_WARM_LIMIT` | `24` | Thread warms per viewer per tick. |
+| `PTXT_VIEWER_CRAWLER_REPLY_WARM_LIMIT` | `48` | Thread warms per viewer per tick. |
 | `PTXT_VIEWER_CRAWLER_FOLLOW_ENQUEUE_PER_TICK` | `80` | Follow pubkeys enqueued into the seed frontier per viewer tick. |
 | `PTXT_SQLITE_MAX_OPEN_CONNS` | `max(10, runtime.NumCPU())` | SQLite pool max-open when unset (WAL read concurrency). |
 | `PTXT_SQLITE_MAX_IDLE_CONNS` | `max(4, runtime.NumCPU()/2)` | SQLite pool max-idle when unset. |

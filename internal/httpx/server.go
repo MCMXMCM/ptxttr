@@ -27,45 +27,46 @@ type Server struct {
 	// cache must be invalidated when the seed-contact frontier expands.
 	loggedOutSeedCenterHex string
 	loggedOutSeedCenterMu  sync.RWMutex
-	store              *store.Store
-	nostr              *nostrx.Client
-	templates          *template.Template
-	metrics            *appMetrics
-	warmer             *warmQueue
-	avatarCache        *avatarCache
-	resolvedAuthors    *resolvedAuthorsCache
-	activeViewers      *activeViewers
-	hydrationTouches   *hydrationTouchCache
-	searchStoreCache   *ttlCache[store.SearchNotesResult]
-	searchPageCache    *ttlCache[SearchPageData]
-	tagStoreCache      *ttlCache[store.SearchNotesResult]
-	tagPageCache       *ttlCache[TagPageData]
-	guestFeedCache     *ttlCache[FeedPageData]
-	searchLimiter      *searchLimiter
-	searchGroup        *searchSingleFlight
-	tagGroup           *tagSingleFlight
-	refreshMu          sync.Mutex
-	inFlight           map[string]bool
-	ctx                context.Context
-	cancel             context.CancelFunc
-	backgroundWG       sync.WaitGroup
-	lastRequestAt      atomic.Int64
-	activeRequests     atomic.Int64
-	maintenanceSeed      atomic.Bool
-	maintenanceViewer    atomic.Bool
-	maintenanceHydration atomic.Bool
-	maintenanceTrending  atomic.Bool
-	userAsyncQueue     chan func()
-	relayWriteSem      chan struct{}
+	store                  *store.Store
+	nostr                  *nostrx.Client
+	templates              *template.Template
+	metrics                *appMetrics
+	warmer                 *warmQueue
+	avatarCache            *avatarCache
+	resolvedAuthors        *resolvedAuthorsCache
+	activeViewers          *activeViewers
+	hydrationTouches       *hydrationTouchCache
+	searchStoreCache       *ttlCache[store.SearchNotesResult]
+	searchPageCache        *ttlCache[SearchPageData]
+	tagStoreCache          *ttlCache[store.SearchNotesResult]
+	tagPageCache           *ttlCache[TagPageData]
+	guestFeedCache         *ttlCache[FeedPageData]
+	searchLimiter          *searchLimiter
+	searchGroup            *searchSingleFlight
+	tagGroup               *tagSingleFlight
+	refreshMu              sync.Mutex
+	inFlight               map[string]bool
+	ctx                    context.Context
+	cancel                 context.CancelFunc
+	backgroundWG           sync.WaitGroup
+	lastRequestAt          atomic.Int64
+	activeRequests         atomic.Int64
+	maintenanceSeed        atomic.Bool
+	maintenanceViewer      atomic.Bool
+	maintenanceHydration   atomic.Bool
+	maintenanceTrending    atomic.Bool
+	userAsyncQueue         chan func()
+	relayWriteSem          chan struct{}
 
 	healthProbeFails  atomic.Uint32
 	healthLastOK      atomic.Bool
 	healthLastProbeMS atomic.Int64
 	healthDegraded    atomic.Bool
 
-	nip50Mu         sync.Mutex
-	nip50FallbackAt []time.Time
-	seedCrawlIndex  atomic.Uint64
+	nip50Mu            sync.Mutex
+	nip50FallbackAt    []time.Time
+	seedCrawlIndex     atomic.Uint64
+	hotFeedCrawlCursor atomic.Uint64
 }
 
 func New(cfg config.Config, st *store.Store, nostrClient *nostrx.Client) (*Server, error) {
@@ -130,6 +131,9 @@ func New(cfg config.Config, st *store.Store, nostrClient *nostrx.Client) (*Serve
 	if len(server.cfg.DefaultRelays) > 0 || len(server.cfg.MetadataRelays) > 0 {
 		server.runBackground(server.runDefaultSeedPrewarmLoop)
 		server.runBackground(server.runDefaultSeedGuestFeedHotLoop)
+		if cfg.HotFeedCrawlerEnabled {
+			server.runBackground(server.runHotFeedCrawler)
+		}
 	}
 	server.runBackground(server.runSeedCrawler)
 	if cfg.ViewerCrawlerEnabled {

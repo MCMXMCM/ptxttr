@@ -28,10 +28,14 @@ func (s *Server) buildThreadTreeData(ctx context.Context, focus nostrx.Event, st
 // buildThreadTreeDataFromReplies builds HN-style tree nodes from a flat reply
 // slice already gathered (e.g. by threadTreeReplies) without a second walk.
 func buildThreadTreeDataFromReplies(focus nostrx.Event, replies []nostrx.Event) ThreadTreeData {
+	return buildThreadTreeDataFromRepliesWithParents(focus, replies, nil)
+}
+
+func buildThreadTreeDataFromRepliesWithParents(focus nostrx.Event, replies []nostrx.Event, parentByID map[string]string) ThreadTreeData {
 	if focus.ID == "" {
 		return ThreadTreeData{}
 	}
-	view := thread.BuildSelected(focus, focus, replies)
+	view := thread.BuildSelectedWithParents(focus, focus, replies, parentByID)
 	return ThreadTreeData{
 		Root:  focus,
 		Nodes: view.Nodes,

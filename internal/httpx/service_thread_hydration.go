@@ -99,6 +99,21 @@ func (s *Server) threadStoredReplyCount(ctx context.Context, parentID string) in
 	return counts[parentID]
 }
 
+func (s *Server) threadExpectedDirectReplyPageCount(ctx context.Context, parentID string, limit int) int {
+	if s == nil || s.store == nil || parentID == "" || limit <= 0 {
+		return 0
+	}
+	stats, err := s.store.ReplyStatsByNoteIDs(ctx, []string{parentID})
+	if err == nil {
+		return min(stats[parentID].DirectReplies, limit)
+	}
+	edges, err := s.store.ThreadEdgesCursor(ctx, []string{parentID}, 0, "", limit)
+	if err != nil {
+		return 0
+	}
+	return len(edges)
+}
+
 func (s *Server) refreshRepliesPass(ctx context.Context, eventID string, relays []string, metric string) int {
 	if len(relays) == 0 {
 		return 0

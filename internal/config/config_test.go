@@ -5,6 +5,64 @@ import (
 	"time"
 )
 
+func TestLoadHotFeedCrawlerDefaultsAndOverrides(t *testing.T) {
+	for _, key := range []string{
+		"PTXT_HOT_FEED_CRAWLER_ENABLED",
+		"PTXT_HOT_FEED_CRAWLER_INTERVAL",
+		"PTXT_HOT_FEED_CRAWLER_COHORT_LIMIT",
+		"PTXT_HOT_FEED_CRAWLER_AUTHOR_LIMIT",
+		"PTXT_HOT_FEED_CRAWLER_FETCH_LIMIT",
+		"PTXT_HOT_FEED_CRAWLER_LOOKBACK",
+		"PTXT_HOT_FEED_CRAWLER_SNAPSHOT_THROTTLE",
+	} {
+		t.Setenv(key, "")
+	}
+
+	cfg := Load()
+	if !cfg.HotFeedCrawlerEnabled {
+		t.Fatal("HotFeedCrawlerEnabled = false, want true by default")
+	}
+	if cfg.HotFeedCrawlerInterval != DefaultHotFeedCrawlerInterval {
+		t.Fatalf("HotFeedCrawlerInterval = %v, want %v", cfg.HotFeedCrawlerInterval, DefaultHotFeedCrawlerInterval)
+	}
+	if cfg.HotFeedCrawlerCohortLimit != DefaultHotFeedCrawlerCohortLimit {
+		t.Fatalf("HotFeedCrawlerCohortLimit = %d, want %d", cfg.HotFeedCrawlerCohortLimit, DefaultHotFeedCrawlerCohortLimit)
+	}
+	if cfg.HotFeedCrawlerAuthorLimit != DefaultHotFeedCrawlerAuthorLimit {
+		t.Fatalf("HotFeedCrawlerAuthorLimit = %d, want %d", cfg.HotFeedCrawlerAuthorLimit, DefaultHotFeedCrawlerAuthorLimit)
+	}
+	if cfg.HotFeedCrawlerFetchLimit != DefaultHotFeedCrawlerFetchLimit {
+		t.Fatalf("HotFeedCrawlerFetchLimit = %d, want %d", cfg.HotFeedCrawlerFetchLimit, DefaultHotFeedCrawlerFetchLimit)
+	}
+	if cfg.HotFeedCrawlerLookback != DefaultHotFeedCrawlerLookback {
+		t.Fatalf("HotFeedCrawlerLookback = %v, want %v", cfg.HotFeedCrawlerLookback, DefaultHotFeedCrawlerLookback)
+	}
+	if cfg.HotFeedCrawlerSnapshotThrottle != DefaultHotFeedCrawlerSnapshotThrottle {
+		t.Fatalf("HotFeedCrawlerSnapshotThrottle = %v, want %v", cfg.HotFeedCrawlerSnapshotThrottle, DefaultHotFeedCrawlerSnapshotThrottle)
+	}
+
+	t.Setenv("PTXT_HOT_FEED_CRAWLER_ENABLED", "0")
+	t.Setenv("PTXT_HOT_FEED_CRAWLER_INTERVAL", "10s")
+	t.Setenv("PTXT_HOT_FEED_CRAWLER_COHORT_LIMIT", "3")
+	t.Setenv("PTXT_HOT_FEED_CRAWLER_AUTHOR_LIMIT", "7")
+	t.Setenv("PTXT_HOT_FEED_CRAWLER_FETCH_LIMIT", "11")
+	t.Setenv("PTXT_HOT_FEED_CRAWLER_LOOKBACK", "12h")
+	t.Setenv("PTXT_HOT_FEED_CRAWLER_SNAPSHOT_THROTTLE", "30s")
+
+	cfg = Load()
+	if cfg.HotFeedCrawlerEnabled {
+		t.Fatal("HotFeedCrawlerEnabled = true, want false override")
+	}
+	if cfg.HotFeedCrawlerInterval != 10*time.Second ||
+		cfg.HotFeedCrawlerCohortLimit != 3 ||
+		cfg.HotFeedCrawlerAuthorLimit != 7 ||
+		cfg.HotFeedCrawlerFetchLimit != 11 ||
+		cfg.HotFeedCrawlerLookback != 12*time.Hour ||
+		cfg.HotFeedCrawlerSnapshotThrottle != 30*time.Second {
+		t.Fatalf("hot feed override config not applied: %#v", cfg)
+	}
+}
+
 func TestDurationEnvFallsBackForInvalidValues(t *testing.T) {
 	t.Setenv("PTXT_TEST_TIMEOUT", "not-a-number")
 	if got := durationEnv("PTXT_TEST_TIMEOUT", 1500*time.Millisecond); got != 1500*time.Millisecond {

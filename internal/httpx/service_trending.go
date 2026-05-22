@@ -84,13 +84,33 @@ func (s *Server) trendingItems(ctx context.Context, timeframe string, cohortKey 
 		if cohortKey != "" {
 			if global, _, gerr := s.store.ReadTrendingCache(ctx, timeframe, ""); gerr == nil && len(global) > 0 {
 				s.metrics.Add("trending.sidebar_global_stale_fallback", 1)
-				return global
+				return s.filterTrendingItemsToAuthors(ctx, global, authors)
 			}
+		}
+		if cohortKey != "" {
+			s.metrics.Add("trending_cache_empty_by_cohort", 1)
 		}
 		return []store.TrendingItem{}
 	}
 	items, _ = s.computeAndStoreCohortTrending(ctx, timeframe, cohortKey, authors, now)
 	return items
+}
+
+func (s *Server) filterTrendingItemsToAuthors(ctx context.Context, items []store.TrendingItem, authors []string) []store.TrendingItem {
+	if len(items) == 0 || len(authors) == 0 {
+		return items
+	}
+	membership := newAuthorMembership(authors)
+	events := s.eventsByIDFromStore(ctx, noteIDsFromTrendingItems(items))
+	out := items[:0]
+	for _, item := range items {
+		ev := events[item.NoteID]
+		if ev == nil || !membership.Contains(ev.PubKey) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func (s *Server) computeAndStoreTrending(ctx context.Context, timeframe string, now time.Time) ([]store.TrendingItem, error) {
@@ -157,8 +177,11 @@ func (s *Server) buildTrendingItemsFromRecent(ctx context.Context, timeframe str
 		}
 	}
 	if len(candidates) == 0 {
+		s.metrics.Add("trending.candidates.empty", 1)
 		return []store.TrendingItem{}, nil
 	}
+	s.metrics.Add("trending.candidates.scanned", int64(scanned))
+	s.metrics.Add("trending.candidates.selected", int64(len(candidates)))
 	ids := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
 		ids = append(ids, candidate.ID)
@@ -198,9 +221,11 @@ func (s *Server) buildTrendingItemsFromRecent(ctx context.Context, timeframe str
 		if replyCount <= 0 && rTot <= 0 {
 			continue
 		}
+		score := trendingEngagementScore(replyCount, rTot)
 		items = append(items, store.TrendingItem{
 			NoteID:     candidate.ID,
 			ReplyCount: replyCount,
+			Score:      score,
 		})
 		if len(items) >= trendingCacheLimit {
 			break
@@ -227,6 +252,7 @@ func (s *Server) buildTrendingItemsFromRecent(ctx context.Context, timeframe str
 			items = append(items, store.TrendingItem{
 				NoteID:     candidate.ID,
 				ReplyCount: stats[candidate.ID].DirectReplies,
+				Score:      stats[candidate.ID].DirectReplies,
 			})
 			inRanked[candidate.ID] = struct{}{}
 			if len(items) >= trendingCacheLimit || len(items) >= trendingSidebarBackfillMin {
@@ -234,6 +260,7 @@ func (s *Server) buildTrendingItemsFromRecent(ctx context.Context, timeframe str
 			}
 		}
 	}
+	s.metrics.Add("trending.items.computed", int64(len(items)))
 	return items, nil
 }
 

@@ -602,7 +602,7 @@ function escapeHTML(value) {
 }
 
 function extractMentionPubKeys(content) {
-  if (!content || content.indexOf("nostr:") < 0) return [];
+  if (!content) return [];
   const matches = content.match(MENTION_TOKEN_RE) || [];
   const seen = new Set();
   const pubkeys = [];

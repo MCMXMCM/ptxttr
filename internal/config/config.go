@@ -14,6 +14,15 @@ import (
 // httpx coalesce middleware when the configured value is non-positive.
 const DefaultCoalesceBuckets = 64
 
+const (
+	DefaultHotFeedCrawlerInterval         = 45 * time.Second
+	DefaultHotFeedCrawlerCohortLimit      = 8
+	DefaultHotFeedCrawlerAuthorLimit      = 80
+	DefaultHotFeedCrawlerFetchLimit       = 80
+	DefaultHotFeedCrawlerLookback         = 36 * time.Hour
+	DefaultHotFeedCrawlerSnapshotThrottle = 2 * time.Minute
+)
+
 type Config struct {
 	Addr           string
 	DBPath         string
@@ -116,10 +125,26 @@ type Config struct {
 	TrendingSweepInterval time.Duration
 	// TrendingMinRecompute is the staleness floor before recomputing cache.
 	TrendingMinRecompute time.Duration
-	// ActiveViewerTrendingEnabled runs the per-viewer trending warm loop. Off by
-	// default on small instances to reduce SQLite load; enable with
-	// PTXT_ACTIVE_VIEWER_TRENDING=1 when you want signed-in cohort trending kept hot.
+	// ActiveViewerTrendingEnabled runs the per-viewer trending warm loop. Enabled
+	// by default so signed-in WoT trend feeds and sidebars stay populated; set
+	// PTXT_ACTIVE_VIEWER_TRENDING=0 on very small instances to reduce SQLite load.
 	ActiveViewerTrendingEnabled bool
+	// HotFeedCrawlerEnabled keeps recent note heads hot for the default seed
+	// cohort and recently active signed-in viewers.
+	HotFeedCrawlerEnabled bool
+	// HotFeedCrawlerInterval is the delay between hot feed crawl ticks.
+	HotFeedCrawlerInterval time.Duration
+	// HotFeedCrawlerCohortLimit caps how many cohorts are processed per tick.
+	HotFeedCrawlerCohortLimit int
+	// HotFeedCrawlerAuthorLimit caps authors refreshed per cohort per tick.
+	HotFeedCrawlerAuthorLimit int
+	// HotFeedCrawlerFetchLimit caps notes requested per hot author batch.
+	HotFeedCrawlerFetchLimit int
+	// HotFeedCrawlerLookback bounds relay queries to recent notes.
+	HotFeedCrawlerLookback time.Duration
+	// HotFeedCrawlerSnapshotThrottle caps first-page snapshot rebuild frequency
+	// per cohort.
+	HotFeedCrawlerSnapshotThrottle time.Duration
 	// ReplaceableHistory keeps superseded kind 0 / 3 / 10002 rows in SQLite.
 	// When false, older revisions for the same (pubkey, kind) are deleted after insert.
 	ReplaceableHistory bool
@@ -203,7 +228,7 @@ func Load() Config {
 		ThreadOutboxMaxRouteGroups:      intEnv("PTXT_THREAD_OUTBOX_MAX_ROUTE_GROUPS", 8),
 		ThreadOutboxMaxRelaysPerAuthor:  intEnv("PTXT_THREAD_OUTBOX_MAX_RELAYS_PER_AUTHOR", 0),
 		ThreadContextWarmMaxIDs:         intEnv("PTXT_THREAD_CONTEXT_WARM_MAX_IDS", 48),
-		HydrationNoteRepliesBatch:       intEnv("PTXT_HYDRATION_NOTE_REPLIES_BATCH", 16),
+		HydrationNoteRepliesBatch:       intEnv("PTXT_HYDRATION_NOTE_REPLIES_BATCH", 32),
 		OutboxMaxRelaysPerAuthor:        intEnv("PTXT_OUTBOX_MAX_RELAYS_PER_AUTHOR", nostrx.MaxRelays),
 		OutboxMaxRouteGroups:            intEnv("PTXT_OUTBOX_MAX_ROUTE_GROUPS", 6),
 		OutboxFoFSeeds:                  intEnv("PTXT_OUTBOX_FOF_SEEDS", 40),
@@ -228,7 +253,14 @@ func Load() Config {
 		SeedContactFollowEnqueuePerTick: intEnv("PTXT_SEED_CONTACT_FOLLOW_ENQUEUE_PER_TICK", 120),
 		TrendingSweepInterval:           durationEnvDuration("PTXT_TRENDING_SWEEP_INTERVAL", 5*time.Minute),
 		TrendingMinRecompute:            durationEnvDuration("PTXT_TRENDING_MIN_RECOMPUTE", 20*time.Minute),
-		ActiveViewerTrendingEnabled:     boolEnv("PTXT_ACTIVE_VIEWER_TRENDING", false),
+		ActiveViewerTrendingEnabled:     boolEnv("PTXT_ACTIVE_VIEWER_TRENDING", true),
+		HotFeedCrawlerEnabled:              boolEnv("PTXT_HOT_FEED_CRAWLER_ENABLED", true),
+		HotFeedCrawlerInterval:             durationEnvDuration("PTXT_HOT_FEED_CRAWLER_INTERVAL", DefaultHotFeedCrawlerInterval),
+		HotFeedCrawlerCohortLimit:          intEnv("PTXT_HOT_FEED_CRAWLER_COHORT_LIMIT", DefaultHotFeedCrawlerCohortLimit),
+		HotFeedCrawlerAuthorLimit:          intEnv("PTXT_HOT_FEED_CRAWLER_AUTHOR_LIMIT", DefaultHotFeedCrawlerAuthorLimit),
+		HotFeedCrawlerFetchLimit:           intEnv("PTXT_HOT_FEED_CRAWLER_FETCH_LIMIT", DefaultHotFeedCrawlerFetchLimit),
+		HotFeedCrawlerLookback:             durationEnvDuration("PTXT_HOT_FEED_CRAWLER_LOOKBACK", DefaultHotFeedCrawlerLookback),
+		HotFeedCrawlerSnapshotThrottle:     durationEnvDuration("PTXT_HOT_FEED_CRAWLER_SNAPSHOT_THROTTLE", DefaultHotFeedCrawlerSnapshotThrottle),
 		ReplaceableHistory:              boolEnv("PTXT_REPLACEABLE_HISTORY", true),
 		IngestVerifyParallel:            ingestVerifyParallelEnv(),
 		Debug:                           boolEnv("PTXT_DEBUG", false),
@@ -246,7 +278,7 @@ func Load() Config {
 		ViewerCrawlerEnabled:            boolEnv("PTXT_VIEWER_CRAWLER_ENABLED", true),
 		ViewerCrawlerInterval:           durationEnvDuration("PTXT_VIEWER_CRAWLER_INTERVAL", 30*time.Second),
 		ViewerCrawlerBatch:              intEnv("PTXT_VIEWER_CRAWLER_BATCH", 8),
-		ViewerCrawlerReplyWarmLimit:     intEnv("PTXT_VIEWER_CRAWLER_REPLY_WARM_LIMIT", 24),
+		ViewerCrawlerReplyWarmLimit:     intEnv("PTXT_VIEWER_CRAWLER_REPLY_WARM_LIMIT", 48),
 		ViewerCrawlerFollowEnqueuePerTick: intEnv("PTXT_VIEWER_CRAWLER_FOLLOW_ENQUEUE_PER_TICK", 80),
 		HealthProbeEnabled:              boolEnv("PTXT_HEALTH_PROBE_ENABLED", false),
 		HealthProbeInterval:             durationEnvDuration("PTXT_HEALTH_PROBE_INTERVAL", 30*time.Second),
@@ -287,6 +319,13 @@ func Load() Config {
 		"trending_sweep_interval", cfg.TrendingSweepInterval,
 		"trending_min_recompute", cfg.TrendingMinRecompute,
 		"active_viewer_trending", cfg.ActiveViewerTrendingEnabled,
+		"hot_feed_crawler_enabled", cfg.HotFeedCrawlerEnabled,
+		"hot_feed_crawler_interval", cfg.HotFeedCrawlerInterval,
+		"hot_feed_crawler_cohort_limit", cfg.HotFeedCrawlerCohortLimit,
+		"hot_feed_crawler_author_limit", cfg.HotFeedCrawlerAuthorLimit,
+		"hot_feed_crawler_fetch_limit", cfg.HotFeedCrawlerFetchLimit,
+		"hot_feed_crawler_lookback", cfg.HotFeedCrawlerLookback,
+		"hot_feed_crawler_snapshot_throttle", cfg.HotFeedCrawlerSnapshotThrottle,
 		"replaceable_history", cfg.ReplaceableHistory,
 		"ingest_verify_parallel", cfg.IngestVerifyParallel,
 		"debug_enabled", cfg.Debug,

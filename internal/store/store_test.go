@@ -512,18 +512,28 @@ func TestTrendingCacheRoundTripAndOverwrite(t *testing.T) {
 	if computedAt != 100 {
 		t.Fatalf("expected computedAt 100, got %d", computedAt)
 	}
+	cacheComputedAt, err := st.TrendingCacheComputedAt(ctx, "24h", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cacheComputedAt != 100 {
+		t.Fatalf("expected cache computedAt 100, got %d", cacheComputedAt)
+	}
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(items))
 	}
 	if items[0].NoteID != "note-a" || items[0].ReplyCount != 3 {
 		t.Fatalf("unexpected first cached item: %#v", items[0])
 	}
+	if items[0].Score != 3 {
+		t.Fatalf("expected score fallback to reply count, got %#v", items[0])
+	}
 	if items[1].NoteID != "note-b" || items[1].ReplyCount != 2 {
 		t.Fatalf("unexpected second cached item: %#v", items[1])
 	}
 
 	if err := st.WriteTrendingCache(ctx, "24h", "", []TrendingItem{
-		{NoteID: "note-c", ReplyCount: 8},
+		{NoteID: "note-c", ReplyCount: 8, Score: 11},
 	}, 200); err != nil {
 		t.Fatal(err)
 	}
@@ -540,6 +550,9 @@ func TestTrendingCacheRoundTripAndOverwrite(t *testing.T) {
 	}
 	if items[0].NoteID != "note-c" || items[0].ReplyCount != 8 {
 		t.Fatalf("unexpected overwritten cached item: %#v", items[0])
+	}
+	if items[0].Score != 11 {
+		t.Fatalf("expected persisted score 11, got %#v", items[0])
 	}
 }
 

@@ -73,12 +73,31 @@ func Build(root nostrx.Event, replies []nostrx.Event) View {
 }
 
 func BuildSelected(root nostrx.Event, selected nostrx.Event, replies []nostrx.Event) View {
+	return buildSelected(root, selected, replies, nil)
+}
+
+func BuildSelectedWithParents(root nostrx.Event, selected nostrx.Event, replies []nostrx.Event, parentByID map[string]string) View {
+	return buildSelected(root, selected, replies, func(rootID string, event nostrx.Event) string {
+		if parentByID == nil || event.ID == "" {
+			return ""
+		}
+		return NormalizeHexEventID(parentByID[event.ID])
+	})
+}
+
+func buildSelected(root nostrx.Event, selected nostrx.Event, replies []nostrx.Event, parentForEvent func(string, nostrx.Event) string) View {
 	children := make(map[string][]nostrx.Event)
 	for _, reply := range replies {
 		if reply.ID == root.ID {
 			continue
 		}
-		parentID := parentFor(root.ID, reply)
+		var parentID string
+		if parentForEvent != nil {
+			parentID = parentForEvent(root.ID, reply)
+		}
+		if parentID == "" {
+			parentID = parentFor(root.ID, reply)
+		}
 		if parentID == "" {
 			parentID = root.ID
 		}

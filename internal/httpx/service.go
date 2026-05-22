@@ -333,8 +333,12 @@ type feedPageDataOptions struct {
 }
 
 func (s *Server) feedPageDataEx(ctx context.Context, req feedRequest, includeTrending bool, opts feedPageDataOptions) FeedPageData {
-	defer s.observe("feed.page_data", time.Now())
 	resolved := s.resolveRequestAuthors(ctx, req.Pubkey, req.SeedPubkey, req.Relays, req.WoT)
+	return s.feedPageDataExResolved(ctx, req, includeTrending, opts, resolved)
+}
+
+func (s *Server) feedPageDataExResolved(ctx context.Context, req feedRequest, includeTrending bool, opts feedPageDataOptions, resolved requestAuthors) FeedPageData {
+	defer s.observe("feed.page_data", time.Now())
 	sortMode := normalizeFeedSort(req.SortMode)
 	timeframe := normalizeTrendingTimeframe(req.Timeframe)
 	// Logged-out WoT ranked feeds may read cohort cache only on the request path,
@@ -379,7 +383,7 @@ func (s *Server) feedPageDataEx(ctx context.Context, req feedRequest, includeTre
 			membership := newAuthorMembership(resolved.allAuthors)
 			events, hasMore = s.fetchWoTFeedPage(ctx, resolved.userPubkey, queryAuthors, membership, req.Cursor, req.CursorID, req.Limit, req.Relays, "feed", cacheKey)
 		} else {
-			events, hasMore = s.fetchAuthorsPage(ctx, resolved.userPubkey, resolved.authors, req.Cursor, req.CursorID, req.Limit, req.Relays, "feed", cacheKey, nil)
+			events, hasMore = s.fetchAuthorsPage(ctx, resolved.userPubkey, resolved.authors, req.Cursor, req.CursorID, req.Limit, req.Relays, "feed", cacheKey, nil, false)
 		}
 		if len(events) > req.Limit {
 			events = events[:req.Limit]
@@ -1006,6 +1010,53 @@ func (s *Server) scanRecentFeedEvents(ctx context.Context, membership authorMemb
 	return matched, exhausted
 }
 
+func (s *Server) scanRecentFeedEventsNewerThan(ctx context.Context, membership authorMembership, cursor int64, cursorID string, limit int, cutoffCreatedAt int64, cutoffID string) ([]nostrx.Event, bool) {
+	target := limit + 1
+	if target < 1 {
+		target = 1
+	}
+	chunkSize := max(scanFeedChunkSize, target*4)
+	scanBudget := s.scanFeedBudget()
+	before := cursor
+	beforeID := cursorID
+	scanned := 0
+	matched := make([]nostrx.Event, 0, target)
+	exhausted := false
+	for scanned < scanBudget && len(matched) < target {
+		batchLimit := min(chunkSize, scanBudget-scanned)
+		batchLimit = min(batchLimit, nostrx.MaxRelayQueryLimit)
+		if batchLimit <= 0 {
+			break
+		}
+		batch, err := s.store.RecentSummariesByKinds(ctx, noteTimelineKinds, 0, before, beforeID, batchLimit)
+		if err != nil || len(batch) == 0 {
+			exhausted = true
+			break
+		}
+		for _, event := range batch {
+			if !eventRanksAfter(event, cutoffCreatedAt, cutoffID) {
+				exhausted = true
+				return matched, exhausted
+			}
+			if membership.Contains(event.PubKey) {
+				matched = append(matched, event)
+				if len(matched) >= target {
+					break
+				}
+			}
+		}
+		scanned += len(batch)
+		last := batch[len(batch)-1]
+		before = last.CreatedAt
+		beforeID = last.ID
+		if len(batch) < batchLimit {
+			exhausted = true
+			break
+		}
+	}
+	return matched, exhausted
+}
+
 func (s *Server) scanNewerFeedEvents(ctx context.Context, membership authorMembership, since int64, sinceID string, limit int) []nostrx.Event {
 	target := limit
 	if target < 1 {
@@ -1049,39 +1100,92 @@ func (s *Server) scanNewerFeedEvents(ctx context.Context, membership authorMembe
 // fetchWoTFeedPage serves recent WoT notes via indexed author queries first,
 // falling back to a global timeline scan only when the store has no matches.
 func (s *Server) fetchWoTFeedPage(ctx context.Context, viewer string, queryAuthors []string, membership authorMembership, cursor int64, cursorID string, limit int, relays []string, scope, cacheKey string) ([]nostrx.Event, bool) {
+	muted, ok := s.feedMuteSet(ctx, viewer)
+	if !ok {
+		return nil, false
+	}
+	pageLimit := limit + 1
+	var sqlEvents []nostrx.Event
+	sqlHasMore := false
 	if len(queryAuthors) > 0 {
-		events, hasMore := s.fetchAuthorsPage(ctx, viewer, queryAuthors, cursor, cursorID, limit, relays, scope, cacheKey, nil)
-		if len(events) > 0 {
+		sqlEvents, sqlHasMore = s.fetchAuthorsPage(ctx, viewer, queryAuthors, cursor, cursorID, limit, relays, scope, cacheKey, muted, true)
+		if len(sqlEvents) >= pageLimit && len(membership.exact) <= len(queryAuthors) {
 			s.metrics.Add("feed.wot_sql_hit", 1)
-			return events, hasMore
+			return sqlEvents, sqlHasMore
 		}
+		if len(sqlEvents) > 0 {
+			s.metrics.Add("feed.wot_sql_thin", 1)
+		}
+	}
+	scanOpts := scanFeedPageOptions{
+		muted:               muted,
+		mutesLoaded:         true,
+		refreshAuthors:      queryAuthors,
+		allowAuthorFallback: false,
+	}
+	if len(sqlEvents) >= pageLimit {
+		tail := sqlEvents[len(sqlEvents)-1]
+		scanOpts.stopAtCreatedAt = tail.CreatedAt
+		scanOpts.stopAtID = tail.ID
+	}
+	scanEvents, scanHasMore := s.fetchScannedFeedPageWithOptions(ctx, viewer, membership, cursor, cursorID, limit, relays, scope, cacheKey, scanOpts)
+	if len(sqlEvents) > 0 || len(scanEvents) > 0 {
+		if len(sqlEvents) > 0 {
+			s.metrics.Add("feed.wot_sql_hit", 1)
+		} else {
+			s.metrics.Add("feed.wot_sql_miss_scan_fallback", 1)
+		}
+		merged, hasMore := mergeFeedPagesByRecency(sqlEvents, scanEvents, limit)
+		if len(scanEvents) > 0 && len(sqlEvents) > 0 {
+			s.metrics.Add("feed.wot_scan_backfill", 1)
+		}
+		return merged, hasMore || sqlHasMore || scanHasMore
+	}
+	if len(queryAuthors) > 0 {
 		s.metrics.Add("feed.wot_sql_miss_scan_fallback", 1)
 	}
-	return s.fetchScannedFeedPage(ctx, viewer, queryAuthors, membership, cursor, cursorID, limit, relays, scope, cacheKey)
+	return nil, false
 }
 
 func (s *Server) fetchScannedFeedPage(ctx context.Context, viewer string, authors []string, membership authorMembership, cursor int64, cursorID string, limit int, relays []string, scope, cacheKey string) ([]nostrx.Event, bool) {
+	return s.fetchScannedFeedPageWithOptions(ctx, viewer, membership, cursor, cursorID, limit, relays, scope, cacheKey, scanFeedPageOptions{
+		refreshAuthors:      authors,
+		allowAuthorFallback: true,
+	})
+}
+
+type scanFeedPageOptions struct {
+	muted               map[string]struct{}
+	mutesLoaded         bool
+	refreshAuthors      []string
+	allowAuthorFallback bool
+	stopAtCreatedAt     int64
+	stopAtID            string
+}
+
+func (s *Server) fetchScannedFeedPageWithOptions(ctx context.Context, viewer string, membership authorMembership, cursor int64, cursorID string, limit int, relays []string, scope, cacheKey string, opts scanFeedPageOptions) ([]nostrx.Event, bool) {
 	defer s.observe("feed.scan_page", time.Now())
 	pageLimit := limit + 1
 	pageKey := feedRefreshKey(cacheKey, cursor, cursorID)
-	var muted map[string]struct{}
-	var muteReuse *map[string]struct{}
-	if strings.TrimSpace(viewer) != "" {
-		var muteErr error
-		muted, muteErr = s.viewerMutePubkeySet(ctx, viewer)
-		if muteErr != nil {
-			slog.Warn("viewer mutes: MutedPubkeys failed", "viewer", short(viewer), "err", muteErr)
+	muted := opts.muted
+	if !opts.mutesLoaded {
+		var ok bool
+		muted, ok = s.feedMuteSet(ctx, viewer)
+		if !ok {
 			return nil, false
-		}
-		if len(muted) > 0 {
-			muteReuse = &muted
 		}
 	}
 	scanTarget := limit
 	if len(muted) > 0 {
 		scanTarget = limit * feedMuteTopUpMaxRounds
 	}
-	events, exhausted := s.scanRecentFeedEvents(ctx, membership, cursor, cursorID, scanTarget)
+	var events []nostrx.Event
+	var exhausted bool
+	if opts.stopAtCreatedAt > 0 {
+		events, exhausted = s.scanRecentFeedEventsNewerThan(ctx, membership, cursor, cursorID, scanTarget, opts.stopAtCreatedAt, opts.stopAtID)
+	} else {
+		events, exhausted = s.scanRecentFeedEvents(ctx, membership, cursor, cursorID, scanTarget)
+	}
 	events = s.hydrateTimelineEvents(ctx, events)
 	if len(muted) > 0 {
 		events = s.filterEventsByViewerMutedSet(events, muted)
@@ -1089,14 +1193,14 @@ func (s *Server) fetchScannedFeedPage(ctx context.Context, viewer string, author
 	if len(events) > pageLimit {
 		events = events[:pageLimit]
 	}
-	if len(events) == 0 && len(authors) > 0 {
-		return s.fetchAuthorsPage(ctx, viewer, authors, cursor, cursorID, limit, relays, scope, cacheKey, muteReuse)
+	if opts.allowAuthorFallback && len(events) == 0 && len(opts.refreshAuthors) > 0 {
+		return s.fetchAuthorsPage(ctx, viewer, opts.refreshAuthors, cursor, cursorID, limit, relays, scope, cacheKey, muted, true)
 	}
 	shouldRefresh := len(events) == 0 || s.store.ShouldRefresh(ctx, scope, pageKey, feedTTL)
 	if len(events) >= pageLimit {
 		if shouldRefresh {
 			oldest := events[len(events)-1]
-			s.refreshRecentAsync(viewer, authors, oldest.CreatedAt, max(pageLimit*4, loggedInFetchWindow), relays, scope, pageKey)
+			s.refreshRecentAsync(viewer, opts.refreshAuthors, oldest.CreatedAt, max(pageLimit*4, loggedInFetchWindow), relays, scope, pageKey)
 		} else {
 			s.metrics.Add("feed.scan_cache_hit_full", 1)
 		}
@@ -1105,7 +1209,7 @@ func (s *Server) fetchScannedFeedPage(ctx context.Context, viewer string, author
 	if !shouldRefresh {
 		if len(events) > 0 {
 			oldest := events[len(events)-1]
-			s.warmRecent(viewer, authors, oldest.CreatedAt, loggedInFetchWindow, relays)
+			s.warmRecent(viewer, opts.refreshAuthors, oldest.CreatedAt, loggedInFetchWindow, relays)
 		}
 		s.metrics.Add("feed.scan_cache_hit_thin", 1)
 		return events, len(events) >= pageLimit || (!exhausted && len(events) > 0)
@@ -1118,12 +1222,75 @@ func (s *Server) fetchScannedFeedPage(ctx context.Context, viewer string, author
 	fetchLimit := max(pageLimit*4, loggedInFetchWindow)
 	if len(events) > 0 {
 		oldest := events[len(events)-1]
-		s.refreshRecentAsync(viewer, authors, oldest.CreatedAt, fetchLimit, relays, scope, pageKey)
+		s.refreshRecentAsync(viewer, opts.refreshAuthors, oldest.CreatedAt, fetchLimit, relays, scope, pageKey)
 	}
 	return events, len(events) > 0 && !exhausted
 }
 
-func (s *Server) fetchAuthorsPage(ctx context.Context, viewer string, authors []string, cursor int64, cursorID string, limit int, relays []string, scope, cacheKey string, reuseMuteFilter *map[string]struct{}) ([]nostrx.Event, bool) {
+func mergeFeedPagesByRecency(left, right []nostrx.Event, limit int) ([]nostrx.Event, bool) {
+	pageLimit := limit + 1
+	if pageLimit <= 0 {
+		pageLimit = 1
+	}
+	seen := eventIDSet(left, len(left)+len(right))
+	merged := append([]nostrx.Event(nil), left...)
+	merged, _ = appendUniqueEventsByID(merged, right, seen, 0)
+	sort.SliceStable(merged, func(i, j int) bool {
+		if merged[i].CreatedAt != merged[j].CreatedAt {
+			return merged[i].CreatedAt > merged[j].CreatedAt
+		}
+		return merged[i].ID > merged[j].ID
+	})
+	hasMore := len(merged) > limit
+	if len(merged) > pageLimit {
+		merged = merged[:pageLimit]
+	}
+	return merged, hasMore
+}
+
+func eventIDSet(events []nostrx.Event, capacity int) map[string]struct{} {
+	seen := make(map[string]struct{}, capacity)
+	for _, event := range events {
+		if event.ID != "" {
+			seen[event.ID] = struct{}{}
+		}
+	}
+	return seen
+}
+
+func appendUniqueEventsByID(dst []nostrx.Event, src []nostrx.Event, seen map[string]struct{}, limit int) ([]nostrx.Event, bool) {
+	for _, event := range src {
+		if event.ID != "" {
+			if _, ok := seen[event.ID]; ok {
+				continue
+			}
+			seen[event.ID] = struct{}{}
+		}
+		if limit > 0 && len(dst) >= limit {
+			return dst, true
+		}
+		dst = append(dst, event)
+	}
+	return dst, false
+}
+
+func eventRanksAfter(event nostrx.Event, createdAt int64, id string) bool {
+	return event.CreatedAt > createdAt || (event.CreatedAt == createdAt && event.ID > id)
+}
+
+func (s *Server) feedMuteSet(ctx context.Context, viewer string) (map[string]struct{}, bool) {
+	if strings.TrimSpace(viewer) == "" {
+		return nil, true
+	}
+	muted, err := s.viewerMutePubkeySet(ctx, viewer)
+	if err != nil {
+		slog.Warn("viewer mutes: MutedPubkeys failed", "viewer", short(viewer), "err", err)
+		return nil, false
+	}
+	return muted, true
+}
+
+func (s *Server) fetchAuthorsPage(ctx context.Context, viewer string, authors []string, cursor int64, cursorID string, limit int, relays []string, scope, cacheKey string, muted map[string]struct{}, mutesLoaded bool) ([]nostrx.Event, bool) {
 	defer s.observe("feed.authors_page", time.Now())
 	pageLimit := limit + 1
 	pageKey := feedRefreshKey(cacheKey, cursor, cursorID)
@@ -1138,14 +1305,10 @@ func (s *Server) fetchAuthorsPage(ctx context.Context, viewer string, authors []
 			}
 		}
 	}
-	var muted map[string]struct{}
-	if reuseMuteFilter != nil {
-		muted = *reuseMuteFilter
-	} else if strings.TrimSpace(viewer) != "" {
-		var muteErr error
-		muted, muteErr = s.viewerMutePubkeySet(ctx, viewer)
-		if muteErr != nil {
-			slog.Warn("viewer mutes: MutedPubkeys failed", "viewer", short(viewer), "err", muteErr)
+	if !mutesLoaded {
+		var ok bool
+		muted, ok = s.feedMuteSet(ctx, viewer)
+		if !ok {
 			return nil, false
 		}
 	}
@@ -1566,13 +1729,22 @@ func referencedEventID(event nostrx.Event) string {
 func collectReferencedEventIDs(events []nostrx.Event) []string {
 	ids := make([]string, 0, len(events))
 	seen := make(map[string]bool, len(events))
-	for _, event := range events {
-		id, _ := referencedEventRef(event)
+	add := func(id string) {
 		if id == "" || seen[id] {
-			continue
+			return
 		}
 		seen[id] = true
 		ids = append(ids, id)
+	}
+	for _, event := range events {
+		id, _ := referencedEventRef(event)
+		add(id)
+		for _, ref := range nostrx.ExtractNIP27References(event.Content) {
+			if ref.Event == "" {
+				continue
+			}
+			add(ref.Event)
+		}
 	}
 	return ids
 }
@@ -1585,6 +1757,9 @@ func (s *Server) referencedEventsFor(ctx context.Context, events []nostrx.Event,
 		_, hint := referencedEventRef(event)
 		if hint != "" {
 			merged = append(merged, hint)
+		}
+		for _, ref := range nostrx.ExtractNIP27References(event.Content) {
+			merged = append(merged, ref.Relays...)
 		}
 	}
 	if len(ids) == 0 {

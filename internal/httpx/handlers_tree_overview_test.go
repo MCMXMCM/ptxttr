@@ -150,7 +150,7 @@ func TestBuildTraversalPathLayoutsChain(t *testing.T) {
 	}
 }
 
-func TestHandleThreadOPMainColumnDirectRepliesOnly(t *testing.T) {
+func TestHandleThreadOPMainColumnIncludesKnownNestedReplies(t *testing.T) {
 	srv, st := testServer(t)
 	ctx := context.Background()
 	rootID := strings.Repeat("f", 64)
@@ -176,8 +176,11 @@ func TestHandleThreadOPMainColumnDirectRepliesOnly(t *testing.T) {
 	if !strings.Contains(body, `id="note-`+d1+`"`) {
 		t.Fatal("expected direct reply d1 in main thread")
 	}
-	if strings.Contains(body, `id="note-`+d2+`"`) {
-		t.Fatal("nested reply d2 must not appear in main thread column (shallow linear slice)")
+	if !strings.Contains(body, `id="note-`+d2+`"`) {
+		t.Fatal("expected nested reply d2 in assembled main thread context")
+	}
+	if !strings.Contains(body, `id="note-`+d2+`" class="comment " data-depth="1"`) {
+		t.Fatal("expected nested reply d2 to render flat in main thread column")
 	}
 }
 

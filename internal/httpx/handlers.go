@@ -49,7 +49,7 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		return s.followingList(r.Context(), pubkey, "", 1), s.followersList(r.Context(), pubkey, "", 1)
 	}
 	loadNotes := func() ([]nostrx.Event, bool, int64, string) {
-		notes, hasMore := s.fetchAuthorsPage(r.Context(), viewerPub, []string{pubkey}, cursor, cursorID, 30, relays, "profile", pubkey, nil)
+		notes, hasMore := s.fetchAuthorsPage(r.Context(), viewerPub, []string{pubkey}, cursor, cursorID, 30, relays, "profile", pubkey, nil, false)
 		if len(notes) > 30 {
 			notes = notes[:30]
 		}
@@ -387,17 +387,28 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	}
 	cursor, _ := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
 	cursorID := r.URL.Query().Get("cursor_id")
-	// SPA hydrate only needs the first linear page; full tree walks load with ?fragment=tree.
-	fullReplyWalk := !repliesPaginationFragment && cursor == 0 && cursorID == "" && fragment != "hydrate"
+	// Initial thread renders (including SPA hydrate) assemble the selected branch
+	// first, then a bounded OP-rooted context, so deep reply navigations do not
+	// depend on a shallow root/selected direct-reply page.
+	fullReplyWalk := !repliesPaginationFragment && cursor == 0 && cursorID == ""
 	threadRepliesStoreOnly := repliesPaginationFragment || hydrateStoreFirst
 	var replies []nostrx.Event
 	var fullReplies []nostrx.Event
+	parentByID := map[string]string{}
 	var nextCursor int64
 	var nextID string
 	var hasMore bool
+	hydrateRootChildrenIncomplete := false
 	if fullReplyWalk {
-		fullReplies, _ = s.threadTreeReplies(r.Context(), root.ID, threadRepliesStoreOnly, threadRelays)
-		replies, nextCursor, nextID, hasMore = linearFirstPageFromFullReplies(fullReplies, *root, *selected)
+		assembly := s.assembleThread(r.Context(), *root, *selected, threadRepliesStoreOnly, threadRelays, resolveEvent)
+		if fragment == "hydrate" && hydrateStoreFirst && assembly.Incomplete {
+			assembly = s.assembleThread(r.Context(), *root, *selected, false, threadRelays, resolveEvent)
+		}
+		fullReplies = assembly.TreeReplies
+		replies = assembly.TreeReplies
+		parentByID = assembly.ParentByID
+		nextCursor, nextID, hasMore = assembly.NextCursor, assembly.NextCursorID, assembly.HasMore
+		hydrateRootChildrenIncomplete = assembly.Incomplete
 	} else {
 		// Always load direct replies to the thread root so BuildSelected can place
 		// the URL-selected note in the tree. When selected != root, we also need
@@ -415,6 +426,13 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 				nextCursor, nextID = subNext, subNextID
 			}
 			hasMore = hasMore || subHasMore
+		}
+	}
+	if fragment == "hydrate" && hydrateStoreFirst && selected.ID == root.ID && cursor == 0 && cursorID == "" && !fullReplyWalk {
+		expectedReplies := s.threadExpectedDirectReplyPageCount(r.Context(), root.ID, 25)
+		if len(replies) < expectedReplies {
+			replies, nextCursor, nextID, hasMore = s.threadRepliesPage(r.Context(), 0, "", 25, false, threadRelays, root.ID)
+			hydrateRootChildrenIncomplete = len(replies) < expectedReplies
 		}
 	}
 
@@ -493,8 +511,15 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		root, parentID = applyThreadRootAnchor(*selected, resolveEvent)
 		if root.ID != prevRootID {
 			if fullReplyWalk {
-				fullReplies, _ = s.threadTreeReplies(r.Context(), root.ID, threadRepliesStoreOnly, threadRelays)
-				replies, nextCursor, nextID, hasMore = linearFirstPageFromFullReplies(fullReplies, *root, *selected)
+				assembly := s.assembleThread(r.Context(), *root, *selected, threadRepliesStoreOnly, threadRelays, resolveEvent)
+				if fragment == "hydrate" && hydrateStoreFirst && assembly.Incomplete {
+					assembly = s.assembleThread(r.Context(), *root, *selected, false, threadRelays, resolveEvent)
+				}
+				fullReplies = assembly.TreeReplies
+				replies = assembly.TreeReplies
+				parentByID = assembly.ParentByID
+				nextCursor, nextID, hasMore = assembly.NextCursor, assembly.NextCursorID, assembly.HasMore
+				hydrateRootChildrenIncomplete = assembly.Incomplete
 			} else {
 				replyParents := []string{root.ID}
 				replies, nextCursor, nextID, hasMore = s.threadRepliesPage(r.Context(), cursor, cursorID, 25, threadRepliesStoreOnly, threadRelays, replyParents...)
@@ -531,15 +556,20 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	}
 	if needsView {
 		// mutedForThread is nil on load error (fail-open) and when the set is empty.
-		viewReplies := buildThreadViewReplies(*root, *selected, replies, resolveEvent, mutedForThread)
-		view = thread.BuildSelected(*root, *selected, viewReplies)
+		viewReplyEvents := replies
+		if fullReplyWalk {
+			viewReplyEvents = fullReplies
+		}
+		viewReplies := buildThreadViewReplies(*root, *selected, viewReplyEvents, resolveEvent, mutedForThread)
+		viewParentByID := repairThreadParentMap(root.ID, viewReplies, parentByID)
+		view = thread.BuildSelectedWithParents(*root, *selected, viewReplies, viewParentByID)
 		selectedDepth = selectedDepthFromRoot(*root, *selected, view, resolveEvent)
 		traversalPath = buildTraversalPath(*root, *selected, view, resolveEvent)
 		// Tree view is always rooted at the thread OP (full reply tree to thread.MaxDepth);
 		// URL path / hash only affects TreeSelectedID (highlight), not the subtree root.
 		if fragment != "hydrate" {
 			if fullReplyWalk {
-				treeData = buildThreadTreeDataFromReplies(*root, fullReplies)
+				treeData = buildThreadTreeDataFromRepliesWithParents(*root, fullReplies, repairThreadParentMap(root.ID, fullReplies, parentByID))
 			} else if !repliesPaginationFragment {
 				treeData = s.buildThreadTreeData(r.Context(), *root, repliesPaginationFragment, threadRelays, mutedForThread)
 			}
@@ -568,6 +598,15 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		}
 		view.ReplyCount = totalReplyCount
 	}
+	focusOtherReplyNodes := []thread.Node(nil)
+	if needsView && view.FocusMode && fragment != "replies" {
+		focusOtherReplyNodes = focusOtherReplyNodesFromView(view)
+		focusOtherReplyNodes = appendLinearThreadNodes(nil, focusOtherReplyNodes)
+	}
+	linearReplyNodes := []thread.Node(nil)
+	if needsView {
+		linearReplyNodes = linearThreadReplyNodes(view)
+	}
 	if allowThreadRelayFetch {
 		s.warmAuthors(limitedStrings(extractPubkeys(profileEvents), maxWarmThreadProfileAuthors), threadRelays)
 	}
@@ -593,35 +632,37 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	selectedExpectsFocus := threadSelectedExpectsFocusView(*selected)
 
 	data := ThreadPageData{
-		BasePageData:     s.basePageData(r, "Thread", "thread", "feed-shell"),
-		Thread:           view,
-		Tree:             treeData,
-		ReferencedEvents: referenced,
-		ReplyCounts:      replyCounts,
-		ReactionTotals:   reactionTotals,
-		ReactionViewers:  reactionViewers,
-		Profiles:         profiles,
-		Participants:     participants,
-		SelectedID:       selected.ID,
-		TreeSelectedID:   treeSelectedID,
-		SelectedDepth:    selectedDepth,
-		TraversalPath:    traversalPath,
-		RootID:           root.ID,
-		ParentID:         parentID,
-		BackThreadID:     backThreadID,
-		BackNoteID:       backNoteID,
-		BackReadID:       backReadID,
+		BasePageData:         s.basePageData(r, "Thread", "thread", "feed-shell"),
+		Thread:               view,
+		Tree:                 treeData,
+		ReferencedEvents:     referenced,
+		ReplyCounts:          replyCounts,
+		ReactionTotals:       reactionTotals,
+		ReactionViewers:      reactionViewers,
+		Profiles:             profiles,
+		Participants:         participants,
+		SelectedID:           selected.ID,
+		TreeSelectedID:       treeSelectedID,
+		SelectedDepth:        selectedDepth,
+		TraversalPath:        traversalPath,
+		FocusOtherReplyNodes: focusOtherReplyNodes,
+		LinearReplyNodes:     linearReplyNodes,
+		RootID:               root.ID,
+		ParentID:             parentID,
+		BackThreadID:         backThreadID,
+		BackNoteID:           backNoteID,
+		BackReadID:           backReadID,
 		FocusedView:          view.FocusMode,
 		SelectedExpectsFocus: selectedExpectsFocus,
 		HiddenReplies:        hiddenReplies,
-		ReplyCursor:      nextCursor,
-		ReplyCursorID:    nextID,
-		HasMore:          hasMore,
+		ReplyCursor:          nextCursor,
+		ReplyCursorID:        nextID,
+		HasMore:              hasMore,
 	}
 	switch fragment {
 	case "hydrate":
 		setPaginationHeaders(w, nextCursor, nextID, hasMore)
-		if selectedExpectsFocus && !data.FocusedView {
+		if (selectedExpectsFocus && !data.FocusedView) || hydrateRootChildrenIncomplete {
 			w.Header().Set("X-Ptxt-Thread-Incomplete", "1")
 		}
 		s.render(w, "thread_hydrate", data)
@@ -900,71 +941,6 @@ func mergeThreadReplyPages(primary, extra []nostrx.Event) []nostrx.Event {
 	return out
 }
 
-const threadLinearPageLimit = 25
-
-// linearFirstPageFromFullReplies matches threadRepliesPage + mergeThreadReplyPages
-// for cursor 0: direct replies to root (first threadLinearPageLimit), merged with
-// direct replies to selected when selected is not the root. Used so the linear
-// column keeps Twitter-style shallow rendering while the tree uses the full BFS slice.
-func linearFirstPageFromFullReplies(full []nostrx.Event, root, selected nostrx.Event) (merged []nostrx.Event, nextCursor int64, nextID string, hasMore bool) {
-	rootKids := make([]nostrx.Event, 0, threadLinearPageLimit)
-	var selKids []nostrx.Event
-	selectedIsRoot := selected.ID == "" || selected.ID == root.ID
-	if !selectedIsRoot {
-		selKids = make([]nostrx.Event, 0, threadLinearPageLimit)
-	}
-	for i := range full {
-		e := full[i]
-		if e.ID == "" {
-			continue
-		}
-		switch thread.ParentID(root.ID, e) {
-		case root.ID:
-			rootKids = append(rootKids, e)
-		case selected.ID:
-			if selKids != nil {
-				selKids = append(selKids, e)
-			}
-		}
-	}
-	sortThreadRepliesStable(rootKids)
-	var rootPage []nostrx.Event
-	if len(rootKids) > threadLinearPageLimit {
-		rootPage = rootKids[:threadLinearPageLimit]
-	} else {
-		rootPage = rootKids
-	}
-	rootHasMore := len(rootKids) > threadLinearPageLimit
-
-	if selectedIsRoot {
-		if rootHasMore {
-			n := rootKids[threadLinearPageLimit]
-			return rootPage, n.CreatedAt, n.ID, true
-		}
-		return rootPage, 0, "", false
-	}
-
-	sortThreadRepliesStable(selKids)
-	var selPage []nostrx.Event
-	selHasMore := len(selKids) > threadLinearPageLimit
-	if selHasMore {
-		selPage = selKids[:threadLinearPageLimit]
-	} else {
-		selPage = selKids
-	}
-	merged = mergeThreadReplyPages(rootPage, selPage)
-	allHasMore := rootHasMore || selHasMore
-	if rootHasMore {
-		n := rootKids[threadLinearPageLimit]
-		return merged, n.CreatedAt, n.ID, allHasMore
-	}
-	if selHasMore {
-		n := selKids[threadLinearPageLimit]
-		return merged, n.CreatedAt, n.ID, allHasMore
-	}
-	return merged, 0, "", false
-}
-
 func buildThreadViewReplies(root nostrx.Event, selected nostrx.Event, directReplies []nostrx.Event, lookup func(string) *nostrx.Event, muted map[string]struct{}) []nostrx.Event {
 	seen := make(map[string]bool, len(directReplies)+4)
 	viewReplies := make([]nostrx.Event, 0, len(directReplies)+4)
@@ -1008,6 +984,63 @@ func buildThreadViewReplies(root nostrx.Event, selected nostrx.Event, directRepl
 		current = *parent
 	}
 	return viewReplies
+}
+
+func focusOtherReplyNodesFromView(view thread.View) []thread.Node {
+	if !view.FocusMode || view.SelectedNode == nil || view.SelectedNode.Event.ID == "" {
+		return nil
+	}
+	nodes, _ := pruneSelectedReplyBranch(view.Nodes, view.SelectedNode.Event.ID)
+	return nodes
+}
+
+func linearThreadReplyNodes(view thread.View) []thread.Node {
+	var out []thread.Node
+	if view.FocusMode {
+		if view.SelectedNode != nil {
+			out = appendLinearThreadNodes(out, view.SelectedNode.Children)
+		}
+		return out
+	}
+	return appendLinearThreadNodes(out, view.Nodes)
+}
+
+func appendLinearThreadNodes(out []thread.Node, nodes []thread.Node) []thread.Node {
+	for _, node := range nodes {
+		flat := node
+		children := flat.Children
+		flat.Depth = 1
+		flat.Children = nil
+		out = append(out, flat)
+		out = appendLinearThreadNodes(out, children)
+	}
+	return out
+}
+
+func pruneSelectedReplyBranch(nodes []thread.Node, selectedID string) ([]thread.Node, bool) {
+	if selectedID == "" || len(nodes) == 0 {
+		return nil, false
+	}
+	out := make([]thread.Node, 0, len(nodes))
+	foundSelected := false
+	for _, node := range nodes {
+		if node.Event.ID == selectedID {
+			foundSelected = true
+			continue
+		}
+		children, childHadSelected := pruneSelectedReplyBranch(node.Children, selectedID)
+		if childHadSelected {
+			foundSelected = true
+		}
+		// Ancestors already shown in the focus header should not be repeated
+		// unless they still contain another branch after removing the selected note.
+		if childHadSelected && len(children) == 0 {
+			continue
+		}
+		node.Children = children
+		out = append(out, node)
+	}
+	return out, foundSelected
 }
 
 func selectedDepthFromRoot(root nostrx.Event, selected nostrx.Event, view thread.View, lookup func(string) *nostrx.Event) int {

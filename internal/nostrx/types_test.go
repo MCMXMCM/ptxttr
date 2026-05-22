@@ -326,6 +326,22 @@ func TestExtractNIP27ReferencesCapturesBoundaries(t *testing.T) {
 	}
 }
 
+func TestExtractNIP27ReferencesAcceptsBareNIP19EventRefs(t *testing.T) {
+	eventID := strings.Repeat("c", 64)
+	nevent := EncodeNEvent(eventID, "")
+	content := "bare " + nevent + " and not a note:short-label"
+	refs := ExtractNIP27References(content)
+	if len(refs) != 1 {
+		t.Fatalf("len(ExtractNIP27References()) = %d, want 1", len(refs))
+	}
+	if refs[0].Kind != NIP27KindNEvent || refs[0].Event != eventID {
+		t.Fatalf("unexpected ref: %#v", refs[0])
+	}
+	if refs[0].Raw != nevent {
+		t.Fatalf("Raw = %q, want %q", refs[0].Raw, nevent)
+	}
+}
+
 func TestRelayMetricsTrackPerRelayCounters(t *testing.T) {
 	client := NewClient([]string{"wss://relay.example"}, 0)
 	client.recordRelayAttempt("wss://relay.example")

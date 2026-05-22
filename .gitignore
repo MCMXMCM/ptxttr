@@ -5,6 +5,9 @@
 .gocache
 .gocache/
 
+# Workspace-local Go caches (agents/tools often set GOCACHE/GOMODCACHE here)
+.cache/
+
 data/*.sqlite
 data/*.sqlite-*
 data/profile-debug/

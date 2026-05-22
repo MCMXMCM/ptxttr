@@ -6,8 +6,8 @@ const KIND_LONG_FORM = 30023;
 // Token regexes for NIP-27 references. The composer only highlights pubkey
 // references (so the @-mention overlay shows display names), while feed/ASCII
 // rendering linkifies pubkey *and* event references.
-export const MENTION_TOKEN_RE = /\bnostr:(nprofile|npub)[a-z0-9]+\b/gi;
-export const NOSTR_REF_PATTERN = /\bnostr:(?:nevent|nprofile|npub|note)[a-z0-9]+\b/gi;
+export const MENTION_TOKEN_RE = /\b(?:nostr:)?(?:nprofile|npub)[a-z0-9]+\b/gi;
+export const NOSTR_REF_PATTERN = /\b(?:nostr:)?(?:nevent|nprofile|npub|note)[a-z0-9]+\b/gi;
 
 const decodeCache = new Map();
 const DECODE_CACHE_LIMIT = 256;
@@ -22,7 +22,8 @@ function cachePut(key, value) {
 // prefix) into `{ kind, pubkey?, eventID? }`. Returns null on failure.
 export function decodeNip19Ref(raw) {
   if (!raw) return null;
-  const code = (raw.startsWith("nostr:") ? raw.slice(6) : raw).toLowerCase();
+  const trimmed = String(raw).trim();
+  const code = (trimmed.toLowerCase().startsWith("nostr:") ? trimmed.slice(6) : trimmed).toLowerCase();
   if (decodeCache.has(code)) return decodeCache.get(code);
   let result = null;
   try {

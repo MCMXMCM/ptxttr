@@ -1087,7 +1087,7 @@ function rehydrateRouteUI(route, url, restoredFeed, options = {}) {
   }
   if (route === "profile") {
     bindProfileNewNotesButton(url);
-    startProfilePostsPolling(url, true);
+    startProfilePostsPolling(url, true, { autoLoadInitial: true });
   }
   initFeedLoadMore(main);
   initLayoutUI(main);
@@ -1190,17 +1190,7 @@ async function loadProfileNewerPosts(url, button, setLoadingState) {
   setLoadingState(true);
   try {
     const newer = await fetchProfileNewerPosts(url, { includeBody: true });
-    const feed = main.querySelector("#user-panel-posts [data-feed]");
-    if (feed && newer.body) {
-      prependNewNotes(feed, newer.body);
-      void refreshVisibleFeedNoteMetadata(main, url, { feedSelector: "#user-panel-posts [data-feed]" });
-    }
-    const top = profilePostsTopCursor(main);
-    button.dataset.topCursor = top.cursor;
-    button.dataset.topCursorId = top.cursorID;
-    button.dataset.pendingCount = "0";
-    button.hidden = true;
-    snapshotProfile(withRelays(window.location.href), main);
+    applyProfileNewerPosts(url, newer, button);
   } catch {
     button.hidden = false;
   } finally {
@@ -1208,10 +1198,28 @@ async function loadProfileNewerPosts(url, button, setLoadingState) {
   }
 }
 
-function startProfilePostsPolling(url, runImmediately) {
+function applyProfileNewerPosts(url, newer, button) {
+  const feed = main.querySelector("#user-panel-posts [data-feed]");
+  if (feed && newer.body) {
+    prependNewNotes(feed, newer.body);
+    void refreshVisibleFeedNoteMetadata(main, url, { feedSelector: "#user-panel-posts [data-feed]" });
+  }
+  const top = profilePostsTopCursor(main);
+  button.dataset.topCursor = top.cursor;
+  button.dataset.topCursorId = top.cursorID;
+  button.dataset.pendingCount = "0";
+  button.hidden = true;
+  snapshotProfile(withRelays(window.location.href), main);
+}
+
+function startProfilePostsPolling(url, runImmediately, options = {}) {
   stopProfilePostsPolling();
   if (runImmediately) {
-    void pollProfilePostsNewer(url);
+    if (options.autoLoadInitial === true) {
+      void profileNewerPosts.track(autoLoadProfileNewerPosts(url));
+    } else {
+      void pollProfilePostsNewer(url);
+    }
   }
   profilePostsPollTimer = window.setInterval(() => {
     void pollProfilePostsNewer(url);
@@ -1222,6 +1230,26 @@ function stopProfilePostsPolling() {
   if (!profilePostsPollTimer) return;
   window.clearInterval(profilePostsPollTimer);
   profilePostsPollTimer = 0;
+}
+
+async function autoLoadProfileNewerPosts(url) {
+  const profileURL = new URL(url, window.location.origin);
+  const backoffMs = [0, 500, 1500, 3500];
+  for (const delay of backoffMs) {
+    if (delay > 0) {
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+    if (routeKind(window.location.pathname) !== "profile" || window.location.pathname !== profileURL.pathname) {
+      return;
+    }
+    const button = main.querySelector("[data-profile-new-notes]");
+    if (!button) return;
+    const newer = await fetchProfileNewerPosts(url, { includeBody: true });
+    if (newer.count > 0 && newer.body) {
+      applyProfileNewerPosts(url, newer, button);
+      return;
+    }
+  }
 }
 
 async function pollProfilePostsNewer(url) {

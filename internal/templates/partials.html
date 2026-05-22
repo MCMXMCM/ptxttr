@@ -12,13 +12,14 @@
 {{$referenceID := referencedEventID $event}}
 {{$reference := referenceEvent $referencedEvents $referenceID}}
 {{$hasReference := ne $reference.ID ""}}
+{{$inlineReferences := inlineReferenceEvents $event.Content $referencedEvents}}
 {{$referenceReplyCount := 0}}
 {{if $hasReference}}{{$referenceReplyCount = replyCountFor $replyCounts $reference.ID}}{{end}}
 {{$referenceReplyLabel := replyBadgeText $referenceReplyCount}}
 {{$isSimpleRepost := isSimpleRepost $event}}
 {{$isQuotePost := isQuotePost $event}}
 {{$content := asciiMentionContent $event.Content $profiles}}
-{{$mentionsJSON := asciiMentionsJSONFor $profiles $event.Content (or $reference.Content "")}}
+{{$mentionsJSON := asciiMentionsJSONFor $profiles $event.Content (or $reference.Content "") $inlineReferences}}
 {{$rTot := reactionTotalFor .ReactionTotals $event.ID}}
 {{$rView := reactionViewerFor .ReactionViewers $event.ID}}
 {{$avatar := avatarSrc $profiles $event.PubKey}}
@@ -33,6 +34,7 @@
 {{$rb := reactionBracketBlock $rTot $rView}}<span class="ascii-line">+-- {{$rb}} {{asciiNoteFooterFill $width $rb $replyLabel}}{{if $replyLabel}} {{$replyLabel}}{{end}} [<a href="/thread/{{$event.ID}}" data-relay-aware data-reply-action data-reply-root-id="{{$event.ID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}">reply</a>] ---+</span></pre>
 <template class="ascii-source">{{$content}}</template>
 <template class="ascii-reference-source">{{if $hasReference}}{{asciiMentionContent $reference.Content $profiles}}{{else if $referenceID}}[reposted note unavailable on current relays]{{end}}</template>
+{{range $inlineReferences}}<template class="ascii-inline-reference-source" data-ascii-ref-id="{{.ID}}" data-ascii-ref-author="{{asciiAuthor $width $profiles .PubKey}}" data-ascii-ref-age="{{relTime .CreatedAt}}" data-ascii-ref-thread-href="/thread/{{.ID}}" data-ascii-ref-reply-label="{{replyBadgeText (replyCountFor $replyCounts .ID)}}">{{asciiMentionContent .Content $profiles}}</template>{{end}}
 {{template "note_media_drawer"}}
 </article>
 {{end}}

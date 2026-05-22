@@ -815,6 +815,25 @@ function attachListeners() {
       return;
     }
 
+    const otherRepliesToggle = closestFromEventTarget(event.target, "[data-thread-other-replies-toggle]");
+    if (otherRepliesToggle) {
+      const hiddenItems = [...document.querySelectorAll("[data-focused-other-replies]")];
+      if (!hiddenItems.length) return;
+      const expand = hiddenItems.some((item) => item.hidden);
+      hiddenItems.forEach((item) => {
+        item.hidden = !expand;
+      });
+      otherRepliesToggle.textContent = expand
+        ? otherRepliesToggle.dataset.expandedLabel || "hide replies to OP"
+        : otherRepliesToggle.dataset.collapsedLabel || "view more replies to OP";
+      if (expand) {
+        const section = hiddenItems[0];
+        initViewMore(section);
+        refreshAscii(section);
+      }
+      return;
+    }
+
     const treeMediaToggle = closestFromEventTarget(event.target, "[data-thread-tree-media-toggle]");
     if (treeMediaToggle) {
       event.preventDefault();

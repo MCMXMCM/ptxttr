@@ -383,6 +383,42 @@ func (s *Store) ThreadEdges(ctx context.Context, parentIDs []string, limit int) 
 	return s.ThreadEdgesCursor(ctx, parentIDs, 0, "", limit)
 }
 
+func (s *Store) ThreadRootEdgesCursor(ctx context.Context, rootID string, cursor int64, cursorID string, limit int) ([]NoteLink, error) {
+	rootID = strings.TrimSpace(rootID)
+	if rootID == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	query := `SELECT note_id, author_pubkey, root_id, parent_id, created_at
+		FROM note_links
+		WHERE root_id = ? AND note_id != root_id`
+	args := []any{rootID}
+	if cursor > 0 {
+		query += ` AND (created_at > ? OR (created_at = ? AND note_id > ?))`
+		args = append(args, cursor, cursor, cursorID)
+	}
+	query += `
+		ORDER BY created_at ASC, note_id ASC
+		LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []NoteLink
+	for rows.Next() {
+		var link NoteLink
+		if err := rows.Scan(&link.NoteID, &link.AuthorPubKey, &link.RootID, &link.ParentID, &link.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, link)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ThreadEdgesCursor(ctx context.Context, parentIDs []string, cursor int64, cursorID string, limit int) ([]NoteLink, error) {
 	parents := uniqueNonEmpty(parentIDs)
 	if len(parents) == 0 {

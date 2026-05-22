@@ -151,6 +151,7 @@ func (s *Store) migrate(ctx context.Context) error {
 			position INTEGER NOT NULL,
 			note_id TEXT NOT NULL,
 			reply_count INTEGER NOT NULL,
+			score INTEGER NOT NULL DEFAULT 0,
 			computed_at INTEGER NOT NULL,
 			PRIMARY KEY(timeframe, cohort_key, position)
 		)`,
@@ -238,7 +239,7 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := s.dropLegacyNoteStatsColumns(ctx); err != nil {
 		return err
 	}
-	if err := s.ensureTrendingCacheCohorts(ctx); err != nil {
+	if err := s.ensureTrendingCacheShape(ctx); err != nil {
 		return err
 	}
 	if err := s.maybeAnalyze(ctx); err != nil {
@@ -250,13 +251,14 @@ func (s *Store) migrate(ctx context.Context) error {
 	return nil
 }
 
-func (s *Store) ensureTrendingCacheCohorts(ctx context.Context) error {
+func (s *Store) ensureTrendingCacheShape(ctx context.Context) error {
 	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(trending_cache)`)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = rows.Close() }()
 	hasCohortKey := false
+	hasScore := false
 	for rows.Next() {
 		var (
 			cid       int
@@ -272,11 +274,14 @@ func (s *Store) ensureTrendingCacheCohorts(ctx context.Context) error {
 		if name == "cohort_key" {
 			hasCohortKey = true
 		}
+		if name == "score" {
+			hasScore = true
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if hasCohortKey {
+	if hasCohortKey && hasScore {
 		return nil
 	}
 	s.writeMu.Lock()
@@ -292,14 +297,24 @@ func (s *Store) ensureTrendingCacheCohorts(ctx context.Context) error {
 		position INTEGER NOT NULL,
 		note_id TEXT NOT NULL,
 		reply_count INTEGER NOT NULL,
+		score INTEGER NOT NULL DEFAULT 0,
 		computed_at INTEGER NOT NULL,
 		PRIMARY KEY(timeframe, cohort_key, position)
 	)`); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO trending_cache_migrated(timeframe, cohort_key, position, note_id, reply_count, computed_at)
-		SELECT timeframe, '', position, note_id, reply_count, computed_at
-		FROM trending_cache`); err != nil {
+	cohortExpr := "''"
+	if hasCohortKey {
+		cohortExpr = "cohort_key"
+	}
+	scoreExpr := "reply_count"
+	if hasScore {
+		scoreExpr = "score"
+	}
+	insertSQL := `INSERT INTO trending_cache_migrated(timeframe, cohort_key, position, note_id, reply_count, score, computed_at)
+		SELECT timeframe, ` + cohortExpr + `, position, note_id, reply_count, ` + scoreExpr + `, computed_at
+		FROM trending_cache`
+	if _, err := tx.ExecContext(ctx, insertSQL); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DROP TABLE trending_cache`); err != nil {

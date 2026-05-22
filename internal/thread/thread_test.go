@@ -258,6 +258,26 @@ func TestBuildSelectedMissingFromTreeDisablesFocusMode(t *testing.T) {
 	}
 }
 
+func TestBuildSelectedWithParentsCanAttachRepairedSelectedBranch(t *testing.T) {
+	root := event("root", "alice", 1, nil)
+	selected := event("selected", "bob", 2, [][]string{{"e", "root", "", "root"}, {"e", "missing-parent", "", "reply"}})
+	child := event("child", "carol", 3, [][]string{{"e", "root", "", "root"}, {"e", "selected", "", "reply"}})
+
+	view := BuildSelectedWithParents(root, selected, []nostrx.Event{selected, child}, map[string]string{
+		"selected": "root",
+		"child":    "selected",
+	})
+	if !view.FocusMode {
+		t.Fatal("focus mode = false, want true for selected branch attached by parent map")
+	}
+	if view.SelectedNode == nil || view.SelectedNode.Event.ID != "selected" {
+		t.Fatalf("selected node = %#v, want selected", view.SelectedNode)
+	}
+	if len(view.SelectedNode.Children) != 1 || view.SelectedNode.Children[0].Event.ID != "child" {
+		t.Fatalf("selected children = %#v, want [child]", view.SelectedNode.Children)
+	}
+}
+
 func event(id, pubkey string, created int64, tags [][]string) nostrx.Event {
 	return nostrx.Event{
 		ID:        id,

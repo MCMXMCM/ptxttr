@@ -2,11 +2,14 @@ package httpx
 
 import (
 	"context"
+	"maps"
 	"time"
 
 	"ptxt-nstr/internal/nostrx"
 	"ptxt-nstr/internal/store"
 )
+
+const signedInFeedSnapshotMaxAge = 10 * time.Minute
 
 // tryLoadFeedPageFromDurableSnapshots serves signed-in first-page requests from
 // durable personalized snapshots, then canonical guest snapshots, then the
@@ -24,11 +27,23 @@ func (s *Server) tryLoadFeedPageFromDurableSnapshots(ctx context.Context, req fe
 	key := signedInFeedSnapshotKey(decoded, sortMode, req.WoT, req.Relays)
 	if rec, ok, err := s.store.GetFeedSnapshot(ctx, key); err == nil && ok && rec != nil && len(rec.Feed) > 0 {
 		s.metrics.Add("feed.snapshot_hit", 1)
-		if ts := time.Unix(rec.ComputedAtUnix, 0); time.Since(ts) > 10*time.Minute {
-			s.metrics.Add("feed.snapshot_stale_served", 1)
+		if ts := time.Unix(rec.ComputedAtUnix, 0); !ts.IsZero() {
+			age := time.Since(ts)
+			if age >= 0 {
+				s.metrics.Observe("feed.snapshot_age", age)
+			}
+			if age > signedInFeedSnapshotMaxAge {
+				s.metrics.Add("feed.snapshot_stale_bypassed", 1)
+				return FeedPageData{}, false
+			}
 		}
 		data := s.baseFeedPageFromSnapshotShell(ctx, req, decoded, tf, includeTrending)
+		beforeMute := len(rec.Feed)
 		s.mergeSnapshotFeedAndApplyViewerMutes(ctx, decoded, &data, rec, false)
+		if len(data.Feed) < min(req.Limit, beforeMute) || (len(data.Feed) < req.Limit && rec.HasMore) {
+			s.metrics.Add("feed.snapshot_after_mute_count", int64(len(data.Feed)))
+			s.topUpSnapshotFeedFromLive(ctx, req, includeTrending, &data)
+		}
 		data.FeedSort = sortMode
 		return data, true
 	}
@@ -57,6 +72,49 @@ func (s *Server) tryLoadFeedPageFromDurableSnapshots(ctx context.Context, req fe
 func (s *Server) mergeSnapshotFeedAndApplyViewerMutes(ctx context.Context, viewer string, data *FeedPageData, rec *store.FeedSnapshotRecord, starter bool) {
 	mergeFeedSnapshotRecordIntoFeedPageData(data, rec, starter)
 	data.Feed = s.filterFeedEventsByViewerMutes(ctx, viewer, data.Feed)
+}
+
+func (s *Server) topUpSnapshotFeedFromLive(ctx context.Context, req feedRequest, includeTrending bool, data *FeedPageData) {
+	if s == nil || data == nil || req.Limit <= 0 || len(data.Feed) >= req.Limit {
+		return
+	}
+	live := s.feedPageDataEx(ctx, req, includeTrending, feedPageDataOptions{})
+	if len(live.Feed) == 0 {
+		return
+	}
+	seen := eventIDSet(data.Feed, len(data.Feed)+len(live.Feed))
+	var overflow bool
+	data.Feed, overflow = appendUniqueEventsByID(data.Feed, live.Feed, seen, req.Limit)
+	data.HasMore = data.HasMore || live.HasMore || overflow
+	if len(data.Feed) > 0 {
+		last := data.Feed[len(data.Feed)-1]
+		data.Cursor = last.CreatedAt
+		data.CursorID = last.ID
+	}
+	mergeFeedPageSupplemental(data, &live)
+	s.metrics.Add("feed.snapshot_live_topup", 1)
+}
+
+func mergeFeedPageSupplemental(dst, src *FeedPageData) {
+	if dst == nil || src == nil {
+		return
+	}
+	dst.ReferencedEvents = mergeMap(dst.ReferencedEvents, src.ReferencedEvents)
+	dst.ReplyCounts = mergeMap(dst.ReplyCounts, src.ReplyCounts)
+	dst.ReactionTotals = mergeMap(dst.ReactionTotals, src.ReactionTotals)
+	dst.ReactionViewers = mergeMap(dst.ReactionViewers, src.ReactionViewers)
+	dst.Profiles = mergeMap(dst.Profiles, src.Profiles)
+}
+
+func mergeMap[K comparable, V any](dst, src map[K]V) map[K]V {
+	if len(src) == 0 {
+		return dst
+	}
+	if dst == nil {
+		dst = make(map[K]V, len(src))
+	}
+	maps.Copy(dst, src)
+	return dst
 }
 
 func (s *Server) baseFeedPageFromSnapshotShell(ctx context.Context, req feedRequest, viewerHex string, timeframe string, includeTrending bool) FeedPageData {

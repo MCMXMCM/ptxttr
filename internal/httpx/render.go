@@ -35,6 +35,9 @@ const (
 	// are well under 2 KiB; the largest kind-1 in the cache is ~11 KiB, so
 	// this leaves comfortable headroom.
 	maxWrapInputBytes = 32 * 1024
+	// maxWrapCacheInputBytes avoids retaining unusually large notes in the
+	// process-wide wrap cache; large inputs still render, just uncached.
+	maxWrapCacheInputBytes = 8 * 1024
 	// maxWrapOutputLines caps the number of wrapped output lines per call.
 	// At desktop width (120) this allows ~14 KiB of wrapped text per note,
 	// which already exceeds anything we'd reasonably display in a feed cell.
@@ -212,29 +215,31 @@ type UserPageData struct {
 
 type ThreadPageData struct {
 	BasePageData
-	Thread           thread.View
-	Tree             ThreadTreeData
-	ReferencedEvents map[string]nostrx.Event
-	ReplyCounts      map[string]int
-	ReactionTotals   map[string]int
-	ReactionViewers  map[string]string
-	Profiles         map[string]nostrx.Profile
-	Participants     []ThreadParticipant
-	SelectedID       string
-	TreeSelectedID   string
-	SelectedDepth    int
-	TraversalPath    []nostrx.Event
-	RootID           string
-	ParentID         string
-	BackThreadID     string
-	BackNoteID       string
-	BackReadID       string
+	Thread               thread.View
+	Tree                 ThreadTreeData
+	ReferencedEvents     map[string]nostrx.Event
+	ReplyCounts          map[string]int
+	ReactionTotals       map[string]int
+	ReactionViewers      map[string]string
+	Profiles             map[string]nostrx.Profile
+	Participants         []ThreadParticipant
+	SelectedID           string
+	TreeSelectedID       string
+	SelectedDepth        int
+	TraversalPath        []nostrx.Event
+	FocusOtherReplyNodes []thread.Node
+	LinearReplyNodes     []thread.Node
+	RootID               string
+	ParentID             string
+	BackThreadID         string
+	BackNoteID           string
+	BackReadID           string
 	FocusedView          bool
 	SelectedExpectsFocus bool
 	HiddenReplies        int
-	ReplyCursor      int64
-	ReplyCursorID    string
-	HasMore          bool
+	ReplyCursor          int64
+	ReplyCursorID        string
+	HasMore              bool
 }
 
 type ThreadParticipant struct {
@@ -869,7 +874,7 @@ func wrapCacheHash(content string, width int) wrapCacheKey {
 }
 
 func wrapCacheGet(content string, width int) ([]string, bool) {
-	if content == "" {
+	if content == "" || len(content) > maxWrapCacheInputBytes {
 		return nil, false
 	}
 	key := wrapCacheHash(content, width)
@@ -883,7 +888,7 @@ func wrapCacheGet(content string, width int) ([]string, bool) {
 }
 
 func wrapCachePut(content string, width int, lines []string) {
-	if content == "" {
+	if content == "" || len(content) > maxWrapCacheInputBytes {
 		return
 	}
 	key := wrapCacheHash(content, width)

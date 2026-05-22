@@ -656,16 +656,33 @@ func TestFeedDataHydratesReferencedEventsForRepostsAndQuotes(t *testing.T) {
 	author := strings.Repeat("a", 64)
 	reposter := strings.Repeat("b", 64)
 	quoter := strings.Repeat("c", 64)
+	linker := strings.Repeat("e", 64)
 	now := time.Now().Unix()
 	originalID := strings.Repeat("1", 64)
 	repostID := strings.Repeat("2", 64)
 	quoteID := strings.Repeat("3", 64)
+	linkedID := strings.Repeat("5", 64)
+	linkPostID := strings.Repeat("6", 64)
 	original := nostrx.Event{
 		ID:        originalID,
 		PubKey:    author,
 		CreatedAt: now - 20,
 		Kind:      nostrx.KindTextNote,
 		Content:   "original note",
+	}
+	linked := nostrx.Event{
+		ID:        linkedID,
+		PubKey:    author,
+		CreatedAt: now - 30,
+		Kind:      nostrx.KindTextNote,
+		Content:   "inline linked note",
+	}
+	linkPost := nostrx.Event{
+		ID:        linkPostID,
+		PubKey:    linker,
+		CreatedAt: now - 2,
+		Kind:      nostrx.KindTextNote,
+		Content:   "inline nostr:" + nostrx.EncodeNEvent(linkedID, author),
 	}
 	repost := nostrx.Event{
 		ID:        repostID,
@@ -688,7 +705,7 @@ func TestFeedDataHydratesReferencedEventsForRepostsAndQuotes(t *testing.T) {
 			{"q", originalID, "wss://relay.example", author},
 		},
 	}
-	for _, event := range []nostrx.Event{original, repost, quote} {
+	for _, event := range []nostrx.Event{original, linked, linkPost, repost, quote} {
 		if err := st.SaveEvent(ctx, event); err != nil {
 			t.Fatal(err)
 		}
@@ -698,7 +715,7 @@ func TestFeedDataHydratesReferencedEventsForRepostsAndQuotes(t *testing.T) {
 		PubKey:    viewer,
 		CreatedAt: now - 1,
 		Kind:      nostrx.KindFollowList,
-		Tags:      [][]string{{"p", reposter}, {"p", quoter}},
+		Tags:      [][]string{{"p", reposter}, {"p", quoter}, {"p", linker}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -712,6 +729,9 @@ func TestFeedDataHydratesReferencedEventsForRepostsAndQuotes(t *testing.T) {
 	}
 	if got := data.ReferencedEvents[originalID].Content; got != "original note" {
 		t.Fatalf("referenced content = %q, want %q", got, "original note")
+	}
+	if got := data.ReferencedEvents[linkedID].Content; got != "inline linked note" {
+		t.Fatalf("inline referenced content = %q, want %q", got, "inline linked note")
 	}
 }
 
@@ -1520,6 +1540,235 @@ func TestThreadFullPageSharedReplyWalkIncludesGrandchild(t *testing.T) {
 	}
 }
 
+func TestThreadFocusedInitialPageShowsOtherRepliesWhenSelectedHasNoChildren(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	rootID := strings.Repeat("1", 64)
+	parentID := strings.Repeat("2", 64)
+	selectedID := strings.Repeat("3", 64)
+	siblingID := strings.Repeat("4", 64)
+	nestedSiblingID := strings.Repeat("5", 64)
+	pk := strings.Repeat("a", 64)
+	events := []nostrx.Event{
+		{ID: rootID, PubKey: pk, CreatedAt: 1000, Kind: nostrx.KindTextNote, Content: "root", Sig: "s"},
+		{
+			ID: parentID, PubKey: pk, CreatedAt: 1001, Kind: nostrx.KindTextNote, Content: "parent", Sig: "s",
+			Tags: [][]string{{"e", rootID, "", "root"}, {"e", rootID, "", "reply"}},
+		},
+		{
+			ID: selectedID, PubKey: pk, CreatedAt: 1002, Kind: nostrx.KindTextNote, Content: "selected", Sig: "s",
+			Tags: [][]string{{"e", rootID, "", "root"}, {"e", parentID, "", "reply"}},
+		},
+		{
+			ID: siblingID, PubKey: pk, CreatedAt: 1003, Kind: nostrx.KindTextNote, Content: "sibling reply that should not disappear", Sig: "s",
+			Tags: [][]string{{"e", rootID, "", "root"}, {"e", rootID, "", "reply"}},
+		},
+		{
+			ID: nestedSiblingID, PubKey: pk, CreatedAt: 1004, Kind: nostrx.KindTextNote, Content: "nested sibling reply that should not disappear", Sig: "s",
+			Tags: [][]string{{"e", rootID, "", "root"}, {"e", parentID, "", "reply"}},
+		},
+	}
+	for _, ev := range events {
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/thread/"+selectedID, nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="note-`+siblingID+`"`) {
+		t.Fatalf("focused thread should render sibling replies when selected has no children: %s", body)
+	}
+	if !strings.Contains(body, `id="note-`+nestedSiblingID+`"`) {
+		t.Fatalf("focused thread should render nested sibling replies from the full walk: %s", body)
+	}
+}
+
+func TestThreadRootPagePromotesRepliesWhoseIntermediateParentIsMissing(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	rootID := strings.Repeat("1", 64)
+	missingParentID := strings.Repeat("2", 64)
+	orphanID := strings.Repeat("3", 64)
+	childID := strings.Repeat("4", 64)
+	pk := strings.Repeat("a", 64)
+	events := []nostrx.Event{
+		{ID: rootID, PubKey: pk, CreatedAt: 1000, Kind: nostrx.KindTextNote, Content: "root", Sig: "s"},
+		{
+			ID: orphanID, PubKey: pk, CreatedAt: 1001, Kind: nostrx.KindTextNote, Content: "orphan still belongs to root", Sig: "s",
+			Tags: [][]string{{"e", rootID, "", "root"}, {"e", missingParentID, "", "reply"}},
+		},
+		{
+			ID: childID, PubKey: pk, CreatedAt: 1002, Kind: nostrx.KindTextNote, Content: "child under promoted orphan", Sig: "s",
+			Tags: [][]string{{"e", rootID, "", "root"}, {"e", orphanID, "", "reply"}},
+		},
+	}
+	for _, ev := range events {
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/thread/"+rootID+"?fragment=hydrate", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="note-`+orphanID+`"`) {
+		t.Fatalf("root hydrate should render orphaned root descendant: %s", body)
+	}
+	if !strings.Contains(body, `id="note-`+childID+`"`) {
+		t.Fatalf("root hydrate should keep children under promoted orphan: %s", body)
+	}
+}
+
+func TestThreadHydrateFocusesSelectedReplyWhoseParentIsMissing(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	rootID := strings.Repeat("1", 64)
+	missingParentID := strings.Repeat("2", 64)
+	selectedID := strings.Repeat("3", 64)
+	childID := strings.Repeat("4", 64)
+	siblingID := strings.Repeat("5", 64)
+	pk := strings.Repeat("a", 64)
+	events := []nostrx.Event{
+		{ID: rootID, PubKey: pk, CreatedAt: 1000, Kind: nostrx.KindTextNote, Content: "root", Sig: "s"},
+		{
+			ID: selectedID, PubKey: pk, CreatedAt: 1001, Kind: nostrx.KindTextNote, Content: "selected with missing parent", Sig: "s",
+			Tags: [][]string{{"e", rootID, "", "root"}, {"e", missingParentID, "", "reply"}},
+		},
+		{
+			ID: childID, PubKey: pk, CreatedAt: 1002, Kind: nostrx.KindTextNote, Content: "selected child", Sig: "s",
+			Tags: [][]string{{"e", rootID, "", "root"}, {"e", selectedID, "", "reply"}},
+		},
+		{
+			ID: siblingID, PubKey: pk, CreatedAt: 1003, Kind: nostrx.KindTextNote, Content: "root sibling", Sig: "s",
+			Tags: [][]string{{"e", rootID, "", "root"}, {"e", rootID, "", "reply"}},
+		},
+	}
+	for _, ev := range events {
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/thread/"+selectedID+"?fragment=hydrate", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("X-Ptxt-Thread-Incomplete"); got != "" {
+		t.Fatalf("X-Ptxt-Thread-Incomplete = %q, want empty for repaired focused branch", got)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `thread-focus-selected" id="note-`+selectedID+`"`) {
+		t.Fatalf("hydrate should focus selected reply even with missing parent: %s", body)
+	}
+	if !strings.Contains(body, `id="note-`+childID+`"`) {
+		t.Fatalf("hydrate should render selected child first branch: %s", body)
+	}
+	if !strings.Contains(body, `data-thread-other-replies-toggle`) {
+		t.Fatalf("hydrate should separate surrounding replies behind a toggle: %s", body)
+	}
+	if !strings.Contains(body, `id="note-`+siblingID+`"`) {
+		t.Fatalf("hydrate should keep surrounding root branch replies: %s", body)
+	}
+	childIdx := strings.Index(body, `id="note-`+childID+`"`)
+	toggleIdx := strings.Index(body, `data-thread-other-replies-toggle`)
+	siblingIdx := strings.Index(body, `id="note-`+siblingID+`"`)
+	if !(childIdx >= 0 && toggleIdx > childIdx && siblingIdx > toggleIdx) {
+		t.Fatalf("focused child, other-replies toggle, and sibling order wrong: child=%d toggle=%d sibling=%d", childIdx, toggleIdx, siblingIdx)
+	}
+}
+
+func TestThreadHydrateDepthFiveSelectedBranchFirst(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	rootID := strings.Repeat("1", 64)
+	aID := strings.Repeat("2", 64)
+	bID := strings.Repeat("3", 64)
+	cID := strings.Repeat("4", 64)
+	dID := strings.Repeat("5", 64)
+	selectedID := strings.Repeat("6", 64)
+	childID := strings.Repeat("7", 64)
+	pk := strings.Repeat("a", 64)
+	events := []nostrx.Event{
+		{ID: rootID, PubKey: pk, CreatedAt: 1000, Kind: nostrx.KindTextNote, Content: "root", Sig: "s"},
+		{ID: aID, PubKey: pk, CreatedAt: 1001, Kind: nostrx.KindTextNote, Content: "a", Sig: "s", Tags: [][]string{{"e", rootID, "", "root"}, {"e", rootID, "", "reply"}}},
+		{ID: bID, PubKey: pk, CreatedAt: 1002, Kind: nostrx.KindTextNote, Content: "b", Sig: "s", Tags: [][]string{{"e", rootID, "", "root"}, {"e", aID, "", "reply"}}},
+		{ID: cID, PubKey: pk, CreatedAt: 1003, Kind: nostrx.KindTextNote, Content: "c", Sig: "s", Tags: [][]string{{"e", rootID, "", "root"}, {"e", bID, "", "reply"}}},
+		{ID: dID, PubKey: pk, CreatedAt: 1004, Kind: nostrx.KindTextNote, Content: "d", Sig: "s", Tags: [][]string{{"e", rootID, "", "root"}, {"e", cID, "", "reply"}}},
+		{ID: selectedID, PubKey: pk, CreatedAt: 1005, Kind: nostrx.KindTextNote, Content: "selected", Sig: "s", Tags: [][]string{{"e", rootID, "", "root"}, {"e", dID, "", "reply"}}},
+		{ID: childID, PubKey: pk, CreatedAt: 1006, Kind: nostrx.KindTextNote, Content: "selected child", Sig: "s", Tags: [][]string{{"e", rootID, "", "root"}, {"e", selectedID, "", "reply"}}},
+	}
+	for _, ev := range events {
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/thread/"+selectedID+"?fragment=hydrate", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `thread-focus-selected" id="note-`+selectedID+`"`) {
+		t.Fatalf("depth-5 hydrate should focus selected reply: %s", body)
+	}
+	if !strings.Contains(body, `id="note-`+childID+`"`) {
+		t.Fatalf("depth-5 hydrate should render selected child: %s", body)
+	}
+	if !strings.Contains(body, "show messages above") {
+		t.Fatalf("depth-5 hydrate should expose ancestor stack: %s", body)
+	}
+}
+
+func TestThreadHydrateAndFullPageAgreeOnFocusedMissingParentReply(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	rootID := strings.Repeat("1", 64)
+	missingParentID := strings.Repeat("2", 64)
+	selectedID := strings.Repeat("3", 64)
+	childID := strings.Repeat("4", 64)
+	pk := strings.Repeat("a", 64)
+	events := []nostrx.Event{
+		{ID: rootID, PubKey: pk, CreatedAt: 1000, Kind: nostrx.KindTextNote, Content: "root", Sig: "s"},
+		{ID: selectedID, PubKey: pk, CreatedAt: 1001, Kind: nostrx.KindTextNote, Content: "selected", Sig: "s", Tags: [][]string{{"e", rootID, "", "root"}, {"e", missingParentID, "", "reply"}}},
+		{ID: childID, PubKey: pk, CreatedAt: 1002, Kind: nostrx.KindTextNote, Content: "child", Sig: "s", Tags: [][]string{{"e", rootID, "", "root"}, {"e", selectedID, "", "reply"}}},
+	}
+	for _, ev := range events {
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, path := range []string{"/thread/" + selectedID, "/thread/" + selectedID + "?fragment=hydrate"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200", path, rec.Code)
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, `thread-focus-selected" id="note-`+selectedID+`"`) {
+			t.Fatalf("%s should focus selected reply: %s", path, body)
+		}
+		if !strings.Contains(body, `id="note-`+childID+`"`) {
+			t.Fatalf("%s should render selected child: %s", path, body)
+		}
+	}
+}
+
 func TestRelaySuggestionsFragmentUsesCachedNIP65Event(t *testing.T) {
 	srv, st := testServer(t)
 	pubkey := strings.Repeat("b", 64)
@@ -1925,10 +2174,8 @@ func TestThreadHydrateFetchesDirectRepliesMissingFromStore(t *testing.T) {
 		relayByID[idHex] = ev
 		toSave = append(toSave, fnostrToNostrxEvent(ev))
 	}
-	for _, ev := range toSave {
-		if err := st.SaveEvent(ctx, ev); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := st.SaveEvents(ctx, toSave); err != nil {
+		t.Fatal(err)
 	}
 	childIDs := make([]string, 0, len(relayByID))
 	for id := range relayByID {
@@ -1950,6 +2197,89 @@ func TestThreadHydrateFetchesDirectRepliesMissingFromStore(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, "hydrate relay child one") || !strings.Contains(body, "hydrate relay child two") {
 		t.Fatalf("hydrate should render direct replies fetched from relay: %s", body)
+	}
+}
+
+// Regression: store-first OP hydrate must not accept reply counts without reply bodies.
+func TestThreadHydrateStoreFirstOPFetchesMissingDirectReplies(t *testing.T) {
+	srv, st := newTestServer(t, testServerOptions{
+		prefix:         "thread-hydrate-store-first-op-replies",
+		requestTimeout: time.Second,
+		relayTimeout:   200 * time.Millisecond,
+	})
+	ctx := context.Background()
+
+	rootID := strings.Repeat("a", 64)
+	pk := strings.Repeat("1", 64)
+	rootEv := nostrx.Event{
+		ID:        rootID,
+		PubKey:    pk,
+		CreatedAt: 1000,
+		Kind:      nostrx.KindTextNote,
+		Content:   "store-first op root",
+		Sig:       "sig",
+	}
+	childTags := fnostr.Tags{
+		fnostr.Tag{"e", rootID, "", "root"},
+		fnostr.Tag{"e", rootID, "", "reply"},
+	}
+	childContents := []string{"store-first op child one", "store-first op child two"}
+	relayByID := make(map[string]fnostr.Event, len(childContents))
+	toSave := []nostrx.Event{rootEv}
+	for i, content := range childContents {
+		ev := fnostr.Event{
+			CreatedAt: fnostr.Timestamp(1001 + i),
+			Kind:      fnostr.Kind(nostrx.KindTextNote),
+			Content:   content,
+			Tags:      childTags,
+		}
+		if err := ev.Sign(fnostr.Generate()); err != nil {
+			t.Fatal(err)
+		}
+		idHex := ev.ID.Hex()
+		relayByID[idHex] = ev
+		toSave = append(toSave, fnostrToNostrxEvent(ev))
+	}
+	if _, err := st.SaveEvents(ctx, toSave); err != nil {
+		t.Fatal(err)
+	}
+	childIDs := make([]string, 0, len(relayByID))
+	for id := range relayByID {
+		childIDs = append(childIDs, id)
+	}
+	if err := st.DeleteEventsForTesting(ctx, childIDs); err != nil {
+		t.Fatal(err)
+	}
+	srv.markThreadHydrateContextWarmed(ctx, rootID)
+	srv.markThreadHydrateRepliesReady(ctx, rootID)
+
+	emptyRelay := newTestRelayREQEventsByIDs(ctx, nil)
+	defer emptyRelay.Close()
+	req := httptest.NewRequest(http.MethodGet, "/thread/"+rootID+"?fragment=hydrate&relays="+wsURL(emptyRelay.URL), nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("empty hydrate status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("X-Ptxt-Thread-Incomplete"); got != "1" {
+		t.Fatalf("X-Ptxt-Thread-Incomplete = %q, want 1 when reply bodies remain missing", got)
+	}
+
+	relay := newTestRelayREQEventsByIDs(ctx, relayByID)
+	defer relay.Close()
+
+	req = httptest.NewRequest(http.MethodGet, "/thread/"+rootID+"?fragment=hydrate&relays="+wsURL(relay.URL), nil)
+	rec = httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("hydrate status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("X-Ptxt-Thread-Incomplete"); got != "" {
+		t.Fatalf("X-Ptxt-Thread-Incomplete = %q, want empty", got)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "store-first op child one") || !strings.Contains(body, "store-first op child two") {
+		t.Fatalf("store-first OP hydrate should render direct replies fetched from relay: %s", body)
 	}
 }
 
@@ -2836,6 +3166,59 @@ func TestFeedHandlerUsesFullWOTMembershipBeyondRefreshCap(t *testing.T) {
 	}
 }
 
+func TestWoTFeedMergesThinSQLWithNewerScannedAuthors(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	viewer := strings.Repeat("a", 64)
+	firstHop := strings.Repeat("b", 64)
+	target := strings.Repeat("f", 64)
+	if err := st.SaveEvent(ctx, nostrx.Event{
+		ID:        strings.Repeat("1", 64),
+		PubKey:    viewer,
+		CreatedAt: 10,
+		Kind:      nostrx.KindFollowList,
+		Tags:      [][]string{{"p", firstHop}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	followTags := make([][]string, 0, 300)
+	for i := 0; i < 299; i++ {
+		followTags = append(followTags, []string{"p", fmt.Sprintf("%064x", i+100)})
+	}
+	followTags = append(followTags, []string{"p", target})
+	if err := st.SaveEvent(ctx, nostrx.Event{
+		ID:        strings.Repeat("2", 64),
+		PubKey:    firstHop,
+		CreatedAt: 11,
+		Kind:      nostrx.KindFollowList,
+		Tags:      followTags,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range []nostrx.Event{
+		{ID: strings.Repeat("3", 64), PubKey: firstHop, CreatedAt: 20, Kind: nostrx.KindTextNote, Content: "old sql note"},
+		{ID: strings.Repeat("4", 64), PubKey: target, CreatedAt: 30, Kind: nostrx.KindTextNote, Content: "new scanned note"},
+	} {
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/feed?pubkey="+viewer+"&wot=1&wot_depth=2", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "new scanned note") {
+		t.Fatalf("expected newer scanned WoT note beyond SQL cap: %s", body)
+	}
+	if strings.Index(body, "new scanned note") > strings.Index(body, "old sql note") {
+		t.Fatalf("expected scanned note to sort ahead of older SQL note: %s", body)
+	}
+}
+
 func TestFetchScannedFeedPageFallsBackToAuthorQueryWhenScanIsEmpty(t *testing.T) {
 	srv, st := testServer(t)
 	ctx := context.Background()
@@ -3671,6 +4054,15 @@ func TestRankedFeedMutePaginationAdvancesPastSkippedRankedNotes(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.SaveEvent(ctx, nostrx.Event{
+		ID:        strings.Repeat("e", 64),
+		PubKey:    viewer,
+		CreatedAt: now + 2,
+		Kind:      nostrx.KindFollowList,
+		Tags:      [][]string{{"p", good}, {"p", muted}},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	specs := []struct {
 		id      string
 		pub     string
@@ -3698,7 +4090,8 @@ func TestRankedFeedMutePaginationAdvancesPastSkippedRankedNotes(t *testing.T) {
 	for _, spec := range specs {
 		items = append(items, store.TrendingItem{NoteID: spec.id, ReplyCount: spec.replies})
 	}
-	if err := st.WriteTrendingCache(ctx, trending24h, "", items, now); err != nil {
+	cohortKey := authorsCacheKey([]string{good, muted, viewer})
+	if err := st.WriteTrendingCache(ctx, trending24h, cohortKey, items, now); err != nil {
 		t.Fatal(err)
 	}
 	page1 := srv.feedPageDataEx(ctx, feedRequest{Pubkey: viewer, Limit: 2, SortMode: feedSortTrend24h}, true, feedPageDataOptions{})
@@ -3791,6 +4184,37 @@ func TestTrendingDataMissReturnsFastEmptyAndWarmsAsync(t *testing.T) {
 	}
 }
 
+func TestTrendingDataCacheOnlyGlobalFallbackFiltersToCohort(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	inside := strings.Repeat("a", 64)
+	outside := strings.Repeat("b", 64)
+	for _, event := range []nostrx.Event{
+		{ID: "note-inside", PubKey: inside, CreatedAt: now - 1, Kind: nostrx.KindTextNote, Content: "inside cohort"},
+		{ID: "note-outside", PubKey: outside, CreatedAt: now - 2, Kind: nostrx.KindTextNote, Content: "outside cohort"},
+	} {
+		if err := st.SaveEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.WriteTrendingCache(ctx, trending24h, "", []store.TrendingItem{
+		{NoteID: "note-outside", ReplyCount: 10, Score: 10},
+		{NoteID: "note-inside", ReplyCount: 5, Score: 5},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	cohort := []string{inside}
+	trending := srv.trendingData(ctx, trending24h, authorsCacheKey(cohort), cohort, nil, true)
+	if len(trending) != 1 {
+		t.Fatalf("trending len = %d, want 1: %#v", len(trending), trending)
+	}
+	if trending[0].Event.ID != "note-inside" {
+		t.Fatalf("expected cohort-filtered fallback, got %#v", trending)
+	}
+}
+
 func TestFetchAuthorsPageFeedFullCacheSkipsRefresh(t *testing.T) {
 	srv, st := testServer(t)
 	ctx := context.Background()
@@ -3811,7 +4235,7 @@ func TestFetchAuthorsPageFeedFullCacheSkipsRefresh(t *testing.T) {
 	relay := newRelayWithEvents(t, []nostrx.Event{fresh})
 	defer relay.Close()
 
-	events, _ := srv.fetchAuthorsPage(ctx, "", []string{pubkey}, 0, "", 30, []string{wsURL(relay.URL)}, "feed", authorsCacheKey([]string{pubkey}), nil)
+	events, _ := srv.fetchAuthorsPage(ctx, "", []string{pubkey}, 0, "", 30, []string{wsURL(relay.URL)}, "feed", authorsCacheKey([]string{pubkey}), nil, false)
 	if len(events) == 0 {
 		t.Fatalf("expected cached page")
 	}
@@ -3842,7 +4266,7 @@ func TestFetchAuthorsPageProfileFullCacheRefreshesFirstPage(t *testing.T) {
 	relay := newRelayWithEvents(t, []nostrx.Event{fresh})
 	defer relay.Close()
 
-	events, _ := srv.fetchAuthorsPage(ctx, strings.Repeat("f", 64), []string{pubkey}, 0, "", 30, []string{wsURL(relay.URL)}, "profile", pubkey, nil)
+	events, _ := srv.fetchAuthorsPage(ctx, strings.Repeat("f", 64), []string{pubkey}, 0, "", 30, []string{wsURL(relay.URL)}, "profile", pubkey, nil, false)
 	if len(events) == 0 {
 		t.Fatalf("expected profile page results")
 	}

@@ -3533,6 +3533,8 @@ button.note-image-toggle {
 }
 
 .profile-hero-text {
+  container-name: profile-hero-text;
+  container-type: inline-size;
   display: flex;
   flex: 1 1 0;
   flex-direction: column;
@@ -3742,6 +3744,31 @@ button.note-image-toggle {
   column-gap: 1.5em;
   display: flex;
   flex-wrap: nowrap;
+}
+
+@media (min-width: 701px) {
+  @container profile-hero-text (min-width: 25rem) {
+    .profile-npub-block--header .profile-npub-grid {
+      column-gap: 1.25em;
+      display: grid;
+      grid-template-columns: repeat(8, max-content);
+      row-gap: 0.08em;
+      width: max-content;
+    }
+
+    .profile-npub-block--header .profile-npub-grid-row {
+      display: contents;
+    }
+
+    .profile-npub-block--header .profile-npub-cell {
+      font-weight: 400;
+    }
+
+    .profile-npub-block--header .profile-npub-grid-row:nth-child(-n + 2) .profile-npub-cell:nth-child(odd),
+    .profile-npub-block--header .profile-npub-grid-row:nth-child(n + 3) .profile-npub-cell:nth-child(even) {
+      font-weight: 700;
+    }
+  }
 }
 
 .profile-npub-cell {

@@ -11,7 +11,7 @@ import { prepareInlineVideo } from "./inline-video.js";
 // applies stricter path rules when resolving the feed URL.
 const HASHTAG_PATTERN_STEM = "(?:^|[\\s])#([\\p{L}\\p{N}_]+)";
 const HASHTAG_PATTERN = new RegExp(HASHTAG_PATTERN_STEM, "gu");
-const NOSTR_OR_HASHTAG_PATTERN = new RegExp(`${NOSTR_REF_PATTERN.source}|${HASHTAG_PATTERN_STEM}`, "giu");
+const NOSTR_REF_DETECT_PATTERN = new RegExp(NOSTR_REF_PATTERN.source, "iu");
 
 const minColumns = 32;
 const maxColumns = 160;
@@ -25,6 +25,7 @@ const IMAGE_EXT_PATTERN = /\.(?:png|jpe?g|gif|webp|avif|svg)(?:[?#][^\s<>"']*)?$
 const VIDEO_EXT_PATTERN = /\.(?:mp4|webm|m4v|mov|ogv|ogg)(?:[?#][^\s<>"']*)?$/i;
 const TRAILING_URL_PUNCTUATION = /[),.!?;:]+$/;
 const HTTPS_URL_PATTERN = /https:\/\/[^\s<>"'`]+/gi;
+const NOSTR_OR_HASHTAG_PATTERN = new RegExp(`${HTTPS_URL_PATTERN.source}|${NOSTR_REF_PATTERN.source}|${HASHTAG_PATTERN_STEM}`, "giu");
 const observed = new WeakSet();
 const mobileActionsQuery = window.matchMedia("(max-width: 700px)");
 let useDoubleWideCells = true;
@@ -39,6 +40,7 @@ const imageViewerState = {
   index: 0,
   ownerNoteID: "",
 };
+const expandedReferenceCards = new WeakMap();
 let feedLoaderTick = 0;
 let feedLoaderTimer = 0;
 const loaderLayoutObservedColumns = new WeakSet();
@@ -411,7 +413,7 @@ function readMentionMap(container) {
     const labels = [...map.keys()].sort((a, b) => b.length - a.length);
     const escaped = labels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
     const pattern = new RegExp(
-      `(${escaped.join("|")})|${NOSTR_REF_PATTERN.source}|${HASHTAG_PATTERN_STEM}`,
+      `${HTTPS_URL_PATTERN.source}|(${escaped.join("|")})|${NOSTR_REF_PATTERN.source}|${HASHTAG_PATTERN_STEM}`,
       "giu",
     );
     container.__asciiMentionMap = { map, pattern };
@@ -424,7 +426,7 @@ function readMentionMap(container) {
 function appendMentionAwareText(target, text, container, urlState) {
   if (!text) return 0;
   const ctx = readMentionMap(container);
-  const hasNostr = !ctx && text.indexOf("nostr:") >= 0;
+  const hasNostr = !ctx && NOSTR_REF_DETECT_PATTERN.test(text);
   const hasHashtag = !ctx && HASHTAG_PATTERN.test(text);
   HASHTAG_PATTERN.lastIndex = 0;
   if (!ctx && !hasNostr && !hasHashtag) {
@@ -445,11 +447,15 @@ function appendMentionAwareText(target, text, container, urlState) {
     let href = "";
     let label = token;
     let title = token;
-    if (ctx && ctx.map.has(token)) {
+    if (/^https:\/\//i.test(token)) {
+      used += appendHttpsUrls(target, token, urlState, container);
+      cursor = start + token.length;
+      continue;
+    } else if (ctx && ctx.map.has(token)) {
       const info = ctx.map.get(token);
       href = info.href;
       title = info.title || "";
-    } else if (token.toLowerCase().startsWith("nostr:")) {
+    } else if (/^(?:nostr:)?(?:nevent|nprofile|npub|note)/i.test(token)) {
       const ref = nostrRefLink(token);
       if (ref?.href && ref?.label) {
         href = ref.href;
@@ -502,6 +508,28 @@ function viewMoreButton(container, width) {
     container.dataset.asciiExpanded = "true";
     renderNote(container, width);
   });
+}
+
+function isReferenceExpanded(container, key) {
+  if (!container || !key) return false;
+  return expandedReferenceCards.get(container)?.has(key) || false;
+}
+
+function referenceViewMoreButton(container, width, key) {
+  const item = button("view more", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!key) return;
+    let expanded = expandedReferenceCards.get(container);
+    if (!expanded) {
+      expanded = new Set();
+      expandedReferenceCards.set(container, expanded);
+    }
+    expanded.add(key);
+    renderNote(container, width);
+  });
+  item.setAttribute("aria-expanded", "false");
+  return item;
 }
 
 function reactionGlyphChars(container) {
@@ -689,6 +717,20 @@ function sourceText(container) {
 
 function referenceSourceText(container) {
   return container.querySelector(":scope > .ascii-reference-source")?.content?.textContent?.trim() || "";
+}
+
+function inlineReferenceSources(container) {
+  if (!container) return [];
+  return [...container.querySelectorAll(":scope > .ascii-inline-reference-source")]
+    .map((tmpl, index) => ({
+      key: `inline:${tmpl.dataset.asciiRefId || index}`,
+      author: tmpl.dataset.asciiRefAuthor || "",
+      age: tmpl.dataset.asciiRefAge || "",
+      replyLabel: tmpl.dataset.asciiRefReplyLabel || "",
+      threadHref: tmpl.dataset.asciiRefThreadHref || "",
+      source: tmpl.content?.textContent?.trim() || "",
+    }))
+    .filter((ref) => ref.source || ref.threadHref);
 }
 
 /** Quote/repost body text with image placeholders applied (shared by tree quotes and nested ASCII refs). */
@@ -1387,23 +1429,53 @@ export function refreshThreadTreeQuotes(root = document) {
 function appendNestedReferenceLines(target, width, container) {
   const mode = container.dataset.asciiRefMode;
   if (!mode) return;
+  appendReferenceCardLines(target, width, container, {
+    key: "nested",
+    author: container.dataset.asciiRefAuthor || "",
+    age: container.dataset.asciiRefAge || "",
+    replyLabel: container.dataset.asciiRefReplyLabel || "",
+    threadHref: container.dataset.asciiRefThreadHref || "",
+    source: referenceBodyDisplaySource(container, getImageModePref()),
+  });
+}
+
+function appendInlineReferenceLines(target, width, container) {
+  const imageMode = getImageModePref();
+  inlineReferenceSources(container).forEach((ref) => {
+    appendReferenceCardLines(target, width, container, {
+      ...ref,
+      source: displaySourceForMedia(ref.source, imageMode ? extractMediaItems(ref.source) : [], imageMode),
+    });
+  });
+}
+
+function appendReferenceCardLines(target, width, container, ref) {
   const innerWidth = Math.max(20, width - 8);
   const innerContentWidth = Math.max(8, innerWidth - 4);
-  const refAuthor = truncateMiddle(container.dataset.asciiRefAuthor || "", Math.max(8, innerWidth - 16));
-  const refAge = container.dataset.asciiRefAge || "";
-  const refReplyLabel = container.dataset.asciiRefReplyLabel || "";
-  const refThreadHref = container.dataset.asciiRefThreadHref || "";
+  const refAuthor = truncateMiddle(ref.author || "", Math.max(8, innerWidth - 16));
+  const refAge = ref.age || "";
+  const refReplyLabel = ref.replyLabel || "";
+  const refThreadHref = ref.threadHref || "";
   const refAttrs = refThreadHref
     ? { asciiRefSelectHref: refThreadHref, asciiRefHit: "1" }
     : null;
-  const imageMode = getImageModePref();
-  const referenceSource = referenceBodyDisplaySource(container, imageMode);
+  const referenceSource = ref.source || "";
   const headerPrefix = `  +- ${refAuthor} -- ${refAge} `;
   const headerRule = repeat("-", Math.max(1, innerWidth - runeLength(`+- ${refAuthor} -- ${refAge} +`)));
   appendBoxedTextLine(target, width, `${headerPrefix}${headerRule}+`, refAttrs, container);
-  wrapText(referenceSource, innerContentWidth).forEach((row) => {
+  const rows = wrapText(referenceSource, innerContentWidth);
+  const collapsing = rows.length > collapsedNoteLines && !isReferenceExpanded(container, ref.key);
+  const visibleRows = collapsing ? rows.slice(0, collapsedNoteLines) : rows;
+  if (collapsing && visibleRows.length > 0) {
+    const li = visibleRows.length - 1;
+    visibleRows[li] = { ...visibleRows[li], text: addTrailingDots(visibleRows[li].text, innerContentWidth) };
+  }
+  visibleRows.forEach((row) => {
     appendBoxedTextLine(target, width, `  | ${padRight(row.text, innerContentWidth)} |`, refAttrs, container);
   });
+  if (collapsing) {
+    appendReferenceViewMoreLine(target, width, refAttrs, referenceViewMoreButton(container, width, ref.key));
+  }
   const refRb = (() => {
     const up = "△";
     const down = "▽";
@@ -1416,6 +1488,32 @@ function appendNestedReferenceLines(target, width, container) {
     Math.max(1, innerWidth - runeLength(`+-- ${refRb} `) - runeLength(footerSuffix)),
   );
   appendBoxedTextLine(target, width, `  +-- ${refRb} ${footerRule}${footerSuffix}`, refAttrs, container);
+}
+
+function appendReferenceViewMoreLine(target, width, attrs, vmButton) {
+  const innerWidth = Math.max(20, width - 8);
+  const innerContentWidth = Math.max(8, innerWidth - 4);
+  const item = document.createElement("span");
+  item.className = "ascii-line";
+  if (attrs) {
+    Object.entries(attrs).forEach(([key, value]) => {
+      if (value === undefined || value === null || value === "") return;
+      item.dataset[key] = value;
+    });
+  }
+  item.append(noteChrome("| "));
+  const middle = document.createElement("span");
+  const label = vmButton.textContent || "view more";
+  middle.append(
+    noteChrome("  | "),
+    vmButton,
+    noteChrome(" ".repeat(Math.max(0, innerContentWidth - runeLength(label)))),
+    noteChrome(" |"),
+  );
+  const used = runeLength(`  | ${label}`) + Math.max(0, innerContentWidth - runeLength(label)) + runeLength(" |");
+  middle.append(" ".repeat(Math.max(0, Math.max(1, width - 4) - used)));
+  item.append(middle, noteChrome(" |"));
+  target.append(item, "\n");
 }
 
 function renderNote(container, width) {
@@ -1435,7 +1533,7 @@ function renderNote(container, width) {
   const contentWidth = Math.max(1, width - 4);
   const noteSource = displaySourceForMedia(rawSource, outerMediaItems, imageMode);
   const allRows = refMode === "repost" ? [] : wrapText(noteSource, contentWidth);
-  const isLong = !hasReference && allRows.length > collapsedNoteLines;
+  const isLong = allRows.length > collapsedNoteLines;
   const isExpanded = container.dataset.asciiExpanded === "true";
   const collapsing = isLong && !isExpanded;
   const viewMoreInBody = collapsing && mobileActionsQuery.matches;
@@ -1507,6 +1605,7 @@ function renderNote(container, width) {
   if (viewMoreInBody) {
     appendViewMoreContentLine(content, width, container, viewMoreButton(container, width));
   }
+  appendInlineReferenceLines(content, width, container);
   if (hasReference) {
     appendNestedReferenceLines(content, width, container);
   }

@@ -79,18 +79,18 @@ func (s *Server) trendingRankKeysAndEvents(ctx context.Context, items []store.Tr
 	}
 	ids := noteIDsFromTrendingItems(items)
 	byID := s.eventsByIDFromStore(ctx, ids)
-	reactStats, _, _ := s.store.ReactionStatsByNoteIDs(ctx, ids, "")
 	keys := make(map[string]trendingRankKey, len(items))
 	for _, item := range items {
 		if item.NoteID == "" {
 			continue
 		}
-		key := trendingRankKey{score: item.ReplyCount, id: item.NoteID}
+		score := item.Score
+		if score <= 0 {
+			score = item.ReplyCount
+		}
+		key := trendingRankKey{score: score, id: item.NoteID}
 		if ev := byID[item.NoteID]; ev != nil {
 			key.createdAt = ev.CreatedAt
-		}
-		if reactStats != nil {
-			key.score = trendingEngagementScore(key.score, reactStats[item.NoteID].Total)
 		}
 		keys[item.NoteID] = key
 	}
@@ -135,7 +135,7 @@ func (s *Server) rankedTrendingFeedPageFromCache(ctx context.Context, timeframe,
 
 func rankedFeedPaginationCursor(s *Server, ctx context.Context, events []nostrx.Event, rankAfter trendingRankKey, muteViewer string) (int64, string) {
 	tail := events[len(events)-1]
-	if muteViewer != "" && rankAfter.id != "" && rankAfter.id != tail.ID {
+	if muteViewer != "" && rankAfter.id != "" {
 		return int64(rankAfter.score), rankAfter.id
 	}
 	key := s.trendingRankKeyForEvent(ctx, tail)

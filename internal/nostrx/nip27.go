@@ -112,23 +112,26 @@ func DecodeNIP27Reference(raw string) (NIP27Reference, error) {
 }
 
 func ExtractNIP27References(content string) []NIP27Reference {
-	if !containsFold(content, "nostr:") {
+	if !containsFold(content, "nostr:") && nextBareNIP19Index(content) < 0 {
 		return nil
 	}
 	refs := make([]NIP27Reference, 0, 4)
 	index := 0
 	for {
-		match := indexFold(content[index:], "nostr:")
+		match, prefixed := nextNIP19ReferenceIndex(content[index:])
 		if match < 0 {
 			break
 		}
 		start := index + match
-		cursor := start + len("nostr:")
+		cursor := start
+		if prefixed {
+			cursor += len("nostr:")
+		}
 		for cursor < len(content) && isNIP27CodeRune(rune(content[cursor])) {
 			cursor++
 		}
-		if cursor <= start+len("nostr:") {
-			index = start + len("nostr:")
+		if cursor <= start || (prefixed && cursor <= start+len("nostr:")) {
+			index = start + 1
 			continue
 		}
 		raw := content[start:cursor]
@@ -142,6 +145,42 @@ func ExtractNIP27References(content string) []NIP27Reference {
 		index = cursor
 	}
 	return refs
+}
+
+func nextNIP19ReferenceIndex(s string) (idx int, prefixed bool) {
+	best := -1
+	bestPrefixed := false
+	if idx := indexFold(s, "nostr:"); idx >= 0 {
+		best = idx
+		bestPrefixed = true
+	}
+	if idx := nextBareNIP19Index(s); idx >= 0 && (best < 0 || idx < best) {
+		best = idx
+		bestPrefixed = false
+	}
+	return best, bestPrefixed
+}
+
+func nextBareNIP19Index(s string) int {
+	best := -1
+	for _, prefix := range []string{"nprofile1", "nevent1", "npub1", "note1"} {
+		idx := 0
+		for {
+			match := indexFold(s[idx:], prefix)
+			if match < 0 {
+				break
+			}
+			start := idx + match
+			if start == 0 || !isNIP27CodeRune(rune(s[start-1])) {
+				if best < 0 || start < best {
+					best = start
+				}
+				break
+			}
+			idx = start + 1
+		}
+	}
+	return best
 }
 
 func ExtractMentionPubKeys(content string) []string {

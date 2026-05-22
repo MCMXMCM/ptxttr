@@ -129,6 +129,7 @@ func templateFuncs() template.FuncMap {
 		"asciiMentionContent":      asciiMentionContent,
 		"asciiMentionsJSON":        asciiMentionsJSON,
 		"asciiMentionsJSONFor":     asciiMentionsJSONFor,
+		"inlineReferenceEvents":    inlineReferenceEvents,
 		"replyTextWidth":           replyTextWidth,
 		"asciiReplyPadLine":        asciiReplyPadLine,
 		"isLastIndex":              isLastIndex,

@@ -49,6 +49,85 @@ func TestSignedInFeedDocumentUsesDurableSnapshotWhenPersonalizationCold(t *testi
 	}
 }
 
+func TestSignedInFeedBypassesStalePersonalizedSnapshot(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	viewer := strings.Repeat("a", 64)
+	author := strings.Repeat("b", 64)
+	relays := []string{"wss://custom.example"}
+	key := signedInFeedSnapshotKey(viewer, feedSortRecent, webOfTrustOptions{Enabled: false, Depth: 1}, relays)
+	rec := testFeedSnapshotRecord(hashStringSlice(relays), "stale personalized note")
+	rec.ComputedAtUnix = time.Now().Add(-signedInFeedSnapshotMaxAge - time.Minute).Unix()
+	if err := st.SetFeedSnapshot(ctx, key, rec); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []nostrx.Event{
+		{ID: strings.Repeat("4", 64), PubKey: viewer, CreatedAt: time.Now().Unix() - 10, Kind: nostrx.KindFollowList, Tags: [][]string{{"p", author}}, Sig: strings.Repeat("5", 128)},
+		{ID: strings.Repeat("6", 64), PubKey: author, CreatedAt: time.Now().Unix() - 5, Kind: nostrx.KindTextNote, Content: "fresh live note", Sig: strings.Repeat("7", 128)},
+	} {
+		if err := st.SaveEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/feed?pubkey="+viewer+"&relay=wss://custom.example", nil)
+	recorder := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", recorder.Code)
+	}
+	body := recorder.Body.String()
+	if strings.Contains(body, "stale personalized note") {
+		t.Fatalf("stale snapshot should have been bypassed: %s", body)
+	}
+	if !strings.Contains(body, "fresh live note") {
+		t.Fatalf("expected live feed note after stale snapshot bypass: %s", body)
+	}
+}
+
+func TestSignedInFeedSnapshotMutedItemsTopUpFromLiveFeed(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	viewer := strings.Repeat("a", 64)
+	muted := strings.Repeat("b", 64)
+	author := strings.Repeat("c", 64)
+	relays := []string{"wss://custom.example"}
+	key := signedInFeedSnapshotKey(viewer, feedSortRecent, webOfTrustOptions{Enabled: false, Depth: 1}, relays)
+	if err := st.SetFeedSnapshot(ctx, key, &store.FeedSnapshotRecord{
+		Version:        feedSnapshotRecordVersion,
+		RelaysHash:     hashStringSlice(relays),
+		Feed:           []nostrx.Event{{ID: strings.Repeat("8", 64), PubKey: muted, CreatedAt: time.Now().Unix(), Kind: nostrx.KindTextNote, Content: "muted snapshot note", Sig: strings.Repeat("9", 128)}},
+		Profiles:       map[string]store.DefaultSeedProfileSnap{},
+		HasMore:        true,
+		ComputedAtUnix: time.Now().Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []nostrx.Event{
+		{ID: strings.Repeat("d", 64), PubKey: viewer, CreatedAt: time.Now().Unix() - 20, Kind: nostrx.KindFollowList, Tags: [][]string{{"p", author}}, Sig: strings.Repeat("1", 128)},
+		{ID: strings.Repeat("e", 64), PubKey: viewer, CreatedAt: time.Now().Unix() - 19, Kind: nostrx.KindMuteList, Tags: [][]string{{"p", muted}}, Sig: strings.Repeat("2", 128)},
+		{ID: strings.Repeat("f", 64), PubKey: author, CreatedAt: time.Now().Unix() - 5, Kind: nostrx.KindTextNote, Content: "top up live note", Sig: strings.Repeat("3", 128)},
+	} {
+		if err := st.SaveEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/feed?pubkey="+viewer+"&relay=wss://custom.example", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "muted snapshot note") {
+		t.Fatalf("muted snapshot note should be filtered: %s", body)
+	}
+	if !strings.Contains(body, "top up live note") {
+		t.Fatalf("expected live top-up note after mute filtering: %s", body)
+	}
+}
+
 func TestSignedInFeedFragmentServesStarterSnapshotThenPersistsPersonalizedSnapshot(t *testing.T) {
 	srv, st := testServer(t)
 	ctx := context.Background()

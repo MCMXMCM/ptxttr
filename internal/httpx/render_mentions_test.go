@@ -89,3 +89,22 @@ func TestRewriteASCIIMentionsLeavesContentWithoutRefsUntouched(t *testing.T) {
 		t.Fatalf("mentions = %+v, want nil", mentions)
 	}
 }
+
+func TestInlineReferenceEventsReturnsHydratedContentRefs(t *testing.T) {
+	eventID := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	encoded := nostrx.EncodeNEvent(eventID, "")
+	content := "see nostr:" + encoded + " and " + encoded
+	referenced := map[string]nostrx.Event{
+		eventID: {
+			ID:      eventID,
+			Content: "linked note body",
+		},
+	}
+	events := inlineReferenceEvents(content, referenced)
+	if len(events) != 1 {
+		t.Fatalf("len(inlineReferenceEvents()) = %d, want 1", len(events))
+	}
+	if events[0].Content != "linked note body" {
+		t.Fatalf("Content = %q, want linked note body", events[0].Content)
+	}
+}

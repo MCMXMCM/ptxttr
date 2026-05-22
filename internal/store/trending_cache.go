@@ -144,7 +144,7 @@ func (s *Store) TrendingSummariesByKindsAfter(ctx context.Context, kinds []int, 
 }
 
 func (s *Store) ReadTrendingCache(ctx context.Context, timeframe string, cohortKey string) ([]TrendingItem, int64, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT note_id, reply_count, computed_at
+	rows, err := s.db.QueryContext(ctx, `SELECT note_id, reply_count, score, computed_at
 		FROM trending_cache
 		WHERE timeframe = ? AND cohort_key = ?
 		ORDER BY position ASC`, timeframe, cohortKey)
@@ -157,8 +157,11 @@ func (s *Store) ReadTrendingCache(ctx context.Context, timeframe string, cohortK
 	for rows.Next() {
 		var item TrendingItem
 		var rowComputedAt int64
-		if err := rows.Scan(&item.NoteID, &item.ReplyCount, &rowComputedAt); err != nil {
+		if err := rows.Scan(&item.NoteID, &item.ReplyCount, &item.Score, &rowComputedAt); err != nil {
 			return nil, 0, err
+		}
+		if item.Score <= 0 {
+			item.Score = item.ReplyCount
 		}
 		if rowComputedAt > computedAt {
 			computedAt = rowComputedAt
@@ -169,6 +172,14 @@ func (s *Store) ReadTrendingCache(ctx context.Context, timeframe string, cohortK
 		return nil, 0, err
 	}
 	return items, computedAt, nil
+}
+
+func (s *Store) TrendingCacheComputedAt(ctx context.Context, timeframe string, cohortKey string) (int64, error) {
+	var computedAt int64
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(computed_at), 0)
+		FROM trending_cache
+		WHERE timeframe = ? AND cohort_key = ?`, timeframe, cohortKey).Scan(&computedAt)
+	return computedAt, err
 }
 
 func (s *Store) WriteTrendingCache(ctx context.Context, timeframe string, cohortKey string, items []TrendingItem, computedAt int64) error {
@@ -192,8 +203,12 @@ func (s *Store) WriteTrendingCache(ctx context.Context, timeframe string, cohort
 		if item.NoteID == "" {
 			continue
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO trending_cache(timeframe, cohort_key, position, note_id, reply_count, computed_at)
-			VALUES (?, ?, ?, ?, ?, ?)`, timeframe, cohortKey, pos, item.NoteID, item.ReplyCount, computedAt); err != nil {
+		score := item.Score
+		if score <= 0 {
+			score = item.ReplyCount
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO trending_cache(timeframe, cohort_key, position, note_id, reply_count, score, computed_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?)`, timeframe, cohortKey, pos, item.NoteID, item.ReplyCount, score, computedAt); err != nil {
 			return err
 		}
 	}

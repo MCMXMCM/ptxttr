@@ -100,6 +100,7 @@ type RelayStatus struct {
 type TrendingItem struct {
 	NoteID     string
 	ReplyCount int
+	Score      int
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
@@ -1261,4 +1262,3 @@ func (s *Store) DirtyReplyStatsPending() int {
 	defer s.dirtyRepliesMu.Unlock()
 	return len(s.dirtyReplies)
 }
-

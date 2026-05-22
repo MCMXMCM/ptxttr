@@ -158,21 +158,6 @@ func TestMergeThreadReplyPagesDedupesAndSorts(t *testing.T) {
 	}
 }
 
-func TestLinearFirstPageFromFullRepliesMatchesShallowMerge(t *testing.T) {
-	root := testEvent("root", "alice", 1, nil)
-	a := testEvent("a", "bob", 2, [][]string{{"e", "root", "", "root"}})
-	b := testEvent("b", "carol", 3, [][]string{{"e", "root", "", "root"}, {"e", "a", "", "reply"}})
-	c := testEvent("c", "dave", 4, [][]string{{"e", "root", "", "root"}, {"e", "root", "", "reply"}})
-	full := []nostrx.Event{a, b, c}
-	got, _, _, _ := linearFirstPageFromFullReplies(full, root, root)
-	if len(got) != 2 {
-		t.Fatalf("OP first page len = %d, want 2 (direct to root only)", len(got))
-	}
-	if got[0].ID != "a" || got[1].ID != "c" {
-		t.Fatalf("got ids %v %v, want a c (nested b excluded)", got[0].ID, got[1].ID)
-	}
-}
-
 func TestBuildThreadTreeDataFromRepliesMatchesBuildSelectedForOP(t *testing.T) {
 	root := testEvent("root", "alice", 1, nil)
 	a := testEvent("a", "bob", 2, [][]string{{"e", "root", "", "root"}})
@@ -236,12 +221,15 @@ func TestHandleThreadHydrateIncompleteHeaderWhenAncestorMissing(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
-	if got := rr.Header().Get("X-Ptxt-Thread-Incomplete"); got != "1" {
-		t.Fatalf("X-Ptxt-Thread-Incomplete = %q, want 1", got)
+	if got := rr.Header().Get("X-Ptxt-Thread-Incomplete"); got != "" {
+		t.Fatalf("X-Ptxt-Thread-Incomplete = %q, want empty after missing-parent repair", got)
 	}
 	body := rr.Body.String()
 	if !strings.Contains(body, `data-thread-expects-focus="1"`) {
 		t.Fatalf("expected data-thread-expects-focus in hydrate body: %s", truncateForLog(body, 400))
+	}
+	if !strings.Contains(body, `thread-focus-selected" id="note-`+selected.ID+`"`) {
+		t.Fatalf("expected selected reply focused after missing-parent repair: %s", truncateForLog(body, 800))
 	}
 }
 
@@ -256,6 +244,49 @@ func TestBuildThreadViewRepliesStopsWhenAncestorMissing(t *testing.T) {
 	view := thread.BuildSelected(root, selected, viewReplies)
 	if view.FocusMode {
 		t.Fatalf("focus mode = true, want false when selected ancestor chain cannot be resolved")
+	}
+}
+
+func TestFocusOtherReplyNodesExcludeSelectedBranchButKeepSiblingReplies(t *testing.T) {
+	root := testEvent("root", "alice", 1, nil)
+	parent := testEvent("parent", "bob", 2, [][]string{{"e", "root", "", "root"}})
+	selected := testEvent("selected", "carol", 3, [][]string{{"e", "root", "", "root"}, {"e", "parent", "", "reply"}})
+	siblingUnderParent := testEvent("sibling-under-parent", "dave", 4, [][]string{{"e", "root", "", "root"}, {"e", "parent", "", "reply"}})
+	rootSibling := testEvent("root-sibling", "erin", 5, [][]string{{"e", "root", "", "root"}})
+
+	view := thread.BuildSelected(root, selected, []nostrx.Event{parent, selected, siblingUnderParent, rootSibling})
+	if !view.FocusMode {
+		t.Fatal("focus mode = false, want true")
+	}
+	other := focusOtherReplyNodesFromView(view)
+	if len(other) != 2 {
+		t.Fatalf("len(other) = %d, want 2; nodes=%#v", len(other), other)
+	}
+	if other[0].Event.ID != "parent" || len(other[0].Children) != 1 || other[0].Children[0].Event.ID != "sibling-under-parent" {
+		t.Fatalf("parent branch = %#v, want parent with sibling-under-parent child", other[0])
+	}
+	if other[1].Event.ID != "root-sibling" {
+		t.Fatalf("other[1] = %q, want root-sibling", other[1].Event.ID)
+	}
+}
+
+func TestLinearThreadReplyNodesFocusShowsOnlySelectedDescendants(t *testing.T) {
+	root := testEvent("root", "alice", 1, nil)
+	selected := testEvent("selected", "bob", 2, [][]string{{"e", "root", "", "root"}})
+	selectedChild := testEvent("selected-child", "carol", 3, [][]string{{"e", "root", "", "root"}, {"e", "selected", "", "reply"}})
+	rootSibling := testEvent("root-sibling", "dave", 4, [][]string{{"e", "root", "", "root"}})
+
+	view := thread.BuildSelected(root, selected, []nostrx.Event{selected, selectedChild, rootSibling})
+	if !view.FocusMode {
+		t.Fatal("focus mode = false, want true")
+	}
+	other := focusOtherReplyNodesFromView(view)
+	linear := linearThreadReplyNodes(view)
+	if len(linear) != 1 || linear[0].Event.ID != "selected-child" {
+		t.Fatalf("linear focus replies = %#v, want selected child only", linear)
+	}
+	if len(other) != 1 || other[0].Event.ID != "root-sibling" {
+		t.Fatalf("other focus replies = %#v, want root sibling separately", other)
 	}
 }
 

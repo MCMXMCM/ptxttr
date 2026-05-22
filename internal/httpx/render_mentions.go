@@ -96,6 +96,30 @@ func asciiMentionsJSON(content string, profiles map[string]nostrx.Profile) templ
 	return template.JSStr(encoded)
 }
 
+func inlineReferenceEvents(content string, referenced map[string]nostrx.Event) []nostrx.Event {
+	if len(referenced) == 0 {
+		return nil
+	}
+	refs := nostrx.ExtractNIP27References(content)
+	if len(refs) == 0 {
+		return nil
+	}
+	events := make([]nostrx.Event, 0, len(refs))
+	seen := make(map[string]bool, len(refs))
+	for _, ref := range refs {
+		if ref.Event == "" || seen[ref.Event] {
+			continue
+		}
+		event := referenced[ref.Event]
+		if event.ID == "" {
+			continue
+		}
+		seen[ref.Event] = true
+		events = append(events, event)
+	}
+	return events
+}
+
 // asciiMentionContent returns the rewritten content suitable for both the
 // SSR ASCII wrap path and the JS source template.
 func asciiMentionContent(content string, profiles map[string]nostrx.Profile) string {
@@ -106,13 +130,14 @@ func asciiMentionContent(content string, profiles map[string]nostrx.Profile) str
 // asciiMentionsJSONFor merges mentions extracted from any number of source
 // strings (note + referenced/quoted content) into a single JSON payload
 // suitable for the data-ascii-mentions attribute.
-func asciiMentionsJSONFor(profiles map[string]nostrx.Profile, sources ...string) template.JSStr {
+func asciiMentionsJSONFor(profiles map[string]nostrx.Profile, sources ...any) template.JSStr {
 	if len(sources) == 0 {
 		return ""
 	}
 	merged := make([]MentionLink, 0, 8)
 	seen := make(map[string]bool, 8)
-	for _, src := range sources {
+	var addSource func(string)
+	addSource = func(src string) {
 		_, mentions := RewriteASCIIMentions(src, profiles)
 		for _, m := range mentions {
 			key := m.Label + "\x00" + m.Href
@@ -121,6 +146,18 @@ func asciiMentionsJSONFor(profiles map[string]nostrx.Profile, sources ...string)
 			}
 			seen[key] = true
 			merged = append(merged, m)
+		}
+	}
+	for _, source := range sources {
+		switch src := source.(type) {
+		case string:
+			addSource(src)
+		case nostrx.Event:
+			addSource(src.Content)
+		case []nostrx.Event:
+			for _, event := range src {
+				addSource(event.Content)
+			}
 		}
 	}
 	if len(merged) == 0 {

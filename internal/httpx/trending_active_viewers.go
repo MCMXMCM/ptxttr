@@ -112,30 +112,33 @@ func (s *Server) warmActiveViewerTrendingBody(ctx context.Context) {
 	}
 }
 
-// warmActiveViewerTrendingCohort recomputes one (timeframe, cohort) pair if
-// the existing cache row is missing or stale beyond the freshness floor.
-// Coordinated with refreshTrendingCacheAsync via the shared beginRefresh key
-// so an on-demand request and the loop never recompute the same cohort
-// concurrently.
 func (s *Server) warmActiveViewerTrendingCohort(ctx context.Context, timeframe, cohortKey string, cohort []string, freshness time.Duration, now time.Time) {
+	s.warmCohortTrendingIfStale(ctx, timeframe, cohortKey, cohort, freshness, now, "trending.active_viewer.warm")
+}
+
+// warmCohortTrendingIfStale recomputes one (timeframe, cohort) pair if the
+// existing cache row is missing or stale beyond the freshness floor. It shares
+// the same beginRefresh key as refreshTrendingCacheAsync so background warmers
+// and on-demand requests do not recompute the same cohort concurrently.
+func (s *Server) warmCohortTrendingIfStale(ctx context.Context, timeframe, cohortKey string, cohort []string, freshness time.Duration, now time.Time, metricPrefix string) {
 	timeframe = normalizeTrendingTimeframe(timeframe)
-	if _, computedAt, err := s.store.ReadTrendingCache(ctx, timeframe, cohortKey); err == nil && computedAt > 0 {
+	if computedAt, err := s.store.TrendingCacheComputedAt(ctx, timeframe, cohortKey); err == nil && computedAt > 0 {
 		if now.Sub(time.Unix(computedAt, 0)) < freshness {
-			s.metrics.Add("trending.active_viewer.warm_skip_fresh", 1)
+			s.metrics.Add(metricPrefix+"_skip_fresh", 1)
 			return
 		}
 	}
 	refreshKey := "trending:" + timeframe + ":" + cohortKey
 	if !s.beginRefresh(refreshKey) {
-		s.metrics.Add("trending.active_viewer.warm_skip_in_flight", 1)
+		s.metrics.Add(metricPrefix+"_skip_in_flight", 1)
 		return
 	}
 	defer s.endRefresh(refreshKey)
 	if _, err := s.computeAndStoreCohortTrending(ctx, timeframe, cohortKey, cohort, now); err != nil {
-		s.metrics.Add("trending.active_viewer.warm_error", 1)
+		s.metrics.Add(metricPrefix+"_error", 1)
 		return
 	}
-	s.metrics.Add("trending.active_viewer.warm_success", 1)
+	s.metrics.Add(metricPrefix+"_success", 1)
 }
 
 // activeViewerTrendingMinFreshness picks the staleness threshold below which

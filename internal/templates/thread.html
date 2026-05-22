@@ -213,18 +213,14 @@
 {{end}}
 
 {{define "thread_reply_items"}}
-{{if .FocusedView}}
-  {{if .Thread.SelectedNode}}
-    {{if .Thread.SelectedNode.Children}}
-      {{range $index, $child := .Thread.SelectedNode.Children}}
-        {{template "comment" dict "Node" $child "Profiles" $.Profiles "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "SelectedID" $.SelectedID "RootID" $.Thread.Root.ID "Width" $.AsciiWidth "IsLast" (isLastIndex $index (len $.Thread.SelectedNode.Children))}}
-      {{end}}
-    {{end}}
-  {{end}}
-{{else}}
-  {{range $index, $node := .Thread.Nodes}}
-    {{template "comment" dict "Node" $node "Profiles" $.Profiles "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "SelectedID" $.SelectedID "RootID" $.Thread.Root.ID "Width" $.AsciiWidth "IsLast" (isLastIndex $index (len $.Thread.Nodes))}}
-  {{end}}
+{{range $index, $node := .LinearReplyNodes}}
+  {{template "comment" dict "Node" $node "Profiles" $.Profiles "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "SelectedID" $.SelectedID "RootID" $.Thread.Root.ID "Width" $.AsciiWidth "IsLast" (isLastIndex $index (len $.LinearReplyNodes))}}
+{{end}}
+{{end}}
+
+{{define "thread_focus_other_reply_items"}}
+{{range $index, $node := .FocusOtherReplyNodes}}
+  {{template "comment" dict "Node" $node "Profiles" $.Profiles "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "SelectedID" $.SelectedID "RootID" $.Thread.Root.ID "Width" $.AsciiWidth "IsLast" (isLastIndex $index (len $.FocusOtherReplyNodes))}}
 {{end}}
 {{end}}
 
@@ -246,6 +242,14 @@
     <div class="comments" id="thread-replies" data-thread-fragment="replies">
       {{template "thread_reply_items" .}}
     </div>
+    {{if and .FocusedView .FocusOtherReplyNodes}}
+      <p class="thread-other-replies-toggle">
+        <button class="link-button" type="button" data-thread-other-replies-toggle data-collapsed-label="view more replies to OP" data-expanded-label="hide replies to OP">view more replies to OP</button>
+      </p>
+      <div class="comments thread-other-replies" data-focused-other-replies hidden>
+        {{template "thread_focus_other_reply_items" .}}
+      </div>
+    {{end}}
     {{if .HasMore}}
       {{$loadLabel := "Load more thread replies"}}
       {{if .FocusedView}}{{$loadLabel = "Load more direct replies"}}{{end}}
