@@ -274,19 +274,27 @@ func TestLinearThreadReplyNodesFocusShowsOnlySelectedDescendants(t *testing.T) {
 	root := testEvent("root", "alice", 1, nil)
 	selected := testEvent("selected", "bob", 2, [][]string{{"e", "root", "", "root"}})
 	selectedChild := testEvent("selected-child", "carol", 3, [][]string{{"e", "root", "", "root"}, {"e", "selected", "", "reply"}})
-	rootSibling := testEvent("root-sibling", "dave", 4, [][]string{{"e", "root", "", "root"}})
+	selectedGrandchild := testEvent("selected-grandchild", "dave", 4, [][]string{{"e", "root", "", "root"}, {"e", "selected-child", "", "reply"}})
+	rootSibling := testEvent("root-sibling", "erin", 5, [][]string{{"e", "root", "", "root"}})
+	rootSiblingChild := testEvent("root-sibling-child", "frank", 6, [][]string{{"e", "root", "", "root"}, {"e", "root-sibling", "", "reply"}})
 
-	view := thread.BuildSelected(root, selected, []nostrx.Event{selected, selectedChild, rootSibling})
+	view := thread.BuildSelected(root, selected, []nostrx.Event{selected, selectedChild, selectedGrandchild, rootSibling, rootSiblingChild})
 	if !view.FocusMode {
 		t.Fatal("focus mode = false, want true")
 	}
-	other := focusOtherReplyNodesFromView(view)
+	other := linearThreadOtherReplyNodes(view)
 	linear := linearThreadReplyNodes(view)
 	if len(linear) != 1 || linear[0].Event.ID != "selected-child" {
 		t.Fatalf("linear focus replies = %#v, want selected child only", linear)
 	}
+	if len(linear[0].Children) != 0 {
+		t.Fatalf("linear child has %d children, want one-depth projection", len(linear[0].Children))
+	}
 	if len(other) != 1 || other[0].Event.ID != "root-sibling" {
 		t.Fatalf("other focus replies = %#v, want root sibling separately", other)
+	}
+	if len(other[0].Children) != 0 {
+		t.Fatalf("other reply has %d children, want one-depth projection", len(other[0].Children))
 	}
 }
 

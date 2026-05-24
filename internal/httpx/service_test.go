@@ -1540,7 +1540,7 @@ func TestThreadFullPageSharedReplyWalkIncludesGrandchild(t *testing.T) {
 	}
 }
 
-func TestThreadFocusedInitialPageShowsOtherRepliesWhenSelectedHasNoChildren(t *testing.T) {
+func TestThreadFocusedInitialPageSeparatesOtherDirectRepliesWhenSelectedHasNoChildren(t *testing.T) {
 	srv, st := testServer(t)
 	ctx := context.Background()
 	rootID := strings.Repeat("1", 64)
@@ -1584,8 +1584,8 @@ func TestThreadFocusedInitialPageShowsOtherRepliesWhenSelectedHasNoChildren(t *t
 	if !strings.Contains(body, `id="note-`+siblingID+`"`) {
 		t.Fatalf("focused thread should render sibling replies when selected has no children: %s", body)
 	}
-	if !strings.Contains(body, `id="note-`+nestedSiblingID+`"`) {
-		t.Fatalf("focused thread should render nested sibling replies from the full walk: %s", body)
+	if strings.Contains(body, `id="note-`+nestedSiblingID+`"`) {
+		t.Fatalf("focused thread should not render nested sibling replies in one-depth thread view: %s", body)
 	}
 }
 
@@ -1624,8 +1624,22 @@ func TestThreadRootPagePromotesRepliesWhoseIntermediateParentIsMissing(t *testin
 	if !strings.Contains(body, `id="note-`+orphanID+`"`) {
 		t.Fatalf("root hydrate should render orphaned root descendant: %s", body)
 	}
-	if !strings.Contains(body, `id="note-`+childID+`"`) {
-		t.Fatalf("root hydrate should keep children under promoted orphan: %s", body)
+	if strings.Contains(body, `id="note-`+childID+`"`) {
+		t.Fatalf("root hydrate should not render child of orphan in one-depth thread view: %s", body)
+	}
+
+	childReq := httptest.NewRequest(http.MethodGet, "/thread/"+orphanID+"?fragment=hydrate", nil)
+	childRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(childRec, childReq)
+	if childRec.Code != http.StatusOK {
+		t.Fatalf("child status = %d, want 200", childRec.Code)
+	}
+	childBody := childRec.Body.String()
+	if !strings.Contains(childBody, `thread-focus-selected" id="note-`+orphanID+`"`) {
+		t.Fatalf("orphan hydrate should focus promoted orphan: %s", childBody)
+	}
+	if !strings.Contains(childBody, `id="note-`+childID+`"`) {
+		t.Fatalf("orphan hydrate should render direct child after selecting orphan: %s", childBody)
 	}
 }
 

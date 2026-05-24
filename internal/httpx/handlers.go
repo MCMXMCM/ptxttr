@@ -600,8 +600,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	}
 	focusOtherReplyNodes := []thread.Node(nil)
 	if needsView && view.FocusMode && fragment != "replies" {
-		focusOtherReplyNodes = focusOtherReplyNodesFromView(view)
-		focusOtherReplyNodes = appendLinearThreadNodes(nil, focusOtherReplyNodes)
+		focusOtherReplyNodes = linearThreadOtherReplyNodes(view)
 	}
 	linearReplyNodes := []thread.Node(nil)
 	if needsView {
@@ -995,24 +994,40 @@ func focusOtherReplyNodesFromView(view thread.View) []thread.Node {
 }
 
 func linearThreadReplyNodes(view thread.View) []thread.Node {
-	var out []thread.Node
 	if view.FocusMode {
 		if view.SelectedNode != nil {
-			out = appendLinearThreadNodes(out, view.SelectedNode.Children)
+			return linearThreadDirectNodes(view.SelectedNode.Children)
 		}
-		return out
+		return nil
 	}
-	return appendLinearThreadNodes(out, view.Nodes)
+	return linearThreadDirectNodes(view.Nodes)
 }
 
-func appendLinearThreadNodes(out []thread.Node, nodes []thread.Node) []thread.Node {
-	for _, node := range nodes {
+func linearThreadOtherReplyNodes(view thread.View) []thread.Node {
+	if !view.FocusMode || view.SelectedNode == nil || view.SelectedNode.Event.ID == "" {
+		return nil
+	}
+	selectedID := view.SelectedNode.Event.ID
+	out := make([]thread.Node, 0, len(view.Nodes))
+	for _, node := range view.Nodes {
+		if node.Event.ID == selectedID {
+			continue
+		}
 		flat := node
-		children := flat.Children
 		flat.Depth = 1
 		flat.Children = nil
 		out = append(out, flat)
-		out = appendLinearThreadNodes(out, children)
+	}
+	return out
+}
+
+func linearThreadDirectNodes(nodes []thread.Node) []thread.Node {
+	out := make([]thread.Node, 0, len(nodes))
+	for _, node := range nodes {
+		flat := node
+		flat.Depth = 1
+		flat.Children = nil
+		out = append(out, flat)
 	}
 	return out
 }
