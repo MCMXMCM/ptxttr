@@ -373,9 +373,10 @@ func TestClassifyClosedPolicyReason(t *testing.T) {
 		kind   string
 		ok     bool
 	}{
-		{reason: "blocked: Request rejected", kind: "blocked", ok: true},
-		{reason: "requires auth", kind: "auth", ok: true},
-		{reason: "too many requests", kind: "", ok: false},
+		{reason: "blocked: Request rejected", kind: relayPolicyKindBlocked, ok: true},
+		{reason: "requires auth", kind: relayPolicyKindAuth, ok: true},
+		{reason: "too many requests", kind: relayPolicyKindRateLimit, ok: true},
+		{reason: "rate-limited: there is a bug in the client, no one should be making so many requests", kind: relayPolicyKindRateLimit, ok: true},
 	}
 	for _, test := range tests {
 		kind, ok := classifyClosedPolicyReason(test.reason)
@@ -397,10 +398,22 @@ func TestRelayPolicyBackoffCaps(t *testing.T) {
 	}
 }
 
+func TestRelayRateLimitBackoffCaps(t *testing.T) {
+	if got := relayRateLimitBackoff(1); got != 5*time.Minute {
+		t.Fatalf("relayRateLimitBackoff(1) = %s, want 5m", got)
+	}
+	if got := relayRateLimitBackoff(3); got != 20*time.Minute {
+		t.Fatalf("relayRateLimitBackoff(3) = %s, want 20m", got)
+	}
+	if got := relayRateLimitBackoff(10); got != time.Hour {
+		t.Fatalf("relayRateLimitBackoff(10) = %s, want 1h cap", got)
+	}
+}
+
 func TestRelayPolicyStateExpiresAndClears(t *testing.T) {
 	client := NewClient([]string{"wss://relay.example"}, time.Second)
 	now := time.Now()
-	client.recordRelayPolicyRejection("wss://relay.example", "auth", "challenge", now)
+	client.recordRelayPolicyRejection("wss://relay.example", relayPolicyKindAuth, "challenge", now)
 	if !client.relayPolicyBlocked("wss://relay.example", now.Add(time.Minute)) {
 		t.Fatal("expected relay to be blocked during backoff window")
 	}
@@ -409,10 +422,22 @@ func TestRelayPolicyStateExpiresAndClears(t *testing.T) {
 	}
 }
 
+func TestRelayRateLimitPolicyStateExpiresAndClears(t *testing.T) {
+	client := NewClient([]string{"wss://relay.example"}, time.Second)
+	now := time.Now()
+	client.recordRelayPolicyRejection("wss://relay.example", relayPolicyKindRateLimit, "too many requests", now)
+	if !client.relayPolicyBlocked("wss://relay.example", now.Add(4*time.Minute)) {
+		t.Fatal("expected relay to be blocked during rate-limit backoff window")
+	}
+	if client.relayPolicyBlocked("wss://relay.example", now.Add(6*time.Minute)) {
+		t.Fatal("expected relay to unblock after rate-limit backoff expires")
+	}
+}
+
 func TestFilterAvailableRelaysSkipsBlocked(t *testing.T) {
 	client := NewClient([]string{"wss://good.example", "wss://bad.example"}, time.Second)
 	now := time.Now()
-	client.recordRelayPolicyRejection("wss://bad.example", "auth", "challenge", now)
+	client.recordRelayPolicyRejection("wss://bad.example", relayPolicyKindAuth, "challenge", now)
 	got := client.FilterAvailableRelays([]string{
 		"wss://good.example",
 		"wss://bad.example",

@@ -36,9 +36,9 @@ type Client struct {
 	outboundInitOnce sync.Once
 	outboundMu       sync.Mutex
 	outboundSlots    chan struct{} // buffered chan: send acquires, recv releases; nil = unlimited
-	outboundWait   atomic.Uint64 // count of acquires that had to wait (blocked)
-	outboundWaitNs atomic.Uint64 // total wait time while blocked
-	outboundCancel atomic.Uint64 // ctx cancelled during acquire wait
+	outboundWait     atomic.Uint64 // count of acquires that had to wait (blocked)
+	outboundWaitNs   atomic.Uint64 // total wait time while blocked
+	outboundCancel   atomic.Uint64 // ctx cancelled during acquire wait
 }
 
 type Metrics struct {
@@ -77,6 +77,13 @@ type RelayMetrics struct {
 	RelayFailures uint64 `json:"relay_failures"`
 	EventsSeen    uint64 `json:"events_seen"`
 }
+
+const (
+	relayPolicyKindAuth       = "auth"
+	relayPolicyKindBlocked    = "blocked"
+	relayPolicyKindConnection = "connection"
+	relayPolicyKindRateLimit  = "ratelimit"
+)
 
 type relayMetrics struct {
 	queries        atomic.Uint64
@@ -455,13 +462,12 @@ func (c *Client) PublishTo(ctx context.Context, relays []string, event Event) (P
 			}
 			c.metrics.relayFailures.Add(1)
 			c.recordRelayFailure(relayURL)
-			lowerReason := strings.ToLower(relayResult.Message + " " + relayResult.Error)
-			switch {
-			case strings.Contains(lowerReason, "auth"), strings.Contains(lowerReason, "challenge"):
-				c.recordRelayPolicyRejection(relayURL, "auth", relayResult.Message+" "+relayResult.Error, time.Now())
-			case strings.Contains(lowerReason, "blocked"), strings.Contains(lowerReason, "reject"), strings.Contains(lowerReason, "forbidden"), strings.Contains(lowerReason, "denied"):
-				c.recordRelayPolicyRejection(relayURL, "blocked", relayResult.Message+" "+relayResult.Error, time.Now())
-			case relayResult.Error != "":
+			reason := relayResult.Message + " " + relayResult.Error
+			if kind, ok := classifyClosedPolicyReason(reason); ok {
+				c.recordRelayPolicyRejection(relayURL, kind, reason, time.Now())
+				return
+			}
+			if relayResult.Error != "" {
 				c.recordRelayConnectionFailure(relayURL, errors.New(relayResult.Error), time.Now())
 			}
 		}()
@@ -580,7 +586,7 @@ func (c *Client) fetchRelay(ctx context.Context, relayURL string, filter fnostr.
 		case "AUTH":
 			// NIP-42 challenge. We can't authenticate as a server, so abandon this relay.
 			slog.Info("relay AUTH challenge - skipping (anonymous client)", "relay", relayURL)
-			return c.validateRelayBatch(relayURL, rawEvents), &relayPolicyError{kind: "auth", reason: "nip42 challenge"}
+			return c.validateRelayBatch(relayURL, rawEvents), &relayPolicyError{kind: relayPolicyKindAuth, reason: "nip42 challenge"}
 		case "EVENT":
 			if len(envelope) < 3 {
 				continue
@@ -686,30 +692,43 @@ func classifyClosedPolicyReason(reason string) (string, bool) {
 		return "", false
 	}
 	switch {
+	case strings.Contains(lower, "rate limit"),
+		strings.Contains(lower, "rate-limit"),
+		strings.Contains(lower, "ratelimit"),
+		strings.Contains(lower, "too many requests"),
+		strings.Contains(lower, "429"),
+		strings.Contains(lower, "throttle"),
+		strings.Contains(lower, "slow down"):
+		return relayPolicyKindRateLimit, true
 	case strings.Contains(lower, "blocked"), strings.Contains(lower, "reject"), strings.Contains(lower, "forbidden"), strings.Contains(lower, "denied"):
-		return "blocked", true
+		return relayPolicyKindBlocked, true
 	case strings.Contains(lower, "auth"), strings.Contains(lower, "login"), strings.Contains(lower, "credential"):
-		return "auth", true
+		return relayPolicyKindAuth, true
 	default:
 		return "", false
 	}
 }
 
-func relayPolicyBackoff(failures int) time.Duration {
+func cappedExponentialBackoff(failures int, base, cap time.Duration) time.Duration {
 	if failures <= 0 {
 		return 0
 	}
-	backoff := 2 * time.Minute
+	backoff := base
 	for i := 1; i < failures; i++ {
 		backoff *= 2
-		if backoff >= 30*time.Minute {
-			return 30 * time.Minute
+		if backoff >= cap {
+			return cap
 		}
 	}
-	if backoff > 30*time.Minute {
-		backoff = 30 * time.Minute
-	}
 	return backoff
+}
+
+func relayPolicyBackoff(failures int) time.Duration {
+	return cappedExponentialBackoff(failures, 2*time.Minute, 30*time.Minute)
+}
+
+func relayRateLimitBackoff(failures int) time.Duration {
+	return cappedExponentialBackoff(failures, 5*time.Minute, time.Hour)
 }
 
 func (c *Client) relayPolicyBlocked(relayURL string, now time.Time) bool {
@@ -732,7 +751,13 @@ func (c *Client) recordRelayPolicyRejection(relayURL, kind, reason string, now t
 	state := c.relayPolicy[relayURL]
 	state.failCount++
 	state.reason = kind
-	state.until = now.Add(relayPolicyBackoff(state.failCount))
+	var backoff time.Duration
+	if kind == relayPolicyKindRateLimit {
+		backoff = relayRateLimitBackoff(state.failCount)
+	} else {
+		backoff = relayPolicyBackoff(state.failCount)
+	}
+	state.until = now.Add(backoff)
 	c.relayPolicy[relayURL] = state
 	slog.Info("relay policy backoff", "relay", relayURL, "kind", kind, "retry_in", time.Until(state.until).Round(time.Second), "detail", reason)
 }
@@ -767,7 +792,7 @@ func (c *Client) recordRelayConnectionFailure(relayURL string, err error, now ti
 	defer c.penaltyMu.Unlock()
 	state := c.relayPolicy[relayURL]
 	state.failCount++
-	state.reason = "connection"
+	state.reason = relayPolicyKindConnection
 	backoff := connFailureBackoff(state.failCount)
 	if backoff > 0 {
 		state.until = now.Add(backoff)

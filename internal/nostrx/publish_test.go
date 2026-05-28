@@ -37,6 +37,28 @@ func TestPublishToReturnsRelayResults(t *testing.T) {
 	}
 }
 
+func TestPublishToBacksOffRateLimitedRelay(t *testing.T) {
+	rateLimitedRelay := publishRelayServer(t, false, "too many requests")
+	defer rateLimitedRelay.Close()
+
+	client := NewClient(nil, 2*time.Second)
+	relayURL := wsURL(rateLimitedRelay.URL)
+	event := signedTestEvent(t, KindTextNote, "hello", nil)
+	result, err := client.PublishTo(context.Background(), []string{relayURL}, event)
+	if err != nil {
+		t.Fatalf("PublishTo() error = %v", err)
+	}
+	if len(result.Results) != 1 || result.Results[0].Accepted {
+		t.Fatalf("PublishTo() result = %#v, want rejected relay", result.Results)
+	}
+	if !client.relayPolicyBlocked(relayURL, time.Now().Add(time.Minute)) {
+		t.Fatal("expected rate-limited relay to be blocked during backoff window")
+	}
+	if client.relayPolicyBlocked(relayURL, time.Now().Add(6*time.Minute)) {
+		t.Fatal("expected rate-limited relay to unblock after backoff window")
+	}
+}
+
 func TestValidateSignedEventRejectsTamperedContent(t *testing.T) {
 	event := signedTestEvent(t, KindTextNote, "before", nil)
 	event.Content = "after"
