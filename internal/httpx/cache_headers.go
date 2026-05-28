@@ -12,8 +12,9 @@ import (
 //
 //   - Content-addressed (HTML): the URL plus the supplied etag uniquely
 //     identify the rendered bytes for the moment, but new replies on a thread
-//     or new posts on a profile invalidate it. s-maxage is kept short (5min)
-//     so anonymous edge cache staleness after a publish is bounded.
+//     or new posts on a profile invalidate it. Browser max-age stays at zero so
+//     render/template fixes are revalidated after deploys, while s-maxage is
+//     kept short (5min) so anonymous edge cache staleness is bounded.
 //   - Content-addressed (long, e.g. /og/<id>): the response is fully derived
 //     from an immutable event, so a 24h s-maxage is safe.
 //   - Immutable (e.g. /api/event/<id>): signed Nostr events are
@@ -25,7 +26,7 @@ import (
 // Header values are aligned with njump's `render_event.go` so a CDN tuned for
 // njump-style traffic behaves consistently in front of ptxt-nstr.
 const (
-	cacheControlContentAddressed     = "public, max-age=300, s-maxage=300, stale-while-revalidate=604800"
+	cacheControlContentAddressed     = "public, max-age=0, s-maxage=300, stale-while-revalidate=604800"
 	cacheControlContentAddressedLong = "public, max-age=300, s-maxage=86400, stale-while-revalidate=604800"
 	cacheControlImmutable            = "public, max-age=31536000, s-maxage=31536000, immutable"
 	cacheControlShortFmt             = "public, max-age=%d, s-maxage=%d"

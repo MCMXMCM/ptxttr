@@ -108,3 +108,17 @@ func TestInlineReferenceEventsReturnsHydratedContentRefs(t *testing.T) {
 		t.Fatalf("Content = %q, want linked note body", events[0].Content)
 	}
 }
+
+func TestStripNIP27EventReferencesRemovesQuotedNoteLinks(t *testing.T) {
+	quoteID := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	otherID := "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+	content := "please welcome nostr:" + nostrx.EncodeNEvent(quoteID, "") + " see nostr:" + nostrx.EncodeNEvent(otherID, "")
+
+	got := stripNIP27EventReferences(content, []string{quoteID})
+	if strings.Contains(got, short(quoteID)) || strings.Contains(got, nostrx.EncodeNEvent(quoteID, "")) {
+		t.Fatalf("quoted note link should be stripped: %q", got)
+	}
+	if !strings.Contains(got, nostrx.EncodeNEvent(otherID, "")) {
+		t.Fatalf("unrelated note link should remain: %q", got)
+	}
+}

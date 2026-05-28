@@ -118,6 +118,20 @@ func TestThreadContinueThreadHref(t *testing.T) {
 	}
 }
 
+func TestThreadTreeMainBodyTextStripsQuoteReferenceLink(t *testing.T) {
+	quoteID := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	ev := overviewEvent("root", 1, [][]string{{"q", quoteID}})
+	ev.Content = "please welcome my gf she is new and shy nostr:" + nostrx.EncodeNEvent(quoteID, "")
+
+	got := threadTreeMainBodyText(ev, nil)
+	if strings.Contains(got, "note:"+short(quoteID)) {
+		t.Fatalf("quote link should be stripped from thread tree body: %q", got)
+	}
+	if got != "please welcome my gf she is new and shy" {
+		t.Fatalf("body = %q", got)
+	}
+}
+
 func TestBuildTraversalPathUnchangedForOP(t *testing.T) {
 	root := overviewEvent("root", 1, nil)
 	view := thread.BuildSelected(root, root, nil)

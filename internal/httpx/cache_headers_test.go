@@ -111,10 +111,10 @@ func TestWriteNotModified(t *testing.T) {
 }
 
 func TestThreadPageETagComposite(t *testing.T) {
-	if got := threadPageETag("abc", 0); got != "abc-r0" {
+	if got := threadPageETag("abc", 0); got != "abc-thread-render-v2-r0" {
 		t.Fatalf("threadPageETag(abc, 0) = %q", got)
 	}
-	if got := threadPageETag("abc", 7); got != "abc-r7" {
+	if got := threadPageETag("abc", 7); got != "abc-thread-render-v2-r7" {
 		t.Fatalf("threadPageETag(abc, 7) = %q", got)
 	}
 	if got := threadPageETag("", 5); got != "" {

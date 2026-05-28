@@ -96,6 +96,62 @@ func asciiMentionsJSON(content string, profiles map[string]nostrx.Profile) templ
 	return template.JSStr(encoded)
 }
 
+func canonicalEventIDSet(ids []string) map[string]bool {
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		id = nostrx.CanonicalHex64(id)
+		if id != "" {
+			seen[id] = true
+		}
+	}
+	return seen
+}
+
+func stripNIP27EventReferences(content string, excludeIDs []string) string {
+	excluded := canonicalEventIDSet(excludeIDs)
+	if len(excluded) == 0 {
+		return content
+	}
+	refs := nostrx.ExtractNIP27References(content)
+	if len(refs) == 0 {
+		return content
+	}
+	var out strings.Builder
+	out.Grow(len(content))
+	cursor := 0
+	removed := false
+	trimLeadingWhitespace := false
+	for _, ref := range refs {
+		if ref.Start < cursor || ref.Start >= len(content) || ref.End > len(content) {
+			continue
+		}
+		segment := content[cursor:ref.Start]
+		if trimLeadingWhitespace {
+			segment = strings.TrimLeft(segment, " \t")
+			trimLeadingWhitespace = false
+		}
+		if ref.Event != "" && excluded[nostrx.CanonicalHex64(ref.Event)] {
+			out.WriteString(segment)
+			cursor = ref.End
+			removed = true
+			trimLeadingWhitespace = true
+			continue
+		}
+		out.WriteString(segment)
+		out.WriteString(content[ref.Start:ref.End])
+		cursor = ref.End
+	}
+	segment := content[cursor:]
+	if trimLeadingWhitespace {
+		segment = strings.TrimLeft(segment, " \t")
+	}
+	out.WriteString(segment)
+	if !removed {
+		return content
+	}
+	return strings.TrimSpace(out.String())
+}
+
 func inlineReferenceEvents(content string, referenced map[string]nostrx.Event) []nostrx.Event {
 	if len(referenced) == 0 {
 		return nil

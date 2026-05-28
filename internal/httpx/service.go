@@ -439,7 +439,7 @@ func (s *Server) feedPageDataExResolved(ctx context.Context, req feedRequest, in
 					batch = s.filterEventsByViewerMutedSet(batch, muted)
 				}
 				events = append(events, batch...)
-				if len(batch) == 0 {
+				if len(batch) == 0 || !hasMore {
 					break
 				}
 			}
@@ -1724,6 +1724,40 @@ func (s *Server) hydrateTimelineEvents(ctx context.Context, events []nostrx.Even
 func referencedEventID(event nostrx.Event) string {
 	id, _ := referencedEventRef(event)
 	return id
+}
+
+func referencedEventIDs(event nostrx.Event) []string {
+	var tagName string
+	switch event.Kind {
+	case nostrx.KindRepost:
+		tagName = "e"
+	case nostrx.KindTextNote:
+		tagName = "q"
+	default:
+		return nil
+	}
+	var ids []string
+	for _, tag := range event.Tags {
+		if len(tag) < 2 || tag[0] != tagName {
+			continue
+		}
+		id := nostrx.CanonicalHex64(tag[1])
+		if id == "" {
+			continue
+		}
+		duplicate := false
+		for _, existing := range ids {
+			if existing == id {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	return ids
 }
 
 func collectReferencedEventIDs(events []nostrx.Event) []string {

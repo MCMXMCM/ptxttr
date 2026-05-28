@@ -835,15 +835,17 @@ func threadOG(r *http.Request, selected nostrx.Event, profiles map[string]nostrx
 	}
 }
 
+const threadRenderCacheVersion = "thread-render-v2"
+
 // threadPageETag returns a stable identifier for the rendered /thread/<id>
-// page. We mix in the total reply count so a page with new replies gets a
-// fresh etag and any CDN/browser cache revalidates instead of serving the
-// pre-reply snapshot for the full stale-while-revalidate window.
+// page. We mix in the render version and total reply count so template changes
+// and new replies both force caches to revalidate instead of serving stale HTML
+// for the full stale-while-revalidate window.
 func threadPageETag(selectedID string, replyCount int) string {
 	if selectedID == "" {
 		return ""
 	}
-	return selectedID + "-r" + strconv.Itoa(replyCount)
+	return selectedID + "-" + threadRenderCacheVersion + "-r" + strconv.Itoa(replyCount)
 }
 
 // applyUserFragmentCache attaches content-addressed cache headers to a profile

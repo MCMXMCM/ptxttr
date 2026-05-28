@@ -66,7 +66,7 @@ func TestHandleThreadDocStripsViewerReactionState(t *testing.T) {
 		t.Fatalf("expected ETag header to be preserved after viewer-stripping; got empty")
 	}
 	cc := rr.Header().Get("Cache-Control")
-	if !strings.HasPrefix(cc, "public, max-age=300, s-maxage=300") {
-		t.Fatalf("Cache-Control = %q, want prefix \"public, max-age=300, s-maxage=300\"", cc)
+	if cc != cacheControlContentAddressed {
+		t.Fatalf("Cache-Control = %q, want %q", cc, cacheControlContentAddressed)
 	}
 }

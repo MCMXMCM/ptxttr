@@ -138,12 +138,14 @@ func templateFuncs() template.FuncMap {
 		"replyCountText":           replyCountText,
 		"replyBadgeText":           replyBadgeText,
 		"referencedEventID":        referencedEventID,
+		"referencedEventIDs":       referencedEventIDs,
 		"referenceEvent":           referenceEvent,
 		"replyCountFor":            replyCountFor,
 		"reactionTotalFor":         reactionTotalFor,
 		"reactionViewerFor":        reactionViewerFor,
 		"isSimpleRepost":           isSimpleRepost,
 		"isQuotePost":              isQuotePost,
+		"noteMainBodySourceText":   noteMainBodySourceText,
 		"threadTreeMainBodyText":   threadTreeMainBodyText,
 		"treeMediaFields":          treeMediaFields,
 		"imetaMediaItemsJSON":      imetaMediaItemsJSON,
@@ -184,13 +186,17 @@ func isQuotePost(event nostrx.Event) bool {
 	return event.Kind == nostrx.KindTextNote && event.FirstTagValue("q") != ""
 }
 
+func noteMainBodySourceText(event nostrx.Event) string {
+	return stripNIP27EventReferences(event.Content, referencedEventIDs(event))
+}
+
 // threadTreeMainBodyText is the tree-view main text column: empty for simple
 // reposts (quoted body is rendered separately like the feed note client).
 func threadTreeMainBodyText(event nostrx.Event, profiles map[string]nostrx.Profile) string {
 	if isSimpleRepost(event) {
 		return ""
 	}
-	return asciiMentionContent(event.Content, profiles)
+	return asciiMentionContent(noteMainBodySourceText(event), profiles)
 }
 
 func referenceEvent(referenced map[string]nostrx.Event, id string) nostrx.Event {

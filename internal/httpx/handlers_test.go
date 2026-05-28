@@ -158,6 +158,48 @@ func TestMergeThreadReplyPagesDedupesAndSorts(t *testing.T) {
 	}
 }
 
+func TestFeedItemTemplateSkipsInlineReferencesForQuoteTags(t *testing.T) {
+	srv, _ := testServer(t)
+	firstID := "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+	secondID := "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef"
+	author := strings.Repeat("a", 64)
+	quote := nostrx.Event{
+		ID:        strings.Repeat("b", 64),
+		PubKey:    author,
+		CreatedAt: time.Now().Unix(),
+		Kind:      nostrx.KindTextNote,
+		Content:   "comment nostr:" + nostrx.EncodeNEvent(firstID, "") + " and nostr:" + nostrx.EncodeNEvent(secondID, ""),
+		Tags: [][]string{
+			{"q", firstID},
+			{"q", secondID},
+		},
+	}
+	data := FeedPageData{
+		BasePageData: BasePageData{AsciiWidth: 120},
+		Feed:         []nostrx.Event{quote},
+		ReferencedEvents: map[string]nostrx.Event{
+			firstID:  {ID: firstID, PubKey: author, CreatedAt: quote.CreatedAt - 1, Kind: nostrx.KindTextNote, Content: "first quoted note"},
+			secondID: {ID: secondID, PubKey: author, CreatedAt: quote.CreatedAt - 2, Kind: nostrx.KindTextNote, Content: "second quoted note"},
+		},
+		ReplyCounts:     map[string]int{},
+		ReactionTotals:  map[string]int{},
+		ReactionViewers: map[string]string{},
+		Profiles:        map[string]nostrx.Profile{},
+	}
+	rec := httptest.NewRecorder()
+	srv.render(rec, "feed_items", data)
+	body := rec.Body.String()
+	if strings.Contains(body, "ascii-inline-reference-source") {
+		t.Fatalf("quote-tagged references should not render duplicate inline reference templates: %s", body)
+	}
+	if strings.Contains(body, "note:"+short(firstID)) || strings.Contains(body, "note:"+short(secondID)) {
+		t.Fatalf("quote-tagged note links should not remain in the displayed body: %s", body)
+	}
+	if !strings.Contains(body, "ascii-reference-source") {
+		t.Fatalf("primary quoted note reference should still render: %s", body)
+	}
+}
+
 func TestBuildThreadTreeDataFromRepliesMatchesBuildSelectedForOP(t *testing.T) {
 	root := testEvent("root", "alice", 1, nil)
 	a := testEvent("a", "bob", 2, [][]string{{"e", "root", "", "root"}})

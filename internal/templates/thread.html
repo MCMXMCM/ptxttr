@@ -86,12 +86,12 @@
 {{define "thread_tree_ref_data_attrs"}}
 {{- $ev := .Event -}}
 {{- $profiles := .Profiles -}}
-{{- $ref := referenceEvent .ReferencedEvents (referencedEventID $ev) -}}
 {{- $refID := referencedEventID $ev -}}
+{{- $ref := referenceEvent .ReferencedEvents $refID -}}
 {{- $hasReference := ne $ref.ID "" -}}
 {{- if isSimpleRepost $ev}} data-ascii-ref-mode="repost"{{- else if isQuotePost $ev}} data-ascii-ref-mode="quote"{{- end -}}
 {{- if or (isSimpleRepost $ev) (isQuotePost $ev) }}
- data-ascii-ref-author="{{if $hasReference}}{{asciiAuthor .AsciiWidth $profiles $ref.PubKey}}{{else if $refID}}{{short $refID}}{{end}}" data-ascii-ref-age="{{if $hasReference}}{{relTime $ref.CreatedAt}}{{else}}?{{end}}" data-ascii-ref-thread-href="{{if $hasReference}}/thread/{{$ref.ID}}{{else if $refID}}/thread/{{$refID}}{{end}}" data-ascii-ref-reply-label="{{if $hasReference}}{{replyBadgeText (replyCountFor .ReplyCounts $ref.ID)}}{{end}}"{{- with asciiMentionsJSONFor $profiles $ev.Content (or $ref.Content "")}} data-ascii-mentions="{{.}}"{{end}}
+ data-ascii-ref-author="{{if $hasReference}}{{asciiAuthor .AsciiWidth $profiles $ref.PubKey}}{{else if $refID}}{{short $refID}}{{end}}" data-ascii-ref-age="{{if $hasReference}}{{relTime $ref.CreatedAt}}{{else}}?{{end}}" data-ascii-ref-thread-href="{{if $hasReference}}/thread/{{$ref.ID}}{{else if $refID}}/thread/{{$refID}}{{end}}" data-ascii-ref-reply-label="{{if $hasReference}}{{replyBadgeText (replyCountFor .ReplyCounts $ref.ID)}}{{end}}"{{- with asciiMentionsJSONFor $profiles (noteMainBodySourceText $ev) (or $ref.Content "")}} data-ascii-mentions="{{.}}"{{end}}
 {{- end -}}
 {{end}}
 
