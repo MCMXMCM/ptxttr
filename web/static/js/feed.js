@@ -7,6 +7,7 @@ import { initViewMore } from "./notes.js";
 import { syncBookmarkState } from "./bookmarks.js";
 import { feedSortForSession, getFeedSortPref } from "./sort-prefs.js";
 import { notifyFeedNotesChanged } from "./thread-prefetch.js";
+import { refreshVisibleNoteProfiles } from "./note-profiles.js";
 
 let initialized = false;
 const loadMoreRequestTimeoutMs = 12000;
@@ -71,6 +72,7 @@ export function initFeedLoadMore(root = document) {
     ? root.querySelector("[data-reads]")
     : root.querySelector("[data-feed]");
   if (!feed) return;
+  if (!isReads) void refreshVisibleNoteProfiles(feed);
   if (boundLoadMoreButtons.has(button)) {
     const existingHandler = loadMoreHandlers.get(button);
     if (typeof existingHandler === "function") {
@@ -269,17 +271,20 @@ export function prependNewNotes(feed, html) {
   const template = document.createElement("template");
   template.innerHTML = html;
   const notes = [...template.content.querySelectorAll(".note")];
+  const insertedNotes = [];
   let prepended = 0;
   for (let index = notes.length - 1; index >= 0; index -= 1) {
     const note = notes[index];
     if (note.id && document.getElementById(note.id)) continue;
     feed.prepend(note);
+    insertedNotes.push(note);
     prepended += 1;
   }
   if (prepended > 0) {
     initViewMore(feed);
     void syncBookmarkState(document);
     wireAvatarImageFallbacks(feed);
+    void refreshVisibleNoteProfiles(insertedNotes);
     notifyFeedNotesChanged(feed);
   }
   return prepended;
@@ -288,16 +293,19 @@ export function prependNewNotes(feed, html) {
 function appendNewNotes(feed, html) {
   const template = document.createElement("template");
   template.innerHTML = html;
+  const insertedNotes = [];
   let appended = 0;
   template.content.querySelectorAll(".note").forEach((note) => {
     if (note.id && document.getElementById(note.id)) return;
     feed.append(note);
+    insertedNotes.push(note);
     appended += 1;
   });
   if (appended > 0) {
     initViewMore(feed);
     void syncBookmarkState(document);
     wireAvatarImageFallbacks(feed);
+    void refreshVisibleNoteProfiles(insertedNotes);
   }
   return appended;
 }

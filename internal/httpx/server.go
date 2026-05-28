@@ -214,6 +214,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/bookmarks", s.handleBookmarksAPI)
 	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/profile", s.handleProfileAPI)
+	mux.HandleFunc("/api/profiles", s.handleProfilesAPI)
 	mux.HandleFunc("/api/relay-insight", s.handleRelayInsightAPI)
 	mux.HandleFunc("/api/mentions", s.handleMentionsAPI)
 	mux.HandleFunc("/api/mute-list", s.handleMuteListAPI)

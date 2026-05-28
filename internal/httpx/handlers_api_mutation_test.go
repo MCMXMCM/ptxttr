@@ -405,6 +405,35 @@ func TestHandleProfileAPIReturnsCachedMetadata(t *testing.T) {
 	}
 }
 
+func TestHandleProfilesAPIReturnsBatchMetadata(t *testing.T) {
+	srv, st := mutationTestServer(t)
+	event := signedMutationEvent(t, nostrx.KindProfileMetadata, `{"name":"seed","display_name":"Seed","picture":"https://seed.example/a.png"}`, nil)
+	if err := st.SaveEvent(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/profiles?pubkey="+event.PubKey, nil)
+	rec := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var response map[string]struct {
+		DisplayName string `json:"display_name"`
+		AvatarURL   string `json:"avatar_url"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("response JSON decode failed: %v", err)
+	}
+	got := response[event.PubKey]
+	if got.DisplayName != "Seed" {
+		t.Fatalf("display_name = %#v, want Seed", got.DisplayName)
+	}
+	if got.AvatarURL == "" {
+		t.Fatalf("avatar_url is empty")
+	}
+}
+
 func TestHandleRelayInsightAPIReturnsPublishedRelayHints(t *testing.T) {
 	srv, st := mutationTestServer(t)
 	event := signedMutationEvent(t, nostrx.KindRelayListMetadata, "", [][]string{

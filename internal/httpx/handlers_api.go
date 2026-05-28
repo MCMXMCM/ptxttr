@@ -15,39 +15,47 @@ import (
 	"ptxt-nstr/internal/thread"
 )
 
+func queryTokensFromRequest(r *http.Request, key string, maxN int, normalize func(string) string) []string {
+	if r == nil || maxN <= 0 {
+		return nil
+	}
+	rawValues := r.URL.Query()[key]
+	values := make([]string, 0, len(rawValues))
+	seen := make(map[string]struct{}, maxN)
+	for _, raw := range rawValues {
+		for _, token := range strings.Split(raw, ",") {
+			value := strings.TrimSpace(token)
+			if normalize != nil {
+				value = normalize(value)
+			}
+			if value == "" {
+				continue
+			}
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			values = append(values, value)
+			if len(values) >= maxN {
+				return values
+			}
+		}
+		if len(values) >= maxN {
+			return values
+		}
+	}
+	return values
+}
+
 // noteIDsFromQuery collects up to maxN deduplicated note ids from repeated ?id=
 // and comma-separated values. When canonical is true, each token is passed
 // through nostrx.CanonicalHex64 (invalid tokens become empty and are skipped).
 func noteIDsFromQuery(r *http.Request, maxN int, canonical bool) []string {
-	if r == nil || maxN <= 0 {
-		return nil
+	var normalize func(string) string
+	if canonical {
+		normalize = nostrx.CanonicalHex64
 	}
-	rawIDs := r.URL.Query()["id"]
-	ids := make([]string, 0, len(rawIDs))
-	seen := make(map[string]struct{}, maxN)
-	for _, rawID := range rawIDs {
-		for _, id := range strings.Split(rawID, ",") {
-			id = strings.TrimSpace(id)
-			if canonical {
-				id = nostrx.CanonicalHex64(id)
-			}
-			if id == "" {
-				continue
-			}
-			if _, ok := seen[id]; ok {
-				continue
-			}
-			seen[id] = struct{}{}
-			ids = append(ids, id)
-			if len(ids) >= maxN {
-				return ids
-			}
-		}
-		if len(ids) >= maxN {
-			return ids
-		}
-	}
-	return ids
+	return queryTokensFromRequest(r, "id", maxN, normalize)
 }
 
 type reactionStatsRow struct {
@@ -387,6 +395,71 @@ func (s *Server) handleProfileAPI(w http.ResponseWriter, r *http.Request) {
 		"event_id":     eventID,
 		"content":      content,
 	}, nil)
+}
+
+type profileAPIEntry struct {
+	Name        string `json:"name"`
+	DisplayName string `json:"display_name"`
+	AvatarURL   string `json:"avatar_url"`
+}
+
+func profileHasRenderedMetadata(profile nostrx.Profile) bool {
+	return strings.TrimSpace(profile.Display) != "" ||
+		strings.TrimSpace(profile.Name) != "" ||
+		strings.TrimSpace(profile.Picture) != ""
+}
+
+func profilePubkeysFromQuery(r *http.Request, maxN int) []string {
+	return queryTokensFromRequest(r, "pubkey", maxN, func(token string) string {
+		pubkey, err := nostrx.DecodeIdentifier(token)
+		if err != nil {
+			return ""
+		}
+		return pubkey
+	})
+}
+
+func (s *Server) handleProfilesAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	pubkeys := profilePubkeysFromQuery(r, 32)
+	if len(pubkeys) == 0 {
+		writeJSON(w, map[string]profileAPIEntry{}, nil)
+		return
+	}
+	timeout := requestTimeout(s.cfg.RequestTimeout)
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	relays := s.requestRelays(r)
+	profiles := s.contactProfiles(ctx, pubkeys)
+	for _, pubkey := range pubkeys {
+		if profileHasRenderedMetadata(profiles[pubkey]) {
+			continue
+		}
+		if s.nostr == nil {
+			continue
+		}
+		if !s.store.ShouldRefresh(ctx, "author", pubkey, 10*time.Minute) {
+			continue
+		}
+		s.refreshAuthor(ctx, pubkey, relays)
+		profiles[pubkey] = s.profile(ctx, pubkey)
+	}
+	out := make(map[string]profileAPIEntry, len(pubkeys))
+	for _, pubkey := range pubkeys {
+		profile := profiles[pubkey]
+		out[pubkey] = profileAPIEntry{
+			Name:        profile.Name,
+			DisplayName: profile.Display,
+			AvatarURL:   avatarSrcFor(pubkey, profile.Picture),
+		}
+	}
+	writeJSON(w, out, nil)
 }
 
 func (s *Server) handleRelayInsightAPI(w http.ResponseWriter, r *http.Request) {

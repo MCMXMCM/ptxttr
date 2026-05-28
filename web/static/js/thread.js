@@ -15,6 +15,7 @@ import { syncMobileAppNavHeight } from "./layout.js";
 import { scrollRouteToTop } from "./shell-swap.js";
 import { getImageModePref, getThreadRenderModePref, setThreadRenderModePref } from "./sort-prefs.js";
 import { openThreadInlineComposer } from "./mutations.js";
+import { refreshVisibleNoteProfiles } from "./note-profiles.js";
 
 let listenersAttached = false;
 let hashListenerBound = false;
@@ -42,13 +43,18 @@ function appendThreadReplies(html) {
   if (!list || !html.trim()) return 0;
   const template = document.createElement("template");
   template.innerHTML = html;
+  const insertedComments = [];
   let appended = 0;
   template.content.querySelectorAll(".comment").forEach((comment) => {
     if (comment.id && document.getElementById(comment.id)) return;
     list.append(comment);
+    insertedComments.push(comment);
     appended += 1;
   });
-  if (appended > 0) initViewMore(list);
+  if (appended > 0) {
+    initViewMore(list);
+    void refreshVisibleNoteProfiles(insertedComments);
+  }
   return appended;
 }
 
@@ -367,6 +373,7 @@ async function ensureTreeFragmentForFocus(focusID) {
     section.innerHTML = await response.text();
     applyTreeMediaMode();
     refreshAscii(section);
+    void refreshVisibleNoteProfiles(section);
   } catch {
     section.textContent = "";
     const err = document.createElement("p");
@@ -941,6 +948,7 @@ export function initThreadPage() {
   });
   bindThreadTreeConnectorObserver();
   scheduleThreadTreeConnectorGeometry();
+  void refreshVisibleNoteProfiles(document);
   refreshThreadViewerReactionStateDeferred();
   if (!hashListenerBound) {
     hashListenerBound = true;

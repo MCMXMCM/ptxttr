@@ -25,6 +25,7 @@ const IMAGE_EXT_PATTERN = /\.(?:png|jpe?g|gif|webp|avif|svg)(?:[?#][^\s<>"']*)?$
 const VIDEO_EXT_PATTERN = /\.(?:mp4|webm|m4v|mov|ogv|ogg)(?:[?#][^\s<>"']*)?$/i;
 const TRAILING_URL_PUNCTUATION = /[),.!?;:]+$/;
 const HTTPS_URL_PATTERN = /https:\/\/[^\s<>"'`]+/gi;
+const DISPLAY_BLOSSOM_URL_PATTERN = /https?:\/\/@[^\s<>"'`]+(?:\s+[^\s<>"'`/]+)*\.blossom\.band\/[^\s<>"'`]+/gi;
 const NOSTR_OR_HASHTAG_PATTERN = new RegExp(`${HTTPS_URL_PATTERN.source}|${NOSTR_REF_PATTERN.source}|${HASHTAG_PATTERN_STEM}`, "giu");
 const observed = new WeakSet();
 const mobileActionsQuery = window.matchMedia("(max-width: 700px)");
@@ -217,6 +218,21 @@ function externalHttpsLink(href, label) {
   return item;
 }
 
+function blossomPathSuffix(url) {
+  if (!url) return "";
+  const cleaned = String(url).trim().replace(TRAILING_URL_PUNCTUATION, "");
+  const match = /\.blossom\.band\/([^\s<>"'`]+)/i.exec(cleaned);
+  return match ? match[1] : "";
+}
+
+function canonicalMediaHrefForDisplay(href, container) {
+  const suffix = blossomPathSuffix(href);
+  if (!suffix || !container) return href;
+  const mediaItems = extractImetaMediaFromNoteContainer(container);
+  const match = mediaItems.find((item) => blossomPathSuffix(item.url) === suffix);
+  return match?.url || href;
+}
+
 function findAsciiMediaPreviewRow(noteRoot, href) {
   if (!noteRoot || !href) return null;
   for (const row of noteRoot.querySelectorAll("[data-ascii-media-preview-url]")) {
@@ -269,14 +285,15 @@ function mediaNoteInlineLink(href, label, noteRoot) {
 }
 
 function appendHttpsOrMediaLineAnchor(target, href, label, container) {
+  const resolvedHref = canonicalMediaHrefForDisplay(href, container);
   if (
     container &&
-    (isVideoAssetHttpsUrl(href) || (!getImageModePref() && isMediaAssetHttpsUrl(href)))
+    (isVideoAssetHttpsUrl(resolvedHref) || (!getImageModePref() && isMediaAssetHttpsUrl(resolvedHref)))
   ) {
-    target.append(mediaNoteInlineLink(href, label, container));
+    target.append(mediaNoteInlineLink(resolvedHref, label, container));
     return;
   }
-  const a = externalHttpsLink(href, label);
+  const a = externalHttpsLink(resolvedHref, label);
   a.classList.add("ascii-content-link");
   target.append(a);
 }
@@ -1131,7 +1148,9 @@ function httpsUrlRowsForLongWord(word, width) {
   if (runeLength(word) <= width) return null;
   if (word.charCodeAt(0) !== 0x68 /* 'h' */) return null;
   HTTPS_URL_PATTERN.lastIndex = 0;
-  const m = HTTPS_URL_PATTERN.exec(word);
+  DISPLAY_BLOSSOM_URL_PATTERN.lastIndex = 0;
+  const displayMatch = DISPLAY_BLOSSOM_URL_PATTERN.exec(word);
+  const m = displayMatch && displayMatch.index === 0 ? displayMatch : HTTPS_URL_PATTERN.exec(word);
   if (!m || m.index !== 0) return null;
   const raw = m[0];
   const href = raw.replace(TRAILING_URL_PUNCTUATION, "");
@@ -1140,8 +1159,6 @@ function httpsUrlRowsForLongWord(word, width) {
   if (afterMatch && !/^[,).!?;:]*$/.test(afterMatch)) return null;
 
   const isMedia = isMediaAssetHttpsUrl(href);
-  if (isMedia && getImageModePref() && !VIDEO_EXT_PATTERN.test(href)) return null;
-
   const tailPlain = punctFromMatch + afterMatch;
   const chunks = [];
   let rest = href;
@@ -1172,6 +1189,26 @@ function httpsUrlRowsForLongWord(word, width) {
   return { specs, tailQueue: tailPlain ? [tailPlain] : [] };
 }
 
+function tokenizeWrapWords(raw) {
+  const source = raw.trim();
+  if (!source) return [];
+  const words = [];
+  let cursor = 0;
+  DISPLAY_BLOSSOM_URL_PATTERN.lastIndex = 0;
+  let match;
+  while ((match = DISPLAY_BLOSSOM_URL_PATTERN.exec(source)) !== null) {
+    if (match.index > cursor) {
+      words.push(...source.slice(cursor, match.index).trim().split(/\s+/).filter(Boolean));
+    }
+    words.push(match[0]);
+    cursor = match.index + match[0].length;
+  }
+  if (cursor < source.length) {
+    words.push(...source.slice(cursor).trim().split(/\s+/).filter(Boolean));
+  }
+  return words;
+}
+
 function wrapText(text, width) {
   const clean = text.trim();
   if (!clean) return [{ text: "", ext: null }];
@@ -1181,7 +1218,7 @@ function wrapText(text, width) {
   };
 
   clean.split("\n").forEach((raw) => {
-    const wordQueue = raw.trim().split(/\s+/).filter(Boolean);
+    const wordQueue = tokenizeWrapWords(raw);
     if (!wordQueue.length) {
       pushRow("");
       return;
