@@ -28,6 +28,7 @@ import {
 } from "./sort-prefs.js";
 import { setAvatarImageSource } from "./avatar-cache.js";
 import { initRetroLoaders } from "./retro-loader.js";
+import { initDesktopStorage } from "./desktop-storage.js";
 
 let initialized = false;
 let mobileMenuEscapeBound = false;
@@ -263,6 +264,7 @@ function ensureMobileMenuEscapeDelegate() {
 }
 
 export function initLayoutUI(root = document) {
+  initDesktopStorage(root);
   initRetroLoaders(root);
   wireAvatarImageFallbacks(root);
   bindMobileMenu(root);

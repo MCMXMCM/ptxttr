@@ -76,11 +76,14 @@ func applyDesktopDefaults() error {
 		return err
 	}
 	setEnvIfUnset("PTXT_DB", filepath.Join(dir, "ptxt-nstr.sqlite"))
-	// The desktop app is a local shell whose browser owns relay reads and writes.
-	// Do not start the hosted server's persistent crawler/warming stack: on a
-	// long-running personal app it does unnecessary work and can churn a very
-	// large SQLite WAL while the UI waits on incomplete anonymous SSR fragments.
-	setEnvIfUnset("PTXT_SERVER_MODE", "share")
+	// Desktop is a private, local-first application. Keep the request-path relay
+	// backend available so uncached notes can be fetched and retained without
+	// inheriting the hosted share server's anonymous cache-only policy.
+	setEnvIfUnset("PTXT_SERVER_MODE", "app")
+	setEnvIfUnset("PTXT_EVENT_RETENTION", "0")
+	setEnvIfUnset("PTXT_DB_DISK_MAX_PERCENT", "0")
+	// Do not start the hosted server's persistent crawler/warming stack: relay
+	// work should be driven by what the desktop user opens.
 	setEnvIfUnset("PTXT_HYDRATION_ENABLED", "false")
 	setEnvIfUnset("PTXT_HOT_FEED_CRAWLER_ENABLED", "false")
 	setEnvIfUnset("PTXT_SEED_CRAWLER_ENABLED", "false")

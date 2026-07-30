@@ -49,6 +49,13 @@ func TestDesktopAppShellEnablesDirectRelayReads(t *testing.T) {
 	}
 }
 
+func TestDesktopAllowsAnonymousThreadRelayFetch(t *testing.T) {
+	s := &Server{cfg: config.Config{DesktopMode: true, ServerMode: "share"}}
+	if !s.allowThreadRelayFetch("", true, "") {
+		t.Fatal("desktop anonymous thread relay fetch = false, want true")
+	}
+}
+
 func TestServerAppShellKeepsDirectRelayReadsDisabledByDefault(t *testing.T) {
 	s := &Server{cfg: config.Config{}}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)

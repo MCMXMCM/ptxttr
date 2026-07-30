@@ -320,6 +320,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc(avatarPathPrefix, s.handleAvatar)
 	if s.cfg.DesktopMode {
 		mux.HandleFunc(desktopOpenExternalPath, s.handleDesktopOpenExternal)
+		mux.HandleFunc(desktopStoragePath, s.handleDesktopStorage)
+		mux.HandleFunc(desktopStorageClearPath, s.handleDesktopStorageClear)
 	}
 	coalesce := newCoalesceMiddleware(coalesceConfig{
 		Enabled: s.cfg.CoalesceEnabled,

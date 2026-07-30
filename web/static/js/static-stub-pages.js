@@ -339,6 +339,44 @@ function settingsMainMarkup() {
               </div>
             </div>
           </div>
+          <section class="desktop-storage-settings" data-desktop-storage hidden>
+            <h2>Local Storage</h2>
+            <div class="settings-mode-tree-group">
+              <div class="settings-mode-tree-group-main">
+                <div class="settings-slider-tree settings-mode-tree-stacked">
+                  <div class="settings-mode-branch" aria-hidden="true"></div>
+                  <div class="settings-mode-row-head">
+                    <strong>Storage Used</strong>
+                    <span data-storage-total>Calculating...</span>
+                  </div>
+                  <div class="settings-mode-row-body desktop-storage-usage">
+                    <span><span>SQLite cache</span><strong data-storage-sqlite>—</strong></span>
+                    <span><span>WebView cache</span><strong data-storage-browser>—</strong></span>
+                    <span><span>Note Data</span><strong data-storage-notes>—</strong></span>
+                    <span><span>Metadata</span><strong data-storage-metadata>—</strong></span>
+                    <span><span>User Data</span><strong data-storage-user-data>—</strong></span>
+                  </div>
+                </div>
+                <div class="settings-slider-tree settings-mode-tree-stacked">
+                  <div class="settings-mode-branch" aria-hidden="true"></div>
+                  <div class="settings-mode-row-head">
+                    <strong>Cache Controls</strong>
+                  </div>
+                  <div class="settings-mode-row-body">
+                    <small class="muted">Desktop cache is unlimited and stays on this device. Clearing cache preserves accounts, private keys, sessions, and settings.</small>
+                    <div class="desktop-storage-actions">
+                      <button type="button" data-desktop-storage-refresh>Refresh Usage</button>
+                      <button type="button" data-desktop-storage-clear="notes">Clear Note Data</button>
+                      <button type="button" data-desktop-storage-clear="metadata">Clear Metadata</button>
+                      <button type="button" data-desktop-storage-clear="user_data">Clear User Data</button>
+                      <button type="button" class="danger" data-desktop-storage-clear="all">Clear All Cache</button>
+                    </div>
+                    <small class="muted" data-desktop-storage-status>Calculating storage usage...</small>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
           <div class="settings-blossom-section" data-blossom-settings-section hidden>
             <h2>Blossom uploads</h2>
             <div class="settings-mode-tree-group" data-blossom-settings>

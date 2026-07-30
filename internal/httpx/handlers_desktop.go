@@ -13,11 +13,63 @@ import (
 
 const (
 	desktopOpenExternalPath = "/__ptxt/desktop/open-external"
+	desktopStoragePath      = "/__ptxt/desktop/storage"
+	desktopStorageClearPath = "/__ptxt/desktop/storage/clear"
 	maxDesktopOpenURLLen    = 2048
 )
 
 type desktopOpenExternalBody struct {
 	URL string `json:"url"`
+}
+
+type desktopStorageClearBody struct {
+	Scope string `json:"scope"`
+}
+
+func (s *Server) handleDesktopStorage(w http.ResponseWriter, r *http.Request) {
+	if s == nil || !s.cfg.DesktopMode || s.store == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	usage, err := s.store.CacheUsage(r.Context())
+	if err != nil {
+		slog.Warn("desktop storage usage failed", "err", err)
+		http.Error(w, "storage usage failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(usage)
+}
+
+func (s *Server) handleDesktopStorageClear(w http.ResponseWriter, r *http.Request) {
+	if s == nil || !s.cfg.DesktopMode || s.store == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+	var body desktopStorageClearBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	result, err := s.store.ClearCache(r.Context(), strings.TrimSpace(body.Scope))
+	if err != nil {
+		slog.Warn("desktop cache clear failed", "scope", body.Scope, "err", err)
+		http.Error(w, "cache clear failed", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(result)
 }
 
 // handleDesktopOpenExternal opens an http(s) URL in the system browser. It is

@@ -183,7 +183,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	relays := s.requestRelays(r)
 	viewerPub, loggedOut := s.resolveViewer(viewerFromRequest(r), relays)
 	anonymousMembership := authorMembership{}
-	if loggedOut {
+	if loggedOut && !s.cfg.DesktopMode {
 		anonymousMembership = s.defaultLoggedOutThreadAuthorMembership(r.Context())
 	}
 	// UI fragments use relays for missing ancestry; fragment=replies alone stays
@@ -232,7 +232,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 			ErrorPanelCopy: ErrorPanelCopy{
 				Heading:       "Note not found",
 				Message:       "No note with this id was found in the local cache or on the relays you selected.",
-				ShowLoginHint: true,
+				ShowLoginHint: !s.cfg.DesktopMode,
 				ThreadRail:    true,
 			},
 		})
@@ -328,7 +328,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 			s.metrics.Add("thread.hydrate.store_first", 1)
 		}
 	}
-	if fragment == "" && cacheableAnonymousThreadDocument(r) {
+	if fragment == "" && !s.cfg.DesktopMode && cacheableAnonymousThreadDocument(r) {
 		s.renderAnonymousThreadDocument(w, r, base, *root, *selected, parentID, relays, resolveEvent, anonymousMembership)
 		return
 	}
@@ -349,8 +349,8 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	fullReplyWalk := !repliesPaginationFragment && cursor == 0 && cursorID == ""
 	// Guest threads are strictly cache-only. A public hydrate request must not
 	// turn into synchronous relay reads or enqueue relay context work.
-	threadRepliesStoreOnly := loggedOut || repliesPaginationFragment || hydrateStoreFirst
-	if loggedOut && fragment == "hydrate" {
+	threadRepliesStoreOnly := (loggedOut && !s.cfg.DesktopMode) || repliesPaginationFragment || hydrateStoreFirst
+	if loggedOut && !s.cfg.DesktopMode && fragment == "hydrate" {
 		s.metrics.Add("thread.anonymous_hydrate.store_only", 1)
 	}
 	var replies []nostrx.Event
@@ -567,7 +567,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if loggedOut && len(anonymousMembership.exact) > 0 {
+	if loggedOut && !s.cfg.DesktopMode && len(anonymousMembership.exact) > 0 {
 		// Logged-out scope filtering must retain every ancestor needed to attach
 		// an in-scope reply to the note it actually answers. Author-only filtering
 		// drops those bridge notes and repairThreadParentMap then promotes their

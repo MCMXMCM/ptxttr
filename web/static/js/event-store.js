@@ -25,6 +25,11 @@ const recentTouches = new Map();
 let lastMaintenanceAt = 0;
 let maintenancePromise = null;
 
+function desktopUnlimitedCache() {
+  return typeof document !== "undefined"
+    && document.documentElement?.dataset?.ptxtDesktopMode === "1";
+}
+
 export function estimateEventRecordBytes(event) {
   try {
     return new Blob([JSON.stringify(event || {})]).size;
@@ -165,6 +170,7 @@ async function touchEventRecords(events) {
 }
 
 function scheduleEventCacheMaintenance({ force = false } = {}) {
+  if (desktopUnlimitedCache()) return null;
   const now = Date.now();
   if (!force && now - lastMaintenanceAt < EVENT_CACHE_MAINTENANCE_INTERVAL_MS) return maintenancePromise;
   if (maintenancePromise) return maintenancePromise;

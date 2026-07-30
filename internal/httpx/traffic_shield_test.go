@@ -42,6 +42,29 @@ func TestTrafficShieldLimitsAnonymousExpensiveRoutes(t *testing.T) {
 	}
 }
 
+func TestTrafficShieldIsDisabledForDesktop(t *testing.T) {
+	srv := &Server{
+		cfg:              config.Config{DesktopMode: true},
+		anonymousLimiter: newSearchLimiter(1, 0.001),
+		botLimiter:       newSearchLimiter(1, 0.001),
+		viewerLimiter:    newSearchLimiter(1, 0.001),
+		metrics:          newAppMetrics(),
+	}
+	handler := srv.trafficShield(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	for i := 0; i < 4; i++ {
+		req := httptest.NewRequest(http.MethodGet, "/thread/"+strings.Repeat("a", 64), nil)
+		req.RemoteAddr = "203.0.113.10:1234"
+		req.Header.Set("User-Agent", "Twitterbot/1.0")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("desktop request %d status = %d, want 204", i+1, rec.Code)
+		}
+	}
+}
+
 func TestTrafficShieldUsesStricterBotBucket(t *testing.T) {
 	srv := &Server{
 		cfg:              config.Config{},

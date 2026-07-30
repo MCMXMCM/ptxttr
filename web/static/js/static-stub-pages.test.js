@@ -16,6 +16,7 @@ describe("static-stub-pages", () => {
     assert.match(html, /data-relay-preferences-form/);
     assert.match(html, /data-relay-edit-section hidden/);
     assert.match(html, /data-account-switcher-list/);
+    assert.match(html, /data-desktop-storage hidden/);
   });
 
   it("renders relays markup from the client bundle", () => {

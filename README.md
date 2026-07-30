@@ -78,7 +78,7 @@ make build-desktop
 
 The app bundle is written to `cmd/desktop/build/bin/ptxt-nstr.app`. Open that folder in Finder and double-click the app, or run it from the terminal.
 
-The desktop build embeds a short splash, then starts the same HTTP server as `cmd/server` on a random `127.0.0.1` port and opens it in a native window. Your database defaults to `~/Library/Application Support/ptxt-nstr/ptxt-nstr.sqlite` (override with `PTXT_DB`). The desktop preset also sets `PTXT_DESKTOP_MODE=1` (external links open in the default browser). First-launch compaction is off by default (`PTXT_COMPACT_ON_START=false`) so the window stays responsive; optional `pprof` on `127.0.0.1:6060` is off by default in the desktop preset (`PTXT_PPROF_ADDR=off`) to avoid clashing with a dev server.
+The desktop build embeds a short splash, then starts the same HTTP server as `cmd/server` on stable loopback origin `127.0.0.1:24787` and opens it in a native window. Your database defaults to `~/Library/Application Support/ptxt-nstr/ptxt-nstr.sqlite` (override with `PTXT_DB`). The desktop preset also sets `PTXT_DESKTOP_MODE=1` (external links open in the default browser), disables hosted-service request throttles and cache retention limits, and fetches uncached notes directly from the relays you selected. Background crawlers remain off; storage grows only from user-driven reads. View usage or clear Note Data, Metadata, User Data, or All Cache under **Settings → Local Storage**. These actions preserve accounts, private keys, sessions, and settings.
 
 **Desktop vs hosted URLs:** OpenGraph and canonical links use the request host. Behind CloudFront, `X-Forwarded-Host` supplies your public domain; in the desktop app the host is `127.0.0.1:<port>`, which is fine for local use.
 
@@ -246,14 +246,14 @@ The logged-out feed is seeded from a curated whitelist in `data/curated_pubkeys.
 
 ## Configuration
 
-The **desktop** preset (`cmd/desktop`) sets `PTXT_DB` under the per-user config directory, `PTXT_DESKTOP_MODE=1`, `PTXT_COMPACT_ON_START=false`, `PTXT_ACTIVE_VIEWER_TRENDING=false`, and `PTXT_PPROF_ADDR=off` when those keys are unset so first launch stays snappy and does not collide with a dev `pprof` listener.
+The **desktop** preset (`cmd/desktop`) sets `PTXT_DB` under the per-user config directory, `PTXT_DESKTOP_MODE=1`, `PTXT_SERVER_MODE=app`, unlimited event/disk retention, `PTXT_COMPACT_ON_START=false`, `PTXT_ACTIVE_VIEWER_TRENDING=false`, and `PTXT_PPROF_ADDR=off` when those keys are unset. Hosted throttles and anonymous cache-only thread admission are bypassed only in desktop mode; request-driven relay reads remain enabled while background crawlers stay off.
 
 Useful environment variables (all optional):
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `PTXT_ADDR` | `:8080` | Listen address. |
-| `PTXT_DESKTOP_MODE` | `false` | Set automatically by `cmd/desktop` for the Wails build. Registers the loopback-only `/__ptxt/desktop/open-external` helper so external links open in the system browser. Do not enable on a publicly reachable `cmd/server` unless you understand the tradeoffs. |
+| `PTXT_DESKTOP_MODE` | `false` | Set automatically by `cmd/desktop` for the Wails build. Enables local-first relay reads, unlimited local cache, desktop storage controls, and the loopback-only `/__ptxt/desktop/*` helpers. Do not enable on a publicly reachable `cmd/server`. |
 | `PTXT_DB` | `data/ptxt-nstr.sqlite` | SQLite path. |
 | `PTXT_RELAYS` | `wss://relay.primal.net,wss://relay.damus.io,wss://nos.lol` | Default relay set. |
 | `PTXT_METADATA_RELAYS` | `PTXT_RELAYS` | Preferred relays for profile / follow / relay-list hydration. |

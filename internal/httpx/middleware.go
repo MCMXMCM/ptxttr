@@ -145,9 +145,12 @@ func withTimeout(timeout time.Duration, next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r != nil && r.URL != nil && r.URL.Path == "/api/thread-telemetry" {
-			next.ServeHTTP(w, r)
-			return
+		if r != nil && r.URL != nil {
+			switch r.URL.Path {
+			case "/api/thread-telemetry", desktopStorageClearPath:
+				next.ServeHTTP(w, r)
+				return
+			}
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()

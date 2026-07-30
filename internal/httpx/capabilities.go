@@ -9,11 +9,11 @@ func (s *Server) shareServerMode() bool {
 }
 
 func (s *Server) allowLegacyRelayBackend() bool {
-	return s != nil && !s.shareServerMode()
+	return s != nil && (s.cfg.DesktopMode || !s.shareServerMode())
 }
 
 func (s *Server) allowLegacyWarmers() bool {
-	return s != nil && !s.shareServerMode()
+	return s != nil && (s.cfg.DesktopMode || !s.shareServerMode())
 }
 
 func (s *Server) allowShareSurfaceRelayFetch(viewerPub string, loggedOut bool) bool {
@@ -29,6 +29,9 @@ func (s *Server) allowShareSurfaceRelayFetch(viewerPub string, loggedOut bool) b
 func (s *Server) allowThreadRelayFetch(viewerPub string, loggedOut bool, fragment string) bool {
 	if s == nil {
 		return false
+	}
+	if s.cfg.DesktopMode {
+		return true
 	}
 	if loggedOut || strings.TrimSpace(viewerPub) == "" {
 		return false
