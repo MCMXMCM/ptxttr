@@ -11,7 +11,11 @@ import (
 func replyCountMap(stats map[string]store.ReplyStat) map[string]int {
 	counts := make(map[string]int, len(stats))
 	for id, stat := range stats {
-		counts[id] = stat.DescendantReplies
+		count := stat.DescendantReplies
+		if count == 0 && stat.DirectReplies > 0 {
+			count = stat.DirectReplies
+		}
+		counts[id] = count
 	}
 	return counts
 }

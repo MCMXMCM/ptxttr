@@ -1,0 +1,26 @@
+{{define "share"}}
+{{template "document_start" .}}
+<section class="feed-column share-page-column">
+  <section class="page-heading share-page-heading">
+    <div class="feed-heading-top">
+      <div class="feed-heading-title-row">
+        <h1>Shared note</h1>
+        <span class="share-heading-separator" aria-hidden="true">•</span>
+        <a class="rail-post share-live-link" href="{{.LiveThreadURL}}" data-relay-aware>View thread</a>
+      </div>
+    </div>
+  </section>
+
+  {{if eq .Surface "thread_focus"}}
+    <section class="thread-focus share-thread-focus">
+      {{if .Parent}}
+        {{template "thread_focus_parent" dict "Event" .Parent "Profiles" .Profiles "ReferencedEvents" .ReferencedEvents "ReplyCounts" .ReplyCounts "ReactionTotals" .ReactionTotals "ReactionViewers" .ReactionViewers "Width" .AsciiWidth "RootID" .RootID "ReplyCount" (index .ReplyCounts .Parent.ID)}}
+      {{end}}
+      {{template "thread_focus_selected" dict "Event" .Selected "Profiles" .Profiles "ReferencedEvents" .ReferencedEvents "ReplyCounts" .ReplyCounts "RootID" .RootID "Width" .AsciiWidth "ReplyCount" (index .ReplyCounts .Selected.ID) "ReactionTotals" .ReactionTotals "ReactionViewers" .ReactionViewers}}
+    </section>
+  {{else}}
+    {{template "note" dict "Event" .Selected "Profiles" .Profiles "SelectedID" .Selected.ID "RootID" .RootID "Width" .AsciiWidth "ReplyCount" (index .ReplyCounts .Selected.ID) "ReplyCounts" .ReplyCounts "ReactionTotals" .ReactionTotals "ReactionViewers" .ReactionViewers "ReferencedEvents" .ReferencedEvents}}
+  {{end}}
+</section>
+{{template "document_end" .}}
+{{end}}

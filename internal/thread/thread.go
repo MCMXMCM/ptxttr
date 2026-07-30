@@ -196,32 +196,50 @@ func rebasedSubtree(node Node, baseDepth int) Node {
 }
 
 func ExplicitRootID(event nostrx.Event) string {
-	if event.Kind != nostrx.KindTextNote {
-		return ""
-	}
-	for _, tag := range event.Tags {
-		if len(tag) >= 2 && tag[0] == "e" && strings.EqualFold(nip10Marker(tag), "root") {
-			return NormalizeHexEventID(tag[1])
+	switch event.Kind {
+	case nostrx.KindTextNote:
+		for _, tag := range event.Tags {
+			if len(tag) >= 2 && tag[0] == "e" && strings.EqualFold(nip10Marker(tag), "root") {
+				return NormalizeHexEventID(tag[1])
+			}
+		}
+	case nostrx.KindComment:
+		// NIP-22 uses an uppercase E tag for the root event and a
+		// lowercase e tag for the immediate parent.
+		for _, tag := range event.Tags {
+			if len(tag) >= 2 && tag[0] == "E" {
+				return NormalizeHexEventID(tag[1])
+			}
 		}
 	}
 	return ""
 }
 
 func RootID(event nostrx.Event) string {
-	if event.Kind != nostrx.KindTextNote {
+	if event.Kind != nostrx.KindTextNote && event.Kind != nostrx.KindComment {
 		return ""
 	}
 	if rootID := ExplicitRootID(event); rootID != "" {
 		return rootID
 	}
 	var firstE string
+	hasMarkedE := false
 	for _, tag := range event.Tags {
 		if len(tag) < 2 || tag[0] != "e" {
 			continue
 		}
+		if nip10Marker(tag) != "" {
+			hasMarkedE = true
+		}
 		if firstE == "" {
 			firstE = NormalizeHexEventID(tag[1])
 		}
+	}
+	// Once a client uses NIP-10 markers, only root/reply tags define a
+	// thread. In particular, an e-tag marked "mention" is quote
+	// compatibility metadata, not a reply root.
+	if hasMarkedE {
+		return ""
 	}
 	return firstE
 }
@@ -277,22 +295,36 @@ func countDescendants(nodes []Node) int {
 }
 
 func parentFor(rootID string, event nostrx.Event) string {
-	if event.Kind != nostrx.KindTextNote {
+	if event.Kind != nostrx.KindTextNote && event.Kind != nostrx.KindComment {
 		return ""
 	}
+	if event.Kind == nostrx.KindComment {
+		// NIP-22 lowercase e tags identify the event being replied to. Use
+		// the last one, matching NIP-22 pointer parsing when duplicates occur.
+		var replyE string
+		for _, tag := range event.Tags {
+			if len(tag) >= 2 && tag[0] == "e" {
+				replyE = NormalizeHexEventID(tag[1])
+			}
+		}
+		return replyE
+	}
 	rootID = NormalizeHexEventID(rootID)
-	var firstE string
+	var lastE string
 	var replyE string
 	var rootE string
+	hasMarkedE := false
 	for _, tag := range event.Tags {
 		if len(tag) < 2 || tag[0] != "e" {
 			continue
 		}
 		ref := NormalizeHexEventID(tag[1])
-		if firstE == "" {
-			firstE = ref
+		lastE = ref
+		marker := strings.ToLower(nip10Marker(tag))
+		if marker != "" {
+			hasMarkedE = true
 		}
-		switch strings.ToLower(nip10Marker(tag)) {
+		switch marker {
 		case "reply":
 			replyE = ref
 		case "root":
@@ -305,7 +337,12 @@ func parentFor(rootID string, event nostrx.Event) string {
 	if rootE != "" && rootE != rootID {
 		return rootE
 	}
-	return firstE
+	if hasMarkedE {
+		return ""
+	}
+	// Deprecated positional NIP-10 uses first=root, last=reply, with any
+	// middle e-tags treated as mentions.
+	return lastE
 }
 
 // countHiddenForFocus counts every node in the tree that is NOT going to be

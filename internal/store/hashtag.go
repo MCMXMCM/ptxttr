@@ -47,7 +47,7 @@ func (s *Store) HashtagNoteSummaries(ctx context.Context, query HashtagNotesQuer
 		before = time.Now().Unix() + 1
 	}
 	sqlQuery := fmt.Sprintf(`SELECT e.id, e.pubkey, e.created_at, e.kind, e.content FROM events e
-		WHERE e.id IN (SELECT event_id FROM tags WHERE name = 't' AND lower(value) = lower(?))
+		WHERE e.id IN (SELECT event_id FROM tags WHERE name = 't' AND value = ? COLLATE NOCASE)
 		AND e.kind IN (%s)
 		%s
 		AND (e.created_at < ? OR (e.created_at = ? AND e.id < ?))

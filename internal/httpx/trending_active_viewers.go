@@ -60,7 +60,9 @@ func (s *Server) runActiveViewerTrendingHotLoop() {
 
 func (s *Server) warmActiveViewerTrending(ctx context.Context) {
 	s.tryRunMaintenanceWork(maintenanceLaneTrending, func() {
-		s.warmActiveViewerTrendingBody(ctx)
+		s.runWithRelayWriteBudget(ctx, "trending.active_viewer", func() {
+			s.warmActiveViewerTrendingBody(ctx)
+		})
 	})
 }
 
@@ -98,6 +100,7 @@ func (s *Server) warmActiveViewerTrendingBody(ctx context.Context) {
 			s.metrics.Add("trending.active_viewer.warm_skip_no_resolution", 1)
 			continue
 		}
+		cohort = clampAuthorsWithLimit(cohort, s.resolvedAuthorLimit(v.WoT))
 		cohortKey := authorsCacheKey(cohort)
 		if cohortKey == "" {
 			s.metrics.Add("trending.active_viewer.warm_skip_empty_cohort", 1)

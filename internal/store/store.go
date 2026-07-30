@@ -51,6 +51,9 @@ type ProfileSummary struct {
 	About       string
 	Picture     string
 	NIP05       string
+	Website     string
+	Lud16       string
+	Lud06       string
 }
 
 type ReplyStat struct {
@@ -68,9 +71,18 @@ type Store struct {
 	bgWG     sync.WaitGroup
 
 	retentionMax int
-	pruneEvery   int64
-	writeCount   atomic.Int64
-	pruning      atomic.Bool
+	// retentionByAccess evicts by last_accessed_at (LRU) instead of inserted_at (FIFO).
+	retentionByAccess bool
+	// diskPrunePercent starts deleting old event rows when SQLite files exceed
+	// this percentage of the backing filesystem capacity.
+	diskPrunePercent int
+	// diskPruneTargetPercent is the post-prune target percentage.
+	diskPruneTargetPercent int
+	dbPath                 string
+
+	pruneEvery int64
+	writeCount atomic.Int64
+	pruning    atomic.Bool
 
 	sidecar *sidecarCaches
 
@@ -98,9 +110,12 @@ type RelayStatus struct {
 }
 
 type TrendingItem struct {
-	NoteID     string
-	ReplyCount int
-	Score      int
+	NoteID        string
+	ReplyCount    int
+	ReactionCount int
+	Score         int
+	HotScore      float64
+	NoteCreatedAt int64
 }
 
 func Open(ctx context.Context, path string) (*Store, error) {
@@ -121,6 +136,7 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	sidecarSize := positiveIntEnv("PTXT_SIDECAR_LRU_SIZE", 2048)
 	store := &Store{
 		db:                 db,
+		dbPath:             path,
 		bgCtx:              bgCtx,
 		bgCancel:           bgCancel,
 		pruneEvery:         1000,
@@ -175,6 +191,50 @@ func (s *Store) SetEventRetention(maxEvents int) {
 	s.retentionMax = maxEvents
 }
 
+// SetRetentionPolicy selects FIFO-by-insertion (default) or LRU-by-last-access eviction.
+func (s *Store) SetRetentionPolicy(byAccessTime bool) {
+	if s == nil {
+		return
+	}
+	s.retentionByAccess = byAccessTime
+}
+
+// SetDiskRetentionPolicy enables disk-budget pruning. maxPercent is the SQLite
+// file usage percentage that starts pruning; targetPercent is the post-prune
+// target. Pass maxPercent <= 0 to disable.
+func (s *Store) SetDiskRetentionPolicy(maxPercent, targetPercent int) {
+	if s == nil {
+		return
+	}
+	if maxPercent <= 0 {
+		s.diskPrunePercent = 0
+		s.diskPruneTargetPercent = 0
+		return
+	}
+	if maxPercent > 99 {
+		maxPercent = 99
+	}
+	if targetPercent <= 0 || targetPercent >= maxPercent {
+		targetPercent = maxPercent - 10
+		if targetPercent < 1 {
+			targetPercent = maxPercent - 1
+		}
+	}
+	if targetPercent < 1 {
+		targetPercent = 1
+	}
+	s.diskPrunePercent = maxPercent
+	s.diskPruneTargetPercent = targetPercent
+}
+
+// DBPath returns the SQLite file path passed to Open.
+func (s *Store) DBPath() string {
+	if s == nil {
+		return ""
+	}
+	return s.dbPath
+}
+
 // SetReplaceableHistory controls whether multiple replaceable revisions per
 // (pubkey, kind) remain in the events table. Default is true (keep history).
 func (s *Store) SetReplaceableHistory(keep bool) {
@@ -226,6 +286,7 @@ func (s *Store) startBackgroundWorkers() {
 		if err := s.ReclaimFreePages(ctx); err != nil {
 			slog.Debug("incremental vacuum failed", "err", err)
 		}
+		s.maybeVacuumUnderPressure()
 	})
 	// Backstop full VACUUM on a slow cadence. Existing production DBs that
 	// were created before auto_vacuum=INCREMENTAL was set will not honor
@@ -234,15 +295,101 @@ func (s *Store) startBackgroundWorkers() {
 	// run it daily and only when retention is active (otherwise there is no
 	// recurring source of free pages to recover).
 	s.runTicker(24*time.Hour, func() {
-		if s.retentionMax <= 0 {
+		if s.retentionMax <= 0 && s.diskPrunePercent <= 0 {
 			return
 		}
-		ctx, cancel := context.WithTimeout(s.bgCtx, 20*time.Minute)
+		timeout := vacuumTimeout()
+		ctx, cancel := context.WithTimeout(s.bgCtx, timeout)
 		defer cancel()
 		if err := s.VacuumFull(ctx); err != nil {
 			slog.Warn("periodic vacuum failed", "err", err)
 		}
 	})
+}
+
+func (s *Store) maybeVacuumUnderPressure() {
+	if s == nil || s.db == nil {
+		return
+	}
+	if s.diskPrunePercent > 0 {
+		ctx, cancel := context.WithTimeout(s.bgCtx, pruneTimeout())
+		deleted, err := s.PruneEventsToDiskTarget(ctx)
+		cancel()
+		if err != nil {
+			slog.Warn("disk budget prune before vacuum failed", "err", err)
+		} else if deleted > 0 {
+			slog.Info("disk budget prune before vacuum complete", "deleted_events", deleted)
+		}
+	}
+	threshold := float64(diskPressureThresholdPercent())
+	if used, ok := DBDiskUsagePercent(s.dbPath); ok && used >= threshold {
+		slog.Warn("disk pressure vacuum", "used_percent", used, "threshold", threshold)
+		s.runVacuumWithTimeout("disk_pressure")
+		return
+	}
+	if _, _, used, ok := DBFileUsage(s.dbPath); ok && s.diskPrunePercent > 0 && used >= float64(s.diskPrunePercent) {
+		slog.Warn("db file budget vacuum", "db_file_percent", used, "threshold", s.diskPrunePercent)
+		s.runVacuumWithTimeout("db_file_budget")
+		return
+	}
+	if s.retentionMax <= 0 && s.diskPrunePercent <= 0 {
+		return
+	}
+	ratio, err := s.FreelistRatio(context.Background())
+	if err != nil || ratio < freelistVacuumRatioThreshold() {
+		return
+	}
+	slog.Info("freelist ratio vacuum", "ratio", ratio)
+	s.runVacuumWithTimeout("freelist_ratio")
+}
+
+func (s *Store) runVacuumWithTimeout(reason string) {
+	timeout := vacuumTimeout()
+	ctx, cancel := context.WithTimeout(s.bgCtx, timeout)
+	defer cancel()
+	if err := s.VacuumFull(ctx); err != nil {
+		slog.Warn("pressure vacuum failed", "reason", reason, "err", err)
+	}
+}
+
+// FreelistRatio returns freelist_count / page_count for the open database.
+func (s *Store) FreelistRatio(ctx context.Context) (float64, error) {
+	if s == nil || s.db == nil {
+		return 0, nil
+	}
+	var pages, freelist int64
+	if err := s.db.QueryRowContext(ctx, `PRAGMA page_count`).Scan(&pages); err != nil {
+		return 0, err
+	}
+	if pages <= 0 {
+		return 0, nil
+	}
+	if err := s.db.QueryRowContext(ctx, `PRAGMA freelist_count`).Scan(&freelist); err != nil {
+		return 0, err
+	}
+	return float64(freelist) / float64(pages), nil
+}
+
+func (s *Store) pruneOrderByClause() string {
+	if s.retentionByAccess {
+		return "last_accessed_at ASC, inserted_at ASC, created_at ASC, id ASC"
+	}
+	return "inserted_at ASC, created_at ASC, id ASC"
+}
+
+func (s *Store) pruneOrphanProjectionRowsTx(ctx context.Context, tx *sql.Tx) error {
+	stmts := []string{
+		`DELETE FROM note_links WHERE note_id NOT IN (SELECT id FROM events)`,
+		`DELETE FROM note_stats WHERE note_id NOT IN (SELECT id FROM events)`,
+		`DELETE FROM thread_graph_cache WHERE root_id NOT IN (SELECT id FROM events)`,
+		`DELETE FROM relay_events WHERE event_id NOT IN (SELECT id FROM events)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.ExecContext(ctx, stmt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // runTicker spawns a tracked background goroutine that invokes fn on every
@@ -321,12 +468,17 @@ func (s *Store) Compact(ctx context.Context, maxEvents int) (int64, error) {
 	defer s.writeMu.Unlock()
 	deleted := int64(0)
 	if maxEvents > 0 {
-		result, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE id IN (
-			SELECT id FROM events ORDER BY inserted_at ASC, created_at ASC, id ASC
+		orderBy := s.pruneOrderByClause()
+		result, err := s.db.ExecContext(ctx, fmt.Sprintf(`DELETE FROM events WHERE id IN (
+			SELECT id FROM events
+			WHERE NOT EXISTS (
+				SELECT 1 FROM event_pins ep WHERE ep.event_id = events.id AND ep.expires_at > unixepoch()
+			)
+			ORDER BY %s
 			LIMIT (
 				SELECT CASE WHEN COUNT(*) > ? THEN COUNT(*) - ? ELSE 0 END FROM events
 			)
-		)`, maxEvents, maxEvents)
+		)`, orderBy), maxEvents, maxEvents)
 		if err != nil {
 			return 0, err
 		}
@@ -338,6 +490,11 @@ func (s *Store) Compact(ctx context.Context, maxEvents int) (int64, error) {
 		// reply LRU defensively so cached counts cannot outlive the events
 		// they describe even when descendants disappear here.
 		s.sidecar.purgeReply()
+	}
+	if deleted > 0 {
+		if err := s.invalidateFeedSnapshotsLocked(ctx); err != nil {
+			return deleted, err
+		}
 	}
 	if _, err := s.db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`); err != nil {
 		return deleted, err
@@ -394,8 +551,9 @@ func (s *Store) SaveEvents(ctx context.Context, events []nostrx.Event) (int, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	saved := 0
+	var deletedReplySidecarKeys []string
 	for _, item := range prepared {
-		inserted, referenced, err := s.savePreparedEventTx(ctx, tx, item.event, item.raw, now)
+		inserted, referenced, deletedIDs, err := s.savePreparedEventTx(ctx, tx, item.event, item.raw, now)
 		if err != nil {
 			s.writeMu.Unlock()
 			return saved, err
@@ -403,7 +561,9 @@ func (s *Store) SaveEvents(ctx context.Context, events []nostrx.Event) (int, err
 		if inserted {
 			saved++
 			dirtyReplyRefs = append(dirtyReplyRefs, referenced...)
-			if isThreadingNoteKind(item.event.Kind) {
+			if len(deletedIDs) > 0 {
+				deletedReplySidecarKeys = append(deletedReplySidecarKeys, deletedIDs...)
+			} else if isThreadingNoteKind(item.event.Kind) {
 				dirtyReplyStatNoteIDs = append(dirtyReplyStatNoteIDs, immediateReplyStatNoteIDs(item.event)...)
 			} else if item.event.Kind == nostrx.KindRelayListMetadata {
 				dirtyRelayHintPubkeys = append(dirtyRelayHintPubkeys, item.event.PubKey)
@@ -425,6 +585,7 @@ func (s *Store) SaveEvents(ctx context.Context, events []nostrx.Event) (int, err
 			s.sidecar.invalidateRelayKeys(dirtyRelayHintPubkeys)
 			s.sidecar.invalidateProfileKeys(dirtyProfilePubkeys)
 			s.sidecar.invalidateReplyKeys(dirtyReplyStatNoteIDs)
+			s.sidecar.invalidateReplyKeys(deletedReplySidecarKeys)
 		}
 		s.syncRelayHintsBestEffort(ctx, dirtyRelayHintPubkeys)
 		s.syncProfileSummariesBestEffort(ctx, dirtyProfilePubkeys)
@@ -479,34 +640,35 @@ func latestReplaceableSlotTx(ctx context.Context, tx *sql.Tx, pubkey string, kin
 	return id, createdAt, nil
 }
 
-func (s *Store) savePreparedEventTx(ctx context.Context, tx *sql.Tx, event nostrx.Event, raw string, now int64) (bool, []string, error) {
+func (s *Store) savePreparedEventTx(ctx context.Context, tx *sql.Tx, event nostrx.Event, raw string, now int64) (bool, []string, []string, error) {
 	if event.ID == "" {
-		return false, nil, errors.New("event id is required")
+		return false, nil, nil, errors.New("event id is required")
 	}
 	var referenced []string
 	if !s.replaceableHistory && nostrx.IsReplaceablePruneSlotKind(event.Kind) {
 		latestID, latestCreatedAt, err := latestReplaceableSlotTx(ctx, tx, event.PubKey, event.Kind)
 		if err != nil {
-			return false, nil, err
+			return false, nil, nil, err
 		}
 		if latestID != "" && latestID != event.ID && compareReplaceableOrder(latestCreatedAt, latestID, event.CreatedAt, event.ID) >= 0 {
-			return false, nil, nil
+			return false, nil, nil, nil
 		}
 	}
 	result, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO events
-		(id, pubkey, created_at, kind, content, sig, raw_json, inserted_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		event.ID, event.PubKey, event.CreatedAt, event.Kind, event.Content, event.Sig, raw, now)
+		(id, pubkey, created_at, kind, content, sig, raw_json, inserted_at, last_accessed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		event.ID, event.PubKey, event.CreatedAt, event.Kind, event.Content, event.Sig, raw, now, now)
 	if err != nil {
-		return false, nil, err
+		return false, nil, nil, err
 	}
 	inserted := true
 	if rowsAffected, rowsErr := result.RowsAffected(); rowsErr == nil {
 		inserted = rowsAffected > 0
 	}
+	var deletedIDs []string
 	if inserted {
 		if _, err := tx.ExecContext(ctx, `DELETE FROM tags WHERE event_id = ?`, event.ID); err != nil {
-			return false, nil, err
+			return false, nil, nil, err
 		}
 		for idx, tag := range event.Tags {
 			if len(tag) < 2 {
@@ -519,11 +681,20 @@ func (s *Store) savePreparedEventTx(ctx context.Context, tx *sql.Tx, event nostr
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT OR REPLACE INTO tags(event_id, idx, name, value, extra) VALUES (?, ?, ?, ?, ?)`,
 				event.ID, idx, tag[0], tag[1], extra); err != nil {
-				return false, nil, err
+				return false, nil, nil, err
 			}
 		}
-		if err := s.projectEventTx(ctx, tx, event, now); err != nil {
-			return false, nil, err
+		if event.Kind == nostrx.KindEventDeletion {
+			var deletionDirty []string
+			deletedIDs, deletionDirty, err = applyEventDeletionTx(ctx, tx, event)
+			if err != nil {
+				return false, nil, nil, err
+			}
+			if len(deletionDirty) > 0 {
+				referenced = append(referenced, deletionDirty...)
+			}
+		} else if err := s.projectEventTx(ctx, tx, event, now); err != nil {
+			return false, nil, nil, err
 		}
 		if !s.replaceableHistory && nostrx.IsReplaceablePruneSlotKind(event.Kind) {
 			if _, err := tx.ExecContext(ctx, `DELETE FROM relay_events WHERE event_id IN (
@@ -531,12 +702,12 @@ func (s *Store) savePreparedEventTx(ctx context.Context, tx *sql.Tx, event nostr
 			)`,
 				event.PubKey, event.Kind, event.ID,
 			); err != nil {
-				return false, nil, err
+				return false, nil, nil, err
 			}
 			if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE pubkey = ? AND kind = ? AND id != ?`,
 				event.PubKey, event.Kind, event.ID,
 			); err != nil {
-				return false, nil, err
+				return false, nil, nil, err
 			}
 		}
 		if isThreadingNoteKind(event.Kind) {
@@ -549,10 +720,10 @@ func (s *Store) savePreparedEventTx(ctx context.Context, tx *sql.Tx, event nostr
 			ON CONFLICT(event_id, relay_url) DO UPDATE SET last_seen = excluded.last_seen`,
 			event.ID, event.RelayURL, now, now)
 		if err != nil {
-			return false, nil, err
+			return false, nil, nil, err
 		}
 	}
-	return inserted, referenced, nil
+	return inserted, referenced, deletedIDs, nil
 }
 
 func (s *Store) MarkCacheEvent(ctx context.Context, scope, key, eventID string) error {
@@ -581,7 +752,38 @@ func (s *Store) GetEvent(ctx context.Context, id string) (*nostrx.Event, error) 
 		}
 		return nil, err
 	}
+	s.touchEventAccess(ctx, []string{id})
 	return decodeEvent(raw)
+}
+
+const eventAccessTouchMinInterval = 60 // seconds between last_accessed_at writes per event
+
+func (s *Store) touchEventAccess(ctx context.Context, ids []string) {
+	if s == nil || s.db == nil || len(ids) == 0 {
+		return
+	}
+	// Access timestamps are best-effort retention hints. Do not let them queue
+	// behind crawler or snapshot writes and add SQLite's busy timeout to an
+	// otherwise read-only request path.
+	if !s.writeMu.TryLock() {
+		return
+	}
+	defer s.writeMu.Unlock()
+	keys := uniqueNonEmpty(ids)
+	if len(keys) == 0 {
+		return
+	}
+	now := time.Now().Unix()
+	cutoff := now - eventAccessTouchMinInterval
+	query := fmt.Sprintf(`UPDATE events SET last_accessed_at = ? WHERE id IN (%s) AND last_accessed_at < ?`,
+		placeholders(len(keys)))
+	args := make([]any, 0, len(keys)+2)
+	args = append(args, now)
+	for _, id := range keys {
+		args = append(args, id)
+	}
+	args = append(args, cutoff)
+	_, _ = s.db.ExecContext(ctx, query, args...)
 }
 
 func (s *Store) GetEvents(ctx context.Context, ids []string) (map[string]*nostrx.Event, error) {
@@ -610,6 +812,13 @@ func (s *Store) GetEvents(ctx context.Context, ids []string) (map[string]*nostrx
 			return nil, err
 		}
 		out[event.ID] = event
+	}
+	if len(out) > 0 {
+		touchIDs := make([]string, 0, len(out))
+		for id := range out {
+			touchIDs = append(touchIDs, id)
+		}
+		s.touchEventAccess(ctx, touchIDs)
 	}
 	return out, rows.Err()
 }
@@ -720,8 +929,8 @@ func (s *Store) RecentSummariesByKinds(ctx context.Context, kinds []int, since i
 }
 
 // PruneEvents keeps at most `max` events in the store. Events are removed
-// oldest-first (by inserted_at, then created_at) to bound storage FIFO-style.
-// Returns the number of events deleted.
+// oldest-first by insertion time (FIFO) or least-recently accessed (LRU),
+// depending on SetRetentionPolicy. Returns the number of events deleted.
 func (s *Store) PruneEvents(ctx context.Context, max int) (int64, error) {
 	if max <= 0 {
 		return 0, nil
@@ -741,19 +950,26 @@ func (s *Store) PruneEvents(ctx context.Context, max int) (int64, error) {
 		return 0, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(ctx, `DELETE FROM events WHERE id IN (
-		SELECT id FROM events ORDER BY inserted_at ASC, created_at ASC, id ASC LIMIT ?
-	)`, excess)
+	orderBy := s.pruneOrderByClause()
+	result, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM events WHERE id IN (
+		SELECT id FROM events
+		WHERE NOT EXISTS (
+			SELECT 1 FROM event_pins ep WHERE ep.event_id = events.id AND ep.expires_at > unixepoch()
+		)
+		ORDER BY %s LIMIT ?
+	)`, orderBy), excess)
 	if err != nil {
 		return 0, err
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM note_links WHERE note_id NOT IN (SELECT id FROM events)`); err != nil {
-		return 0, err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM note_stats WHERE note_id NOT IN (SELECT id FROM events)`); err != nil {
+	if err := s.pruneOrphanProjectionRowsTx(ctx, tx); err != nil {
 		return 0, err
 	}
 	deleted, _ := result.RowsAffected()
+	if deleted > 0 {
+		if err := invalidateFeedSnapshotsTx(ctx, tx); err != nil {
+			return 0, err
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
@@ -772,6 +988,60 @@ func (s *Store) PruneEvents(ctx context.Context, max int) (int64, error) {
 		}
 	}
 	return deleted, nil
+}
+
+func estimateDiskPruneKeepEvents(totalEvents, currentBytes, totalBytes int64, targetPercent int) int {
+	if totalEvents <= 0 || currentBytes <= 0 || totalBytes <= 0 || targetPercent <= 0 {
+		return 0
+	}
+	targetBytes := totalBytes * int64(targetPercent) / 100
+	if targetBytes <= 0 {
+		return 0
+	}
+	if currentBytes <= targetBytes {
+		return int(totalEvents)
+	}
+	keep := totalEvents * targetBytes / currentBytes
+	if keep >= totalEvents {
+		keep = totalEvents - 1
+	}
+	if keep < 1 {
+		keep = 1
+	}
+	return int(keep)
+}
+
+// PruneEventsToDiskTarget deletes least-recently-used or oldest events until
+// the row count is estimated to fit the configured SQLite file disk budget.
+// SQLite will not return freed pages to the filesystem until incremental or
+// full vacuum runs, so this method creates the space that vacuum can reclaim.
+func (s *Store) PruneEventsToDiskTarget(ctx context.Context) (int64, error) {
+	if s == nil || s.db == nil || s.diskPrunePercent <= 0 {
+		return 0, nil
+	}
+	currentBytes, totalBytes, usedPercent, ok := DBFileUsage(s.dbPath)
+	if !ok || usedPercent < float64(s.diskPrunePercent) {
+		return 0, nil
+	}
+	var totalEvents int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events`).Scan(&totalEvents); err != nil {
+		return 0, err
+	}
+	keep := estimateDiskPruneKeepEvents(totalEvents, currentBytes, totalBytes, s.diskPruneTargetPercent)
+	if keep >= int(totalEvents) {
+		return 0, nil
+	}
+	slog.Warn(
+		"db disk budget prune",
+		"db_bytes", currentBytes,
+		"disk_bytes", totalBytes,
+		"used_percent", usedPercent,
+		"threshold_percent", s.diskPrunePercent,
+		"target_percent", s.diskPruneTargetPercent,
+		"events", totalEvents,
+		"keep_events", keep,
+	)
+	return s.PruneEvents(ctx, keep)
 }
 
 func (s *Store) RecentByAuthors(ctx context.Context, authors []string, kinds []int, before int64, limit int) ([]nostrx.Event, error) {
@@ -1198,8 +1468,18 @@ func (s *Store) recomputeDirtyReplyStats() {
 	}
 }
 
+// RequestPruneAsync schedules retention/disk-budget pruning through the same
+// tracked, single-flight gate used by normal write-triggered pruning.
+func (s *Store) RequestPruneAsync() {
+	s.requestPruneAsync(true)
+}
+
 func (s *Store) maybePruneAsync() {
-	if s.retentionMax <= 0 {
+	s.requestPruneAsync(false)
+}
+
+func (s *Store) requestPruneAsync(force bool) {
+	if s.retentionMax <= 0 && s.diskPrunePercent <= 0 {
 		return
 	}
 	interval := s.pruneEvery
@@ -1210,7 +1490,7 @@ func (s *Store) maybePruneAsync() {
 	// The first post-start write should reconcile any preexisting overflow
 	// (e.g. after enabling retention on an already-large DB). After that we
 	// fall back to the regular periodic cadence to avoid counting on every save.
-	if writes != 1 && writes%interval != 0 {
+	if !force && writes != 1 && writes%interval != 0 {
 		return
 	}
 	if !s.pruning.CompareAndSwap(false, true) {
@@ -1220,10 +1500,19 @@ func (s *Store) maybePruneAsync() {
 	go func() {
 		defer s.bgWG.Done()
 		defer s.pruning.Store(false)
-		ctx, cancel := context.WithTimeout(s.bgCtx, 5*time.Second)
+		ctx, cancel := context.WithTimeout(s.bgCtx, pruneTimeout())
 		defer cancel()
-		if _, err := s.PruneEvents(ctx, s.retentionMax); err != nil {
-			slog.Debug("periodic prune failed", "err", err)
+		if s.diskPrunePercent > 0 {
+			if deleted, err := s.PruneEventsToDiskTarget(ctx); err != nil {
+				slog.Warn("periodic disk budget prune failed", "err", err)
+			} else if deleted > 0 {
+				slog.Info("periodic disk budget prune complete", "deleted_events", deleted)
+			}
+		}
+		if s.retentionMax > 0 {
+			if _, err := s.PruneEvents(ctx, s.retentionMax); err != nil {
+				slog.Debug("periodic prune failed", "err", err)
+			}
 		}
 	}()
 }
@@ -1246,8 +1535,14 @@ func (s *Store) DeleteEventsForTesting(ctx context.Context, noteIDs []string) er
 	for i, id := range ids {
 		args[i] = id
 	}
-	_, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE id IN (`+ph+`)`, args...)
-	return err
+	result, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE id IN (`+ph+`)`, args...)
+	if err != nil {
+		return err
+	}
+	if deleted, _ := result.RowsAffected(); deleted > 0 {
+		return s.invalidateFeedSnapshotsLocked(ctx)
+	}
+	return nil
 }
 
 func (s *Store) DBStats() sql.DBStats {

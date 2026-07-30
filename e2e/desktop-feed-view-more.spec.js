@@ -1,0 +1,67 @@
+import { expect, test } from "@playwright/test";
+
+test("desktop media and quote cards keep view more in the header", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.goto("/about");
+
+  const ids = await page.evaluate(async () => {
+    const definitions = [
+      {
+        id: "1".repeat(64),
+        source: `${"media note segment ".repeat(80)}MEDIA-END https://media.example.test/large.jpg`,
+      },
+      {
+        id: "2".repeat(64),
+        source: `${"quote note segment ".repeat(80)}QUOTE-END`,
+        refMode: "quote",
+        referenceSource: "quoted content",
+      },
+      {
+        id: "3".repeat(64),
+        source: `${"plain note segment ".repeat(80)}PLAIN-END`,
+      },
+    ];
+
+    for (const definition of definitions) {
+      const note = document.createElement("article");
+      note.className = "note";
+      note.id = `note-${definition.id}`;
+      note.dataset.asciiKind = "note";
+      note.dataset.asciiAuthor = "Desktop Author";
+      note.dataset.asciiAge = "1m";
+      note.dataset.asciiThreadHref = `/thread/${definition.id}`;
+      note.dataset.asciiUserHref = "/";
+      if (definition.refMode) note.dataset.asciiRefMode = definition.refMode;
+      note.innerHTML = `
+        <pre class="ascii-card"><a class="note-feed-avatar" href="/"></a></pre>
+        <template class="ascii-source">${definition.source}</template>
+        <template class="ascii-reference-source">${definition.referenceSource || ""}</template>
+        <div class="note-media-drawer" data-note-image-mount hidden></div>
+      `;
+      document.querySelector("main")?.append(note);
+    }
+
+    const { refreshAsciiSync } = await import("/static/js/ascii.js");
+    definitions.forEach(({ id }) => refreshAsciiSync(document.getElementById(`note-${id}`)));
+    return definitions.map(({ id }) => id);
+  });
+
+  const [media, quote, plain] = ids.map((id) => page.locator(`#note-${id}`));
+
+  for (const note of [media, quote]) {
+    const header = note.locator(":scope > .ascii-card > .ascii-line-feed-header");
+    const footer = note.locator(":scope > .ascii-card > .ascii-line").last();
+    await expect(header.getByRole("button", { name: "view more", exact: true })).toHaveCount(1);
+    await expect(footer.getByRole("button", { name: "view more", exact: true })).toHaveCount(0);
+  }
+
+  const plainHeader = plain.locator(":scope > .ascii-card > .ascii-line-feed-header");
+  const plainFooter = plain.locator(":scope > .ascii-card > .ascii-line").last();
+  await expect(plainHeader.getByRole("button", { name: "view more", exact: true })).toHaveCount(0);
+  await expect(plainFooter.getByRole("button", { name: "view more", exact: true })).toHaveCount(1);
+
+  const mediaHeader = media.locator(":scope > .ascii-card > .ascii-line-feed-header");
+  await mediaHeader.getByRole("button", { name: "view more", exact: true }).click();
+  await expect(media).toContainText("MEDIA-END");
+  await expect(mediaHeader.locator("[data-ascii-action-menu-trigger]")).toHaveText("[...]");
+});

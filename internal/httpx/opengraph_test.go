@@ -148,6 +148,107 @@ func TestThreadOGUsesAuthorAndContent(t *testing.T) {
 	}
 }
 
+func TestThreadOGUsesDirectImageForImageOnlyNote(t *testing.T) {
+	r := httptest.NewRequest("GET", "/thread/abc", nil)
+	r.Host = "example.test"
+	imageURL := "https://cdn.example.com/photo.jpg?name=hello"
+	event := nostrx.Event{
+		ID:      "abc",
+		PubKey:  testHexPubkey,
+		Content: imageURL,
+	}
+	profiles := map[string]nostrx.Profile{
+		testHexPubkey: {
+			PubKey:  testHexPubkey,
+			Display: "Alice",
+		},
+	}
+
+	og := threadOG(r, event, profiles)
+
+	if og.Image != imageURL {
+		t.Fatalf("Image = %q, want direct media URL %q", og.Image, imageURL)
+	}
+	if strings.Contains(og.Title, imageURL) {
+		t.Fatalf("Title should not include raw media URL: %q", og.Title)
+	}
+	if strings.Contains(og.Description, imageURL) {
+		t.Fatalf("Description should not include raw media URL: %q", og.Description)
+	}
+}
+
+func TestThreadOGUsesDirectImageForTextWithImage(t *testing.T) {
+	r := httptest.NewRequest("GET", "/thread/abc", nil)
+	r.Host = "example.test"
+	imageURL := "https://cdn.example.com/photo.jpg"
+	event := nostrx.Event{
+		ID:      "abc",
+		PubKey:  testHexPubkey,
+		Content: "look at this\n" + imageURL,
+	}
+
+	og := threadOG(r, event, nil)
+
+	if og.Image != imageURL {
+		t.Fatalf("Image = %q, want direct media URL %q", og.Image, imageURL)
+	}
+	if !strings.Contains(og.Title, "look at this") {
+		t.Fatalf("Title should include visible note text, got %q", og.Title)
+	}
+	if og.Description != "look at this" {
+		t.Fatalf("Description = %q, want visible note text", og.Description)
+	}
+	if strings.Contains(og.Title, imageURL) {
+		t.Fatalf("Title should not include raw media URL: %q", og.Title)
+	}
+	if strings.Contains(og.Description, imageURL) {
+		t.Fatalf("Description should not include raw media URL: %q", og.Description)
+	}
+}
+
+func TestThreadOGTruncatesLongTextWithImage(t *testing.T) {
+	r := httptest.NewRequest("GET", "/thread/abc", nil)
+	r.Host = "example.test"
+	imageURL := "https://cdn.example.com/photo.jpg"
+	event := nostrx.Event{
+		ID:      "abc",
+		PubKey:  testHexPubkey,
+		Content: strings.Repeat("hello world ", 40) + imageURL,
+	}
+
+	og := threadOG(r, event, nil)
+
+	if og.Image != imageURL {
+		t.Fatalf("Image = %q, want direct media URL %q", og.Image, imageURL)
+	}
+	if strings.Contains(og.Description, imageURL) {
+		t.Fatalf("Description should not include raw media URL: %q", og.Description)
+	}
+	if !strings.HasSuffix(og.Description, "…") {
+		t.Fatalf("Description should be truncated with ellipsis, got %q", og.Description)
+	}
+}
+
+func TestThreadOGUsesImetaImageForEmptyImageOnlyNote(t *testing.T) {
+	r := httptest.NewRequest("GET", "/thread/abc", nil)
+	r.Host = "example.test"
+	imageURL := "https://cdn.example.com/photo.png"
+	event := nostrx.Event{
+		ID:      "abc",
+		PubKey:  testHexPubkey,
+		Content: "",
+		Tags: [][]string{
+			{"imeta", "url " + imageURL, "m image/png"},
+		},
+	}
+
+	og := threadOG(r, event, nil)
+
+	if og.Image != imageURL {
+		t.Fatalf("Image = %q, want imeta image URL %q", og.Image, imageURL)
+	}
+}
+
 func TestThreadOGFallsBackWithoutProfile(t *testing.T) {
 	r := httptest.NewRequest("GET", "/thread/abc", nil)
 	r.Host = "example.test"
@@ -161,29 +262,5 @@ func TestThreadOGFallsBackWithoutProfile(t *testing.T) {
 	}
 	if og.Image == "" {
 		t.Fatalf("Image empty (default should be applied)")
-	}
-}
-
-func TestUserOGUsesProfile(t *testing.T) {
-	r := httptest.NewRequest("GET", "/u/"+testHexPubkey, nil)
-	r.Host = "example.test"
-	profile := nostrx.Profile{
-		PubKey:  testHexPubkey,
-		Display: "Bob",
-		About:   "Welcome to my Nostr profile.",
-		Picture: "https://cdn.example.com/bob.png",
-	}
-	og := userOG(r, testHexPubkey, profile)
-	if og.Type != ogTypeProfile {
-		t.Fatalf("Type = %q", og.Type)
-	}
-	if !strings.Contains(og.Title, "Bob") {
-		t.Fatalf("Title %q missing display name", og.Title)
-	}
-	if og.Description != profile.About {
-		t.Fatalf("Description = %q", og.Description)
-	}
-	if og.Author != "Bob" {
-		t.Fatalf("Author = %q", og.Author)
 	}
 }

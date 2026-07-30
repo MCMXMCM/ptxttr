@@ -1,11 +1,69 @@
-import { syncMuteToggleButtons } from "./mutations.js";
-import { ensureNoteReactionsDelegated, formatThousandsSpaced, openReactionsModal } from "./reactions.js";
-import { normalizePubkey } from "./session.js";
+import { fetchWithSession, normalizePubkey } from "./session.js";
 import { compactReplyBadge, padAsciiDecimal, replyLabelForCount } from "./reply-label.js";
 import { getImageModePref } from "./sort-prefs.js";
 import { NOSTR_REF_PATTERN, nostrRefLink } from "./nip27.js";
 import { FEED_LOADER_STATUSES } from "./shell.js";
 import { prepareInlineVideo } from "./inline-video.js";
+import { createMediaGrid, hydrateMediaGrid, mediaGridSignature } from "./media-grid.js";
+import { pollDescriptorForContainer, pollDraftSelection, bindPollDelegates, PollType } from "./poll.js";
+import { bindBroadcastDelegates } from "./broadcast.js";
+import { hydrateVisibleZapTotals } from "./zap-display.js";
+import { formatCompactSats } from "./zap-utils.js";
+import {
+  buildThreadParentSkeletonText,
+  buildThreadReplySkeletonText,
+  buildThreadSelectedSkeletonText,
+} from "./thread-skeleton-text.js";
+import {
+  buildAsciiRenderCacheKey,
+  columnsFromWidth,
+  shouldRenderAscii,
+  ASCII_MAX_COLUMNS,
+  ASCII_MIN_COLUMNS,
+} from "./ascii-layout.js";
+import {
+  displayWidth,
+  graphemes,
+  isWideGrapheme,
+  measureGlyphMetrics as measureLayoutGlyphMetrics,
+  padRight,
+  takeColumns,
+} from "./ascii-layout-engine.js";
+import { asciiWidthCookie, asciiWidthCookieNameForViewport } from "./ascii-width-hint.js";
+import {
+  isReferenceExpanded,
+  markReferenceExpanded,
+} from "./ascii-reference-expansion.js";
+
+const runeLength = displayWidth;
+
+function formatThousandsSpaced(n, minLen) {
+	let value = String(Math.max(0, Math.floor(Number(n) || 0)));
+	const groups = [];
+	while (value.length > 3) {
+		groups.unshift(value.slice(-3));
+		value = value.slice(0, -3);
+	}
+	if (value) groups.unshift(value);
+	let output = groups.join(" ");
+	while (output.length < minLen) output = ` ${output}`;
+	return output;
+}
+
+function localViewerPubkey() {
+	try {
+		return String(JSON.parse(localStorage.getItem("ptxt_nostr_session") || "{}").pubkey || "").toLowerCase();
+	} catch {
+		return "";
+	}
+}
+
+function canDeleteNoteLight(container) {
+	const viewer = localViewerPubkey();
+	const author = String(container?.dataset?.replyPubkey || "").toLowerCase();
+	const kind = Number.parseInt(String(container?.dataset?.asciiEventKind || "1"), 10);
+	return Boolean(viewer && author && viewer === author && (kind === 1 || kind === 6 || kind === 30023));
+}
 
 // Link #words to /tag/… (Unicode letters, numbers, underscore). The server
 // applies stricter path rules when resolving the feed URL.
@@ -13,8 +71,8 @@ const HASHTAG_PATTERN_STEM = "(?:^|[\\s])#([\\p{L}\\p{N}_]+)";
 const HASHTAG_PATTERN = new RegExp(HASHTAG_PATTERN_STEM, "gu");
 const NOSTR_REF_DETECT_PATTERN = new RegExp(NOSTR_REF_PATTERN.source, "iu");
 
-const minColumns = 32;
-const maxColumns = 160;
+const minColumns = ASCII_MIN_COLUMNS;
+const maxColumns = ASCII_MAX_COLUMNS;
 const collapsedNoteLines = 3;
 /** Extra monospace columns reserved on feed note header rows for `padding-left` + tile (see `.note-feed-avatar`). */
 const feedNoteAvatarRuneReserve = 5;
@@ -28,24 +86,72 @@ const HTTPS_URL_PATTERN = /https:\/\/[^\s<>"'`]+/gi;
 const DISPLAY_BLOSSOM_URL_PATTERN = /https?:\/\/@[^\s<>"'`]+(?:\s+[^\s<>"'`/]+)*\.blossom\.band\/[^\s<>"'`]+/gi;
 const NOSTR_OR_HASHTAG_PATTERN = new RegExp(`${HTTPS_URL_PATTERN.source}|${NOSTR_REF_PATTERN.source}|${HASHTAG_PATTERN_STEM}`, "giu");
 const observed = new WeakSet();
-const mobileActionsQuery = window.matchMedia("(max-width: 700px)");
-let useDoubleWideCells = true;
-const graphemeSegmenter = "Intl" in window && "Segmenter" in Intl
-  ? new Intl.Segmenter(undefined, { granularity: "grapheme" })
-  : null;
-const resizeObserver = "ResizeObserver" in window ? new ResizeObserver((entries) => {
-  entries.forEach((entry) => renderAscii(entry.target));
+const browserWindow = typeof window !== "undefined" ? window : null;
+const mobileActionsQuery = typeof browserWindow?.matchMedia === "function"
+  ? browserWindow.matchMedia("(max-width: 700px)")
+  : { matches: false, addEventListener() {}, removeEventListener() {} };
+const resizeObserver = typeof ResizeObserver === "function" ? new ResizeObserver((entries) => {
+  entries.forEach((entry) => {
+    queueAsciiResize(entry.target, entry.contentRect?.width || 0);
+  });
 }) : null;
 const imageViewerState = {
-  urls: [],
+  items: [],
   index: 0,
   ownerNoteID: "",
 };
-const expandedReferenceCards = new WeakMap();
+const asciiMeasuredWidthHints = new WeakMap();
+const queuedAsciiResizeTargets = new Set();
+let asciiResizeScheduled = false;
 let feedLoaderTick = 0;
 let feedLoaderTimer = 0;
 const loaderLayoutObservedColumns = new WeakSet();
 let feedLoaderColumnObserver = null;
+let persistedAsciiWidth = 0;
+
+function persistAsciiWidth(container, columns) {
+  if (columns === persistedAsciiWidth) return;
+  if (!(container instanceof Element)) return;
+  // Nested replies can be narrower than the route column. Persist only a
+  // top-level card measurement because that is the width the server renders.
+  if (container.parentElement?.closest?.("[data-ascii-kind]")) return;
+  const value = asciiWidthCookie(
+    columns,
+    window.location.protocol === "https:",
+    asciiWidthCookieNameForViewport(window.innerWidth),
+  );
+  if (!value) return;
+  document.cookie = value;
+  persistedAsciiWidth = columns;
+}
+
+const asciiPerf = (() => {
+  const state = {
+    measureCalls: 0,
+    measureMs: 0,
+    renderCalls: 0,
+    renderMs: 0,
+    renderBodyMs: 0,
+    skippedRenderCalls: 0,
+    renderedCards: 0,
+    resizeBatches: 0,
+    resizeBatchItems: 0,
+    lastResizeBatchSize: 0,
+  };
+  return {
+    state,
+    reset() {
+      Object.keys(state).forEach((key) => {
+        state[key] = 0;
+      });
+    },
+    snapshot() {
+      return { ...state };
+    },
+  };
+})();
+
+if (browserWindow) browserWindow.__ptxtAsciiPerf = asciiPerf;
 
 function observeFeedLoaderColumn(column) {
   if (!column || !(column instanceof Element)) return;
@@ -56,9 +162,34 @@ function observeFeedLoaderColumn(column) {
     feedLoaderColumnObserver = new ResizeObserver(() => {
       renderFeedLoaders(document);
       renderSkeletonWaveCards(document);
+      renderThreadSkeletonCards(document);
     });
   }
   feedLoaderColumnObserver.observe(column);
+}
+
+function queueAsciiResize(container, widthHint = 0) {
+  if (!(container instanceof Element)) return;
+  if (Number.isFinite(widthHint) && widthHint > 0) {
+    asciiMeasuredWidthHints.set(container, widthHint);
+  }
+  queuedAsciiResizeTargets.add(container);
+  if (asciiResizeScheduled) return;
+  asciiResizeScheduled = true;
+  requestAnimationFrame(() => {
+    asciiResizeScheduled = false;
+    const targets = [...queuedAsciiResizeTargets];
+    queuedAsciiResizeTargets.clear();
+    asciiPerf.state.resizeBatches += 1;
+    asciiPerf.state.resizeBatchItems += targets.length;
+    asciiPerf.state.lastResizeBatchSize = targets.length;
+    targets.forEach((target) => {
+      renderAscii(target, {
+        widthHint: asciiMeasuredWidthHints.get(target) || 0,
+      });
+      asciiMeasuredWidthHints.delete(target);
+    });
+  });
 }
 
 function registerLoaderLayoutObservers(root = document) {
@@ -68,45 +199,9 @@ function registerLoaderLayoutObservers(root = document) {
   querySkeletonWaveCards(root).forEach((card) => {
     observeFeedLoaderColumn(card.closest(".feed-column") || card.parentElement);
   });
-}
-
-function graphemes(value) {
-  if (!graphemeSegmenter) return [...value];
-  return [...graphemeSegmenter.segment(value)].map((item) => item.segment);
-}
-
-function isWideGrapheme(value) {
-  if (!useDoubleWideCells) return false;
-  if (/\p{Extended_Pictographic}/u.test(value)) return true;
-  return [...value].some((char) => {
-    const code = char.codePointAt(0);
-    return (code >= 0x1100 && code <= 0x115f) ||
-      code === 0x2329 ||
-      code === 0x232a ||
-      (code >= 0x2e80 && code <= 0xa4cf) ||
-      (code >= 0xac00 && code <= 0xd7a3) ||
-      (code >= 0xf900 && code <= 0xfaff) ||
-      (code >= 0xfe10 && code <= 0xfe19) ||
-      (code >= 0xfe30 && code <= 0xfe6f) ||
-      (code >= 0xff00 && code <= 0xff60) ||
-      (code >= 0xffe0 && code <= 0xffe6);
+  queryThreadSkeletonCards(root).forEach((card) => {
+    observeFeedLoaderColumn(card.closest(".feed-column") || card.parentElement);
   });
-}
-
-function runeLength(value) {
-  return graphemes(value).reduce((total, item) => total + (isWideGrapheme(item) ? 2 : 1), 0);
-}
-
-function takeColumns(value, width) {
-  let used = 0;
-  let out = "";
-  for (const item of graphemes(value)) {
-    const itemWidth = isWideGrapheme(item) ? 2 : 1;
-    if (used + itemWidth > width) break;
-    out += item;
-    used += itemWidth;
-  }
-  return out;
 }
 
 function dropColumns(value, width) {
@@ -184,10 +279,6 @@ function buildFeedLoaderCardText(width, cardIndex, frameIndex) {
   return [rule, rowTilde, rowDash, rule, rowTilde, rowDash, rule].join("\n");
 }
 
-function padRight(value, width) {
-  return value + " ".repeat(Math.max(0, width - runeLength(value)));
-}
-
 function appendLine(pre, parts = []) {
   const line = document.createElement("span");
   line.className = "ascii-line";
@@ -197,6 +288,7 @@ function appendLine(pre, parts = []) {
 
 function noteChrome(value) {
   const item = document.createElement("span");
+  item.className = "note-chrome";
   item.textContent = value;
   return item;
 }
@@ -527,22 +619,12 @@ function viewMoreButton(container, width) {
   });
 }
 
-function isReferenceExpanded(container, key) {
-  if (!container || !key) return false;
-  return expandedReferenceCards.get(container)?.has(key) || false;
-}
-
 function referenceViewMoreButton(container, width, key) {
   const item = button("view more", (event) => {
     event.preventDefault();
     event.stopPropagation();
     if (!key) return;
-    let expanded = expandedReferenceCards.get(container);
-    if (!expanded) {
-      expanded = new Set();
-      expandedReferenceCards.set(container, expanded);
-    }
-    expanded.add(key);
+    markReferenceExpanded(container, key);
     renderNote(container, width);
   });
   item.setAttribute("aria-expanded", "false");
@@ -572,7 +654,9 @@ function reactionLayoutSegments(container) {
   const { up, down } = reactionGlyphChars(container);
   const numRaw = formatThousandsSpaced(total, 1);
   const mid = ` ${numRaw} `;
-  const runeBlockLen = runeLength(`[${up}]`) + runeLength(mid) + runeLength(`[${down}]`);
+  const zapTotal = Number.parseInt(container.dataset.asciiZapTotal || "0", 10) || 0;
+  const zapLabel = zapTotal > 0 ? ` ₿${formatCompactSats(zapTotal)}` : "";
+  const runeBlockLen = runeLength(`[${up}]`) + runeLength(mid) + runeLength(`[${down}]`) + runeLength(zapLabel);
   const footerParts = [
     noteChrome("["),
     reactionVoteButton(container, "up", up),
@@ -582,7 +666,86 @@ function reactionLayoutSegments(container) {
     reactionVoteButton(container, "down", down),
     noteChrome("]"),
   ];
+  if (zapLabel) footerParts.push(noteChrome(zapLabel));
   return { runeBlockLen, footerParts };
+}
+
+function pollStateForContainer(container) {
+  try {
+    const parsed = JSON.parse(String(container?.dataset?.asciiPollState || "{}"));
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function pollButtonLabel(optionID, pollType, selection, voted) {
+  if (voted) return selection.has(optionID) ? "[x]" : "[ ]";
+  if (pollType !== PollType.MULTIPLE) return "[vote]";
+  return selection.has(optionID) ? "[x]" : "[ ]";
+}
+
+function appendPollFeedLine(target, width, beforeNode, innerParts = []) {
+  const item = document.createElement("span");
+  item.className = "ascii-line";
+  item.append(noteChrome("| "));
+  const body = document.createElement("span");
+  innerParts.forEach((part) => body.append(part));
+  const used = innerParts.reduce((sum, part) => sum + runeLength(part.textContent || part.nodeValue || ""), 0);
+  body.append(noteChrome(" ".repeat(Math.max(0, Math.max(1, width - 4) - used))));
+  item.append(body, noteChrome(" |"));
+  target.append(item, "\n");
+}
+
+function appendPollReplyLine(target, prefix, innerParts = []) {
+  const item = document.createElement("span");
+  item.className = "ascii-line";
+  item.append(noteChrome(prefix));
+  innerParts.forEach((part) => item.append(part));
+  target.append(item, "\n");
+}
+
+function appendPollContent(target, width, container, prefix = "", mode = "feed") {
+  const poll = pollDescriptorForContainer(container);
+  if (!poll) return;
+  const state = pollStateForContainer(container);
+  const tally = state.tally || {};
+  const selection = state.voted
+    ? new Set(Array.isArray(state.selected) ? state.selected : [])
+    : pollDraftSelection(container);
+  const totalVotes = Number.parseInt(`${state.totalVotes ?? 0}`, 10) || 0;
+  const showResults = Boolean(state.voted || poll.isExpired || (state.loaded && totalVotes > 0));
+  const lines = [];
+  lines.push([noteChrome(`[poll] ${poll.pollType === PollType.MULTIPLE ? "multiple choice" : "single choice"}`)]);
+  poll.options.forEach((option) => {
+    const count = Number.parseInt(`${tally[option.id] ?? 0}`, 10) || 0;
+    if (showResults) {
+      const chosen = selection.has(option.id) ? "* " : "  ";
+      lines.push([noteChrome(`${chosen}${option.label} (${count})`)]);
+      return;
+    }
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "link-button";
+    toggle.dataset.pollToggleOption = option.id;
+    toggle.textContent = pollButtonLabel(option.id, poll.pollType, selection, false);
+    lines.push([toggle, noteChrome(` ${option.label}`)]);
+  });
+  if (showResults) {
+    lines.push([noteChrome(totalVotes === 1 ? "1 total vote" : `${totalVotes} total votes`)]);
+  } else if (poll.pollType === PollType.MULTIPLE) {
+    const submit = document.createElement("button");
+    submit.type = "button";
+    submit.className = "link-button";
+    submit.dataset.pollSubmit = "1";
+    submit.textContent = "[submit vote]";
+    submit.disabled = selection.size === 0;
+    lines.push([submit]);
+  }
+  lines.forEach((parts) => {
+    if (mode === "feed") appendPollFeedLine(target, width, null, parts);
+    else appendPollReplyLine(target, prefix, parts);
+  });
 }
 
 async function copyText(value, trigger) {
@@ -603,7 +766,7 @@ export function closeActionMenus(except = null) {
   document.querySelectorAll(".ascii-action-menu.is-open").forEach((menu) => {
     if (menu !== except) {
       menu.classList.remove("is-open");
-      menu.querySelector(".profile-stats-menu-trigger")?.setAttribute("aria-expanded", "false");
+      menu.querySelector("[aria-haspopup='menu']")?.setAttribute("aria-expanded", "false");
     }
   });
 }
@@ -611,12 +774,13 @@ export function closeActionMenus(except = null) {
 function actionMenu(container, label, items) {
   const wrap = document.createElement("span");
   wrap.className = "ascii-action-menu";
-  const trigger = button(label, (event) => {
-    event.stopPropagation();
-    const isOpen = wrap.classList.toggle("is-open");
-    closeActionMenus(isOpen ? wrap : null);
-  });
+  const trigger = document.createElement("button");
+  trigger.className = "link-button";
+  trigger.type = "button";
+  trigger.textContent = label;
+  trigger.dataset.asciiActionMenuTrigger = "1";
   trigger.setAttribute("aria-haspopup", "menu");
+  trigger.setAttribute("aria-expanded", "false");
   wrap.append(trigger);
 
   const menu = document.createElement("span");
@@ -628,10 +792,24 @@ function actionMenu(container, label, items) {
 }
 
 function copyButton(label, value) {
-  return button(label, (event) => {
-    event.stopPropagation();
-    copyText(value || "", event.currentTarget);
-  });
+  const item = document.createElement("button");
+  item.className = "link-button";
+  item.type = "button";
+  item.textContent = label;
+  item.dataset.noteMenuAction = "copy";
+  item.dataset.copyValue = value || "";
+  return item;
+}
+
+function shareNoteButton(container) {
+  const item = document.createElement("button");
+  item.className = "link-button";
+  item.type = "button";
+  item.textContent = "[share]";
+  item.dataset.noteMenuAction = "share";
+  const href = replyThreadHref(container);
+  if (!href || href === "#") item.disabled = true;
+  return item;
 }
 
 function noteIDForContainer(container) {
@@ -662,6 +840,24 @@ function repostComposeButton(container) {
   item.dataset.repostRelay = container?.dataset?.asciiRelay || "";
   item.textContent = "[repost]";
   if (!id) item.disabled = true;
+  return item;
+}
+
+function canBroadcastContainer(container) {
+  const id = noteIDForContainer(container);
+  const kind = Number.parseInt(String(container?.dataset?.asciiEventKind || "0"), 10);
+  const sig = String(container?.dataset?.asciiSig || "").trim();
+  return Boolean(id && sig && [1, 6, 1068].includes(kind));
+}
+
+function broadcastMenuButton(container) {
+  const item = document.createElement("button");
+  item.className = "link-button";
+  item.type = "button";
+  item.textContent = "[broadcast]";
+  item.dataset.broadcastEvent = "1";
+  item.dataset.noteId = noteIDForContainer(container);
+  item.disabled = !canBroadcastContainer(container);
   return item;
 }
 
@@ -696,17 +892,35 @@ function replyThreadHref(container) {
   return container.dataset.asciiThreadHref || container.dataset.asciiSelectHref || "#";
 }
 
+function deleteNoteMenuButton(container) {
+  const item = document.createElement("button");
+  item.className = "link-button";
+  item.type = "button";
+  item.textContent = "[delete note]";
+  item.dataset.noteMenuAction = "delete-note";
+  if (!noteIDForContainer(container)) item.disabled = true;
+  return item;
+}
+
 /** Shared `[...]` items for feed notes, thread replies, and selected focus card. */
 function asciiNoteOverflowMenuItems(container) {
-  return [
+  const items = [
     bookmarkToggleButton(container),
+    shareNoteButton(container),
     muteAuthorMenuButton(container),
     viewReactionsMenuButton(container),
     repostComposeButton(container),
+    broadcastMenuButton(container),
     link(replyThreadHref(container), "[view thread]"),
+  ];
+	if (canDeleteNoteLight(container)) {
+    items.push(deleteNoteMenuButton(container));
+  }
+  items.push(
     copyButton("[copy note id]", container.dataset.asciiNevent),
     copyButton("[copy user public key]", container.dataset.asciiNpub),
-  ];
+  );
+  return items;
 }
 
 function viewReactionsMenuButton(container) {
@@ -715,13 +929,114 @@ function viewReactionsMenuButton(container) {
   item.className = "link-button";
   item.type = "button";
   item.textContent = "[view reactions]";
+  item.dataset.noteMenuAction = "view-reactions";
   if (!id) item.disabled = true;
-  item.addEventListener("click", (event) => {
+  return item;
+}
+
+function toggleActionMenuFromTrigger(trigger) {
+  const wrap = trigger?.closest?.(".ascii-action-menu");
+  if (!wrap) return;
+  const isOpen = !wrap.classList.contains("is-open");
+  closeActionMenus(isOpen ? wrap : null);
+  wrap.classList.toggle("is-open", isOpen);
+  trigger.setAttribute("aria-expanded", isOpen ? "true" : "false");
+}
+
+function noteMenuContainerForAction(target) {
+  return target?.closest?.("[data-ascii-kind], [data-thread-tree-note]") || null;
+}
+
+function shareSurfaceForContainer(container) {
+  const noteID = noteIDForContainer(container);
+  const kind = String(container?.dataset?.asciiKind || "").trim();
+  const rootID = String(container?.dataset?.replyRootId || container?.dataset?.asciiThreadRootId || "").trim();
+  if (kind === "reply" || kind === "selected") return "thread_focus";
+  if (kind === "note" && rootID && noteID && rootID !== noteID) return "thread_focus";
+  return "note_op";
+}
+
+function shareRootIDForContainer(container) {
+  return String(container?.dataset?.replyRootId || container?.dataset?.asciiThreadRootId || "").trim();
+}
+
+function shareParentIDForContainer(container) {
+  const explicit = String(container?.dataset?.shareParentId || "").trim();
+  if (explicit) return explicit;
+  const focus = container?.closest?.(".thread-focus");
+  if (!focus) return "";
+  const parent = focus.querySelector?.(".thread-focus-parent[id^='note-']");
+  return parent?.id?.replace(/^note-/, "") || "";
+}
+
+function handleNoteMenuAction(action, trigger, event) {
+  const container = noteMenuContainerForAction(trigger);
+  if (!container) return;
+  if (action === "copy") {
+    event.stopPropagation();
+    void copyText(trigger.dataset.copyValue || "", trigger);
+    return;
+  }
+  if (action === "share") {
+    event.stopPropagation();
+    const href = replyThreadHref(container);
+    if (!href || href === "#") return;
+    const noteID = noteIDForContainer(container);
+    const title = container?.dataset?.asciiAuthor
+      ? `${container.dataset.asciiAuthor} on ptxt`
+      : document.title || "ptxt";
+    const fallbackURL = new URL(href, window.location.origin).toString();
+    closeActionMenus();
+    async function runShare() {
+      let shareURL = fallbackURL;
+      if (noteID) {
+        const response = await fetchWithSession("/api/shares", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            note_id: noteID,
+            surface: shareSurfaceForContainer(container),
+            root_id: shareRootIDForContainer(container),
+            parent_id: shareParentIDForContainer(container),
+          }),
+        }).catch(() => null);
+        if (response?.ok) {
+          const data = await response.json().catch(() => null);
+          if (data?.url) shareURL = String(data.url);
+        }
+      }
+      if (typeof navigator.share !== "function") {
+        await copyText(shareURL, trigger);
+        return;
+      }
+      try {
+        await navigator.share({ title, url: shareURL });
+      } catch (error) {
+        if (error?.name !== "AbortError") {
+          await copyText(shareURL, trigger);
+        }
+      }
+    }
+    void runShare();
+    return;
+  }
+  if (action === "view-reactions") {
     event.stopPropagation();
     closeActionMenus();
-    void openReactionsModal(id);
-  });
-  return item;
+    const id = noteIDForContainer(container);
+		if (id) void import("./reactions.js").then(({ openReactionsModal }) => openReactionsModal(id));
+    return;
+  }
+  if (action === "delete-note") {
+    event.stopPropagation();
+    closeActionMenus();
+    const id = noteIDForContainer(container);
+    if (!id) return;
+    if (!window.confirm("Delete this note from relays and remove it from your views?")) return;
+		void import("./note-deletion.js")
+			.then(({ publishNoteDeletion }) => publishNoteDeletion(id))
+			.catch((err) => window.alert(err instanceof Error ? err.message : "Delete failed."));
+  }
 }
 
 function noteMenu(container) {
@@ -734,6 +1049,13 @@ function sourceText(container) {
 
 function referenceSourceText(container) {
   return container.querySelector(":scope > .ascii-reference-source")?.content?.textContent?.trim() || "";
+}
+
+function referenceMediaItems(container) {
+  return mergeMediaItemsDedup(
+    extractMediaItems(referenceSourceText(container)),
+    extractReferenceImetaMediaFromNoteContainer(container),
+  );
 }
 
 function inlineReferenceSources(container) {
@@ -753,8 +1075,7 @@ function inlineReferenceSources(container) {
 /** Quote/repost body text with image placeholders applied (shared by tree quotes and nested ASCII refs). */
 function referenceBodyDisplaySource(container, imageMode) {
   const raw = referenceSourceText(container);
-  const referenceMediaItems = imageMode ? extractMediaItems(raw) : [];
-  return displaySourceForMedia(raw, referenceMediaItems, imageMode);
+  return displaySourceForMedia(raw, imageMode ? extractMediaItems(raw) : [], imageMode);
 }
 
 function imageMount(container) {
@@ -774,6 +1095,27 @@ function takeFeedAvatarForPreRebuild(pre) {
   if (!link) return null;
   link.remove();
   return link;
+}
+
+function takeMainMediaGridForPreRebuild(pre) {
+  const wrap = pre.querySelector(":scope .note-media-grid-row:not(.reference-media-row) .note-media-grid-wrap");
+  if (!wrap) return null;
+  wrap.remove();
+  return wrap;
+}
+
+function takeReferenceMediaGridsForPreRebuild(pre) {
+  return [...pre.querySelectorAll(":scope .reference-media-row .note-media-grid-wrap")].map((wrap) => {
+    wrap.remove();
+    return wrap;
+  });
+}
+
+function takeMatchingMediaGrid(wraps, items) {
+  const signature = mediaGridSignature(items);
+  const index = wraps.findIndex((wrap) => wrap.dataset.mediaGridSignature === signature);
+  if (index < 0) return null;
+  return wraps.splice(index, 1)[0];
 }
 
 function extractMediaItems(text) {
@@ -796,13 +1138,31 @@ function extractMediaItems(text) {
   return items;
 }
 
+function blossomMediaPathKey(url) {
+  if (!url) return "";
+  const cleaned = String(url).trim().replace(TRAILING_URL_PUNCTUATION, "");
+  const match = /^https?:\/\/[^/]*\.blossom\.band\/([^\s<>"'`?#]+)/i.exec(cleaned);
+  return match ? match[1].toLowerCase() : "";
+}
+
+function mediaDedupKey(item) {
+  const blossomKey = blossomMediaPathKey(item?.url || "");
+  return blossomKey ? `blossom:${blossomKey}` : String(item?.url || "");
+}
+
 function mergeMediaItemsDedup(a, b) {
-  const seen = new Set();
+  const seen = new Map();
   const out = [];
   for (const list of [a, b]) {
     for (const item of list) {
-      if (!item?.url || seen.has(item.url)) continue;
-      seen.add(item.url);
+      if (!item?.url) continue;
+      const key = mediaDedupKey(item);
+      if (seen.has(key)) {
+        // Later `imeta` items should replace display-only Blossom body URLs.
+        out[seen.get(key)] = item;
+        continue;
+      }
+      seen.set(key, out.length);
       out.push(item);
     }
   }
@@ -810,10 +1170,10 @@ function mergeMediaItemsDedup(a, b) {
 }
 
 /** Parse `data-ascii-imeta-media` JSON from the note/reply shell (NIP-94 imeta tags). */
-function extractImetaMediaFromNoteContainer(container) {
-  if (!container?.dataset?.asciiImetaMedia) return [];
+function extractImetaMediaFromDataset(raw) {
+  if (!raw) return [];
   try {
-    const parsed = JSON.parse(container.dataset.asciiImetaMedia);
+    const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     const out = [];
     for (const entry of parsed) {
@@ -821,7 +1181,13 @@ function extractImetaMediaFromNoteContainer(container) {
       const type = typeof entry?.type === "string" ? entry.type.trim() : "";
       if (!url || (type !== "image" && type !== "video")) continue;
       if (!/^https?:\/\//i.test(url)) continue;
-      out.push({ url, type });
+      const width = Number.parseInt(`${entry?.width ?? ""}`, 10);
+      const height = Number.parseInt(`${entry?.height ?? ""}`, 10);
+      out.push({
+        url,
+        type,
+        ...(width > 0 && height > 0 ? { width, height } : {}),
+      });
     }
     return out;
   } catch {
@@ -829,18 +1195,24 @@ function extractImetaMediaFromNoteContainer(container) {
   }
 }
 
+function extractImetaMediaFromNoteContainer(container) {
+  return extractImetaMediaFromDataset(container?.dataset?.asciiImetaMedia || "");
+}
+
+function extractReferenceImetaMediaFromNoteContainer(container) {
+  return extractImetaMediaFromDataset(container?.dataset?.asciiRefImetaMedia || "");
+}
+
 /** Media URLs from note body plus optional `imeta` tags (deduped). */
 function mainBodyMediaItems(container, text) {
-  return mergeMediaItemsDedup(extractMediaItems(text), extractImetaMediaFromNoteContainer(container));
+  const bodyItems = extractMediaItems(text);
+  if (container?.dataset?.asciiRefMode === "repost") return bodyItems;
+  return mergeMediaItemsDedup(bodyItems, extractImetaMediaFromNoteContainer(container));
 }
 
 /** @param {ReturnType<typeof mainBodyMediaItems> | undefined} precomputedMain when caller already computed main-body items for `sourceText(container)`. */
 function mediaItemsForAsciiNote(container, precomputedMain) {
-  const main =
-    precomputedMain ?? mainBodyMediaItems(container, sourceText(container));
-  const refMode = container.dataset.asciiRefMode || "";
-  if (refMode !== "quote" && refMode !== "repost") return main;
-  return mergeMediaItemsDedup(main, extractMediaItems(referenceSourceText(container)));
+  return precomputedMain ?? mainBodyMediaItems(container, sourceText(container));
 }
 
 function imageItems(items) {
@@ -873,13 +1245,11 @@ function mediaSummaryLabel(items, compactMobile = false) {
   return `${padAsciiDecimal(n, 2)} media `;
 }
 
-// In image mode, returns rawSource with media URLs stripped, or a typed count
-// placeholder when stripping leaves the text empty. Outside image mode, returns
-// rawSource unchanged.
+// In image mode, returns rawSource with media URLs stripped. Outside image mode,
+// returns rawSource unchanged.
 function displaySourceForMedia(rawSource, mediaItems, imageMode) {
   if (!imageMode || mediaItems.length === 0) return rawSource;
-  const stripped = stripMediaUrlsFromText(rawSource);
-  return stripped.trim() ? stripped : mediaSummaryLabel(mediaItems);
+  return stripMediaUrlsFromText(rawSource);
 }
 
 /**
@@ -903,25 +1273,32 @@ function stripMediaUrlsFromText(text) {
     .trim();
 }
 
-function setImageViewerState(urls, index = 0, owner = null) {
-  imageViewerState.urls = Array.isArray(urls) ? urls.filter(Boolean) : [];
+function normalizeViewerItem(item) {
+  if (typeof item === "string") return { url: item, type: isVideoAssetHttpsUrl(item) ? "video" : "image" };
+  const url = typeof item?.url === "string" ? item.url : "";
+  const type = item?.type === "video" ? "video" : "image";
+  return url ? { url, type } : null;
+}
+
+function setImageViewerState(items, index = 0, owner = null) {
+  imageViewerState.items = Array.isArray(items) ? items.map(normalizeViewerItem).filter(Boolean) : [];
   imageViewerState.ownerNoteID = noteIDForContainer(owner);
-  if (!imageViewerState.urls.length) {
+  if (!imageViewerState.items.length) {
     imageViewerState.index = 0;
     return;
   }
   const bounded = Number.isFinite(index) ? Math.trunc(index) : 0;
-  imageViewerState.index = Math.min(imageViewerState.urls.length - 1, Math.max(0, bounded));
+  imageViewerState.index = Math.min(imageViewerState.items.length - 1, Math.max(0, bounded));
 }
 
 function renderImageViewer(dialog) {
   if (!dialog) return;
-  const img = dialog.querySelector("[data-image-viewer-img]");
+  const media = dialog.querySelector("[data-image-viewer-media]");
   const prev = dialog.querySelector("[data-image-viewer-prev]");
   const next = dialog.querySelector("[data-image-viewer-next]");
-  if (!img) return;
-  if (!imageViewerState.urls.length) {
-    img.removeAttribute("src");
+  if (!media) return;
+  media.textContent = "";
+  if (!imageViewerState.items.length) {
     if (prev) {
       prev.disabled = true;
       prev.hidden = true;
@@ -932,10 +1309,23 @@ function renderImageViewer(dialog) {
     }
     return;
   }
-  const total = imageViewerState.urls.length;
+  const total = imageViewerState.items.length;
   const index = Math.min(total - 1, Math.max(0, imageViewerState.index));
   imageViewerState.index = index;
-  img.src = imageViewerState.urls[index];
+  const item = imageViewerState.items[index];
+  if (item.type === "video") {
+    const video = document.createElement("video");
+    video.src = item.url;
+    video.controls = true;
+    video.autoplay = true;
+    prepareInlineVideo(video);
+    media.append(video);
+  } else {
+    const img = document.createElement("img");
+    img.src = item.url;
+    img.alt = "";
+    media.append(img);
+  }
   const showNav = total > 1;
   if (prev) {
     prev.disabled = !showNav;
@@ -948,8 +1338,8 @@ function renderImageViewer(dialog) {
 }
 
 function stepImageViewer(delta) {
-  if (!imageViewerState.urls.length) return;
-  const total = imageViewerState.urls.length;
+  if (!imageViewerState.items.length) return;
+  const total = imageViewerState.items.length;
   if (total <= 1) return;
   const next = (imageViewerState.index + delta + total) % total;
   imageViewerState.index = next;
@@ -969,19 +1359,30 @@ function ensureImageViewer() {
     </form>
     <div class="image-viewer-body">
       <button type="button" class="image-viewer-nav image-viewer-nav-prev" data-image-viewer-prev aria-label="Previous image">&lt;</button>
-      <img src="" alt="" data-image-viewer-img>
+      <div class="image-viewer-media" data-image-viewer-media></div>
       <button type="button" class="image-viewer-nav image-viewer-nav-next" data-image-viewer-next aria-label="Next image">&gt;</button>
     </div>
   `;
   dialog.addEventListener("click", (event) => {
-    if (event.target === dialog) dialog.close();
+    if (event.target === dialog) {
+      dialog.close();
+      return;
+    }
+    if (!(event.target instanceof Element)) return;
+    const control = event.target.closest(".image-viewer-nav, .image-viewer-close-row");
+    if (control && dialog.contains(control)) return;
+    const media = event.target.closest("[data-image-viewer-media]");
+    if (media && dialog.contains(media)) return;
+    const body = event.target.closest(".image-viewer-body");
+    if (body && dialog.contains(body)) dialog.close();
   });
   dialog.addEventListener("close", () => {
     if (!imageViewerState.ownerNoteID) return;
     const owner = document.getElementById(`note-${imageViewerState.ownerNoteID}`);
     if (!owner || !imageMount(owner)) return;
+    if (owner.dataset.asciiMediaExpanded === "true") return;
     owner.dataset.asciiMediaExpanded = "true";
-    delete owner._ptxtAsciiColumns;
+    markAsciiDirty(owner);
     renderAscii(owner);
   });
   dialog.addEventListener("keydown", (event) => {
@@ -1001,12 +1402,11 @@ function ensureImageViewer() {
     event.preventDefault();
     stepImageViewer(1);
   });
-  renderImageViewer(dialog);
   document.body.append(dialog);
   return dialog;
 }
 
-function openImageViewer(urls, index = 0, owner = null) {
+export function openImageViewer(urls, index = 0, owner = null) {
   if (Array.isArray(urls)) {
     setImageViewerState(urls, index, owner);
   } else {
@@ -1048,7 +1448,6 @@ function videoPreview(url) {
   const video = document.createElement("video");
   video.src = url;
   video.controls = true;
-  video.preload = "metadata";
   prepareInlineVideo(video);
   figure.append(video);
   return figure;
@@ -1059,18 +1458,37 @@ function mediaPreview(item, options = {}) {
   return imagePreview(item.url, options);
 }
 
+function mediaGrid(container, items, reusableWrap = null) {
+  if (!items.length) return null;
+  if (
+    reusableWrap instanceof HTMLElement &&
+    reusableWrap.dataset.mediaGridSignature === mediaGridSignature(items)
+  ) {
+    const hydrated = hydrateMediaGrid(reusableWrap, items, {
+      onOpen: (index) => openImageViewer(items, index, container),
+    });
+    if (hydrated) return hydrated;
+  }
+  const wrap = createMediaGrid(items, {
+    wrapperClass: "ascii-inline-media",
+    onOpen: (index) => openImageViewer(items, index, container),
+  });
+  return wrap;
+}
+
 function mediaFooterButton(container, label) {
   const button = document.createElement("button");
-  const isOpen = container.dataset.asciiMediaExpanded === "true";
   button.className = "link-button note-footer-media-link";
   button.type = "button";
   button.textContent = label || "[media]";
-  button.setAttribute("aria-expanded", isOpen ? "true" : "false");
-  button.addEventListener("click", () => {
-    container.dataset.asciiMediaExpanded = isOpen ? "false" : "true";
-    renderMountedMedia(container, mediaItemsForAsciiNote(container));
-    delete container._ptxtAsciiColumns;
-    renderAscii(container);
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    const mediaItems = mediaItemsForAsciiNote(container);
+    if (mediaItems.length) {
+      openImageViewer(mediaItems, 0, container);
+      return;
+    }
+    container.querySelector(".note-media-grid-row")?.scrollIntoView({ block: "nearest" });
   });
   return button;
 }
@@ -1079,9 +1497,14 @@ function renderMountedMedia(container, items) {
   const mount = imageMount(container);
   if (!mount) return;
   const enabled = getImageModePref();
+  if (enabled) {
+    mount.textContent = "";
+    mount.hidden = true;
+    return;
+  }
   const expanded = container.dataset.asciiMediaExpanded === "true";
   mount.textContent = "";
-  mount.hidden = !enabled || !expanded || !items.length;
+  mount.hidden = !expanded || !items.length;
   if (mount.hidden) return;
   const imageURLs = imageItems(items).map((item) => item.url);
   const imageURLIndex = new Map(imageURLs.map((url, index) => [url, index]));
@@ -1094,11 +1517,20 @@ function renderMountedMedia(container, items) {
   });
 }
 
-function appendNoteMedia(container, content, items, lineFactory) {
+function appendNoteMedia(container, content, items, lineFactory, { reusableGridWrap = null } = {}) {
   if (!items.length) return;
   const imageMode = getImageModePref();
+  if (imageMode) {
+    const body = mediaGrid(container, items, reusableGridWrap);
+    if (!body) return;
+    content.append(lineFactory({
+      className: "note-media-grid-row",
+      body,
+      isGrid: true,
+    }), "\n");
+    return;
+  }
   items.forEach((item) => {
-    if (imageMode && item.type !== "video") return;
     const previewRow = lineFactory({
       className: "note-image-inline-row",
       body: mediaPreview(item, {
@@ -1113,29 +1545,21 @@ function appendNoteMedia(container, content, items, lineFactory) {
   });
 }
 
-function measureColumns(container, pre) {
-  const rect = container.getBoundingClientRect();
-  if (!rect.width) return 0;
-  const style = getComputedStyle(pre);
-  const measure = document.createElement("span");
-  measure.className = "ascii-measure";
-  measure.style.font = style.font;
-  measure.style.position = "absolute";
-  measure.style.visibility = "hidden";
-  measure.style.whiteSpace = "pre";
-  document.body.append(measure);
+function measureGlyphMetrics(pre) {
+  return measureLayoutGlyphMetrics(pre);
+}
 
-  measure.textContent = "0000000000";
-  const asciiWidth = measure.getBoundingClientRect().width / 10;
-  measure.textContent = "漢漢漢漢漢";
-  const cjkWidth = measure.getBoundingClientRect().width / 5;
-  measure.remove();
-
-  // Some font stacks render CJK glyphs in a single monospace cell (same as
-  // ASCII), while others render them as double-width. Detect per runtime.
-  useDoubleWideCells = cjkWidth >= asciiWidth * 1.5;
-  if (!asciiWidth) return 0;
-  return Math.max(minColumns, Math.min(maxColumns, Math.floor(rect.width / asciiWidth)));
+function measureColumns(container, pre, widthHint = 0) {
+  const startedAt = performance.now();
+  const widthPx = Number.isFinite(widthHint) && widthHint > 0
+    ? widthHint
+    : container.getBoundingClientRect().width;
+  if (!widthPx) return 0;
+  const metrics = measureGlyphMetrics(pre);
+  const columns = columnsFromWidth(widthPx, metrics.asciiWidth);
+  asciiPerf.state.measureCalls += 1;
+  asciiPerf.state.measureMs += performance.now() - startedAt;
+  return columns;
 }
 
 /**
@@ -1406,10 +1830,11 @@ function threadTreeQuoteMountContext(card) {
 }
 
 /** Renders quoted/reposted note body in tree rows (plain lines, no ASCII box). */
-function appendThreadTreeQuoteMinimal(target, width, container, imageMode) {
+function appendThreadTreeQuoteMinimal(target, width, container, imageMode, reusableMediaGrid = null) {
   const mode = container.dataset.asciiRefMode;
   if (!mode) return;
   const referenceSource = referenceBodyDisplaySource(container, imageMode).trim();
+  const refMediaItems = imageMode ? referenceMediaItems(container) : [];
   const tw = replyTextWidth(width);
   const refAuthor = (container.dataset.asciiRefAuthor || "").trim();
   const refAge = (container.dataset.asciiRefAge || "").trim();
@@ -1423,13 +1848,30 @@ function appendThreadTreeQuoteMinimal(target, width, container, imageMode) {
     else attrib.append(label);
     target.append(attrib);
   }
-  if (!referenceSource) return;
-  wrapText(referenceSource, tw).forEach((row) => {
-    const line = document.createElement("span");
-    line.className = "thread-tree-text-line";
-    appendAsciiTextWithLineLink(line, row.text, container, row.ext, null);
-    target.append(line);
-  });
+  if (referenceSource) {
+    wrapText(referenceSource, tw).forEach((row) => {
+      const line = document.createElement("span");
+      line.className = "thread-tree-text-line";
+      appendAsciiTextWithLineLink(line, row.text, container, row.ext, null);
+      target.append(line);
+    });
+  }
+  if (refMediaItems.length > 0) {
+    const media = document.createElement("div");
+    media.className = "thread-tree-quote-media";
+    const hydrated = hydrateMediaGrid(reusableMediaGrid, refMediaItems, {
+      stopPropagation: true,
+      onOpen: (index) => openImageViewer(refMediaItems, index, container),
+    });
+    media.append(hydrated || createMediaGrid(refMediaItems, {
+      wrapperTag: "div",
+      gridTag: "div",
+      wrapperClass: "thread-tree-media-grid-wrap",
+      stopPropagation: true,
+      onOpen: (index) => openImageViewer(refMediaItems, index, container),
+    }));
+    target.append(media);
+  }
 }
 
 /** Hydrates tree-view quote/repost blocks (minimal typography, not feed ASCII boxes). */
@@ -1457,36 +1899,68 @@ export function refreshThreadTreeQuotes(root = document) {
     const key = `${width}:${imageModeKey}:${mobile}:${card.dataset.asciiRefMode || ""}`;
     if (card._ptxtTreeQuoteKey === key) return;
     card._ptxtTreeQuoteKey = key;
+    const reusableMediaGrid = mount.querySelector(":scope .note-media-grid-wrap");
+    reusableMediaGrid?.remove();
     mount.textContent = "";
-    appendThreadTreeQuoteMinimal(mount, width, card, imageModeOn);
+    appendThreadTreeQuoteMinimal(mount, width, card, imageModeOn, reusableMediaGrid);
     mount.hidden = mount.childNodes.length === 0;
   });
 }
 
-function appendNestedReferenceLines(target, width, container) {
+function appendNestedReferenceLines(target, width, container, reusableMediaGrids = []) {
   const mode = container.dataset.asciiRefMode;
   if (!mode) return;
-  appendReferenceCardLines(target, width, container, {
+  const imageMode = getImageModePref();
+  const card = document.createElement("span");
+  card.className = "ascii-reference-card";
+  const threadHref = container.dataset.asciiRefThreadHref || "";
+  if (threadHref) {
+    card.dataset.asciiRefSelectHref = threadHref;
+    bindReferenceCardNavigation(card, threadHref);
+  }
+  appendReferenceCardLines(card, width, container, {
     key: "nested",
     author: container.dataset.asciiRefAuthor || "",
     age: container.dataset.asciiRefAge || "",
     replyLabel: container.dataset.asciiRefReplyLabel || "",
-    threadHref: container.dataset.asciiRefThreadHref || "",
-    source: referenceBodyDisplaySource(container, getImageModePref()),
-  });
+    threadHref,
+    source: referenceBodyDisplaySource(container, imageMode),
+    mediaItems: imageMode ? referenceMediaItems(container) : [],
+  }, reusableMediaGrids);
+  target.append(card);
 }
 
 function appendInlineReferenceLines(target, width, container) {
   const imageMode = getImageModePref();
   inlineReferenceSources(container).forEach((ref) => {
-    appendReferenceCardLines(target, width, container, {
+    const card = document.createElement("span");
+    card.className = "ascii-reference-card";
+    if (ref.threadHref) {
+      card.dataset.asciiRefSelectHref = ref.threadHref;
+      bindReferenceCardNavigation(card, ref.threadHref);
+    }
+    appendReferenceCardLines(card, width, container, {
       ...ref,
       source: displaySourceForMedia(ref.source, imageMode ? extractMediaItems(ref.source) : [], imageMode),
     });
+    target.append(card);
   });
 }
 
-function appendReferenceCardLines(target, width, container, ref) {
+function bindReferenceCardNavigation(card, threadHref) {
+  card.addEventListener("click", (event) => {
+    if (event.defaultPrevented || (typeof event.button === "number" && event.button !== 0)) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest("a, button, input, textarea, select, summary, [contenteditable='true']")) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    window.location.assign(threadHref);
+  });
+}
+
+function appendReferenceCardLines(target, width, container, ref, reusableMediaGrids = []) {
   const innerWidth = Math.max(20, width - 8);
   const innerContentWidth = Math.max(8, innerWidth - 4);
   const refAuthor = truncateMiddle(ref.author || "", Math.max(8, innerWidth - 16));
@@ -1497,9 +1971,12 @@ function appendReferenceCardLines(target, width, container, ref) {
     ? { asciiRefSelectHref: refThreadHref, asciiRefHit: "1" }
     : null;
   const referenceSource = ref.source || "";
-  const headerPrefix = `  +- ${refAuthor} -- ${refAge} `;
   const headerRule = repeat("-", Math.max(1, innerWidth - runeLength(`+- ${refAuthor} -- ${refAge} +`)));
-  appendBoxedTextLine(target, width, `${headerPrefix}${headerRule}+`, refAttrs, container);
+  appendBoxedPartsLine(target, width, [
+    noteChrome("  +- "),
+    document.createTextNode(refAuthor),
+    noteChrome(` -- ${refAge} ${headerRule}+`),
+  ], refAttrs);
   const rows = wrapText(referenceSource, innerContentWidth);
   const collapsing = rows.length > collapsedNoteLines && !isReferenceExpanded(container, ref.key);
   const visibleRows = collapsing ? rows.slice(0, collapsedNoteLines) : rows;
@@ -1508,8 +1985,16 @@ function appendReferenceCardLines(target, width, container, ref) {
     visibleRows[li] = { ...visibleRows[li], text: addTrailingDots(visibleRows[li].text, innerContentWidth) };
   }
   visibleRows.forEach((row) => {
-    appendBoxedTextLine(target, width, `  | ${padRight(row.text, innerContentWidth)} |`, refAttrs, container);
+    appendReferenceBodyLine(target, width, row.text, innerContentWidth, refAttrs, container);
   });
+  appendReferenceMediaLines(
+    target,
+    width,
+    container,
+    refAttrs,
+    ref.mediaItems || [],
+    reusableMediaGrids,
+  );
   if (collapsing) {
     appendReferenceViewMoreLine(target, width, refAttrs, referenceViewMoreButton(container, width, ref.key));
   }
@@ -1524,7 +2009,90 @@ function appendReferenceCardLines(target, width, container, ref) {
     "-",
     Math.max(1, innerWidth - runeLength(`+-- ${refRb} `) - runeLength(footerSuffix)),
   );
-  appendBoxedTextLine(target, width, `  +-- ${refRb} ${footerRule}${footerSuffix}`, refAttrs, container);
+  appendBoxedPartsLine(target, width, [
+    noteChrome("  +-- "),
+    noteChrome(refRb),
+    noteChrome(` ${footerRule}`),
+    ...(refReplyLabel ? [noteChrome(" "), document.createTextNode(refReplyLabel)] : []),
+    noteChrome(" "),
+    noteChrome("["),
+    document.createTextNode("reply"),
+    noteChrome("]"),
+    noteChrome(" ---+"),
+  ], refAttrs);
+}
+
+function appendReferenceBodyLine(target, width, text, innerContentWidth, attrs, container) {
+  const item = document.createElement("span");
+  item.className = "ascii-line";
+  if (attrs) {
+    Object.entries(attrs).forEach(([key, value]) => {
+      if (value === undefined || value === null || value === "") return;
+      item.dataset[key] = value;
+    });
+  }
+  item.append(noteChrome("| "));
+  const middle = document.createElement("span");
+  middle.append(noteChrome("  | "));
+  const body = document.createElement("span");
+  const usedText = appendAsciiTextWithLineLink(body, text, container, null, null);
+  middle.append(body, noteChrome(`${" ".repeat(Math.max(0, innerContentWidth - usedText))} |`));
+  const used = runeLength("  | ") + usedText + Math.max(0, innerContentWidth - usedText) + runeLength(" |");
+  middle.append(" ".repeat(Math.max(0, Math.max(1, width - 4) - used)));
+  const refHref = attrs?.asciiRefSelectHref || "";
+  if (refHref && !body.querySelector("a, button")) {
+    const link = document.createElement("a");
+    link.className = "ascii-reference-line-link";
+    link.href = refHref;
+    link.append(...middle.childNodes);
+    item.append(link, noteChrome(" |"));
+  } else {
+    item.append(middle, noteChrome(" |"));
+  }
+  target.append(item, "\n");
+}
+
+function appendBoxedPartsLine(target, width, parts, attrs) {
+  const refHref = attrs?.asciiRefSelectHref || "";
+  const item = document.createElement(refHref ? "a" : "span");
+  item.className = "ascii-line";
+  if (refHref) item.href = refHref;
+  if (attrs) {
+    Object.entries(attrs).forEach(([key, value]) => {
+      if (value === undefined || value === null || value === "") return;
+      item.dataset[key] = value;
+    });
+  }
+  item.append(noteChrome("| "));
+  const middle = document.createElement("span");
+  parts.forEach((part) => middle.append(part));
+  const used = parts.reduce((sum, part) => sum + runeLength(part.textContent || part.nodeValue || ""), 0);
+  middle.append(" ".repeat(Math.max(0, Math.max(1, width - 4) - used)));
+  item.append(middle, noteChrome(" |"));
+  target.append(item, "\n");
+}
+
+function appendReferenceMediaLines(target, width, container, attrs, items, reusableMediaGrids = []) {
+  if (!items.length) return;
+  const body = mediaGrid(container, items, takeMatchingMediaGrid(reusableMediaGrids, items));
+  if (!body) return;
+  const item = document.createElement("span");
+  item.className = "ascii-line note-image-boxed-row note-media-grid-row reference-media-row";
+  item.style.setProperty("--ascii-box-row-width", `${width}ch`);
+  if (attrs) {
+    Object.entries(attrs).forEach(([key, value]) => {
+      if (value === undefined || value === null || value === "") return;
+      item.dataset[key] = value;
+    });
+  }
+  const prefix = document.createElement("span");
+  prefix.className = "note-media-reference-prefix";
+  prefix.setAttribute("aria-hidden", "true");
+  const suffix = document.createElement("span");
+  suffix.className = "note-media-reference-suffix";
+  suffix.setAttribute("aria-hidden", "true");
+  item.append(prefix, body, suffix);
+  target.append(item, "\n");
 }
 
 function appendReferenceViewMoreLine(target, width, attrs, vmButton) {
@@ -1562,18 +2130,21 @@ function renderNote(container, width) {
   const outerMediaItems = mainBodyMediaItems(container, rawSource);
   const mediaItems = mediaItemsForAsciiNote(container, outerMediaItems);
   const imageMode = getImageModePref();
-  const hasMedia = imageMode && mediaItems.length > 0;
+  const hasMediaItems = mediaItems.length > 0;
+  const hasMedia = imageMode && hasMediaItems;
   const author = authorForWidth(container, width);
   const age = container.dataset.asciiAge || "";
   const replyCount = Number.parseInt(container.dataset.asciiReplyCount || "0", 10);
   const replyLabelDataset = container.dataset.asciiReplyLabel || replyLabelForCount(replyCount);
   const contentWidth = Math.max(1, width - 4);
   const noteSource = displaySourceForMedia(rawSource, outerMediaItems, imageMode);
-  const allRows = refMode === "repost" ? [] : wrapText(noteSource, contentWidth);
+  const allRows = refMode === "repost" || !noteSource.trim() ? [] : wrapText(noteSource, contentWidth);
   const isLong = allRows.length > collapsedNoteLines;
   const isExpanded = container.dataset.asciiExpanded === "true";
   const collapsing = isLong && !isExpanded;
   const viewMoreInBody = collapsing && mobileActionsQuery.matches;
+  const viewMoreInHeader =
+    collapsing && !mobileActionsQuery.matches && (hasReference || hasMediaItems);
   const congestedMobileFooter = mobileActionsQuery.matches && collapsing && hasMedia;
   const mediaLabel = mediaSummaryLabel(mediaItems, congestedMobileFooter);
   const replyLabel =
@@ -1588,11 +2159,21 @@ function renderNote(container, width) {
   }
   const hasFeedAvatar = hasFeedNoteAvatarSlot(container);
   const topPrefix = hasFeedAvatar ? `+--${author} -- ${age} ` : `+- ${author} -- ${age} `;
-  const topSuffix = "[...]+";
+  const headerActionLabel = viewMoreInHeader ? "view more" : "[...]";
+  const topSuffix = `${headerActionLabel}+`;
   const feedAvatarReserve = hasFeedAvatar ? feedNoteAvatarRuneReserve : 0;
   const headerDashCount = Math.max(1, width - runeLength(topPrefix + topSuffix) - feedAvatarReserve);
+  const headerAction = () =>
+    viewMoreInHeader ? viewMoreButton(container, width) : noteMenu(container);
   const savedFeedAvatar = takeFeedAvatarForPreRebuild(pre);
   const savedMediaMount = takeImageMountForPreRebuild(container);
+  let savedMediaGrid = takeMainMediaGridForPreRebuild(pre);
+  const savedReferenceMediaGrids = takeReferenceMediaGridsForPreRebuild(pre);
+  const consumeSavedMediaGrid = () => {
+    const wrap = savedMediaGrid;
+    savedMediaGrid = null;
+    return wrap;
+  };
   pre.textContent = "";
   if (savedFeedAvatar) pre.prepend(savedFeedAvatar);
   if (hasFeedAvatar) {
@@ -1604,7 +2185,7 @@ function renderNote(container, width) {
     tail.append(
       link(container.dataset.asciiUserHref || "#", author),
       noteChrome(` -- ${age} ${repeat("-", headerDashCount)}`),
-      noteMenu(container),
+      headerAction(),
       noteChrome("+"),
     );
     headerLine.append(tail);
@@ -1614,7 +2195,7 @@ function renderNote(container, width) {
       noteChrome("+- "),
       link(container.dataset.asciiUserHref || "#", author),
       noteChrome(` -- ${age} ${repeat("-", headerDashCount)}`),
-      noteMenu(container),
+      headerAction(),
       noteChrome("+"),
     ]);
   }
@@ -1642,25 +2223,40 @@ function renderNote(container, width) {
   if (viewMoreInBody) {
     appendViewMoreContentLine(content, width, container, viewMoreButton(container, width));
   }
+  appendPollContent(content, width, container, "", "feed");
   appendInlineReferenceLines(content, width, container);
-  if (hasReference) {
-    appendNestedReferenceLines(content, width, container);
-  }
-  appendNoteMedia(container, content, mediaItems, ({ className = "", body, hidden = false }) => {
+  const appendOuterMedia = () => appendNoteMedia(container, content, mediaItems, ({ className = "", body, hidden = false, isGrid = false }) => {
     const item = document.createElement("span");
     item.className = `ascii-line note-image-boxed-row ${className}`.trim();
     item.hidden = hidden;
     item.style.setProperty("--ascii-box-row-width", `${width}ch`);
-    item.append(noteChrome("| "), body, noteChrome(" |"));
+    if (isGrid) {
+      const leftEdge = document.createElement("span");
+      leftEdge.className = "note-media-grid-edge note-media-grid-edge-left";
+      leftEdge.setAttribute("aria-hidden", "true");
+      const rightEdge = document.createElement("span");
+      rightEdge.className = "note-media-grid-edge note-media-grid-edge-right";
+      rightEdge.setAttribute("aria-hidden", "true");
+      item.append(leftEdge, body, rightEdge);
+    } else {
+      item.append(noteChrome("| "), body, noteChrome(" |"));
+    }
     return item;
-  });
+  }, { reusableGridWrap: consumeSavedMediaGrid() });
+  if (refMode === "quote") appendOuterMedia();
+  if (hasReference) {
+    appendNestedReferenceLines(content, width, container, savedReferenceMediaGrids);
+  }
+  if (refMode !== "quote") appendOuterMedia();
   pre.append(content);
   if (savedMediaMount) pre.append(savedMediaMount);
   appendLine(pre, [noteChrome(boxLine(width))]);
   const threadHref = container.dataset.asciiThreadHref || "#";
   const reactionSeg = reactionLayoutSegments(container);
   const collapseRunes =
-    collapsing && !viewMoreInBody ? runeLength(" --- ") + runeLength("view more") : 0;
+    collapsing && !viewMoreInBody && !viewMoreInHeader
+      ? runeLength(" --- ") + runeLength("view more")
+      : 0;
   const leftFixedRunes =
     runeLength("+-- ") + reactionSeg.runeBlockLen + collapseRunes + 1;
   const tailAfterDashes = (withReplyLabel) => {
@@ -1673,7 +2269,7 @@ function renderNote(container, width) {
   };
   const footerParts = [noteChrome("+-- ")];
   footerParts.push(...reactionSeg.footerParts);
-  if (collapsing && !viewMoreInBody) {
+  if (collapsing && !viewMoreInBody && !viewMoreInHeader) {
     footerParts.push(noteChrome(" --- "), viewMoreButton(container, width));
   }
   footerParts.push(noteChrome(" "));
@@ -1757,13 +2353,20 @@ function renderReply(container, width) {
   );
   const visibleAuthor = truncateMiddle(author, maxReplyAuthor);
   const leftText = `${visibleAuthor} -- ${age}`;
+  let savedMediaGrid = takeMainMediaGridForPreRebuild(pre);
+  const savedReferenceMediaGrids = takeReferenceMediaGridsForPreRebuild(pre);
+  const consumeSavedMediaGrid = () => {
+    const wrap = savedMediaGrid;
+    savedMediaGrid = null;
+    return wrap;
+  };
   pre.textContent = "";
   const headerParts = [
     link(container.dataset.asciiUserHref || "#", visibleAuthor),
-    ` -- ${age}`,
+    noteChrome(` -- ${age}`),
   ];
   const pad = " ".repeat(Math.max(1, headerWidth - runeLength(leftText) - runeLength("[...]")));
-  headerParts.push(pad, noteMenu(container));
+  headerParts.push(noteChrome(pad), noteMenu(container));
   appendLine(pre, headerParts);
   const subtree = document.createElement("span");
   subtree.className = "thread-reply-collapse";
@@ -1779,8 +2382,10 @@ function renderReply(container, width) {
     replyLabel = compactReplyBadge(replyCount);
   }
   const replySource = displaySourceForMedia(replyRawSource, replyMediaItems, imageMode);
+  const refMode = container.dataset.asciiRefMode || "";
   const tw = replyTextWidth(width);
-  const replyRows = wrapText(replySource, tw);
+  const replyRows =
+    refMode === "repost" || !replySource.trim() ? [] : wrapText(replySource, tw);
   const replyPadSpaces = replyRows.length > 0 ? " ".repeat(tw) : "";
   if (replyPadSpaces) {
     appendReplyContentPadLine(content, contentPrefix, replyPadSpaces);
@@ -1795,13 +2400,25 @@ function renderReply(container, width) {
   if (replyPadSpaces) {
     appendReplyContentPadLine(content, contentPrefix, replyPadSpaces);
   }
-  appendNoteMedia(container, content, replyMediaItems, ({ className = "", body, hidden = false }) => {
+  appendPollContent(content, width, container, contentPrefix, "reply");
+  const appendReplyMedia = () => appendNoteMedia(container, content, replyMediaItems, ({ className = "", body, hidden = false, isGrid = false }) => {
     const item = document.createElement("span");
-    item.className = `ascii-line ${className}`.trim();
+    item.className = `ascii-line reply-media-row ${className}`.trim();
     item.hidden = hidden;
-    item.append(contentPrefix, body);
+    if (isGrid) {
+      const prefix = document.createElement("span");
+      prefix.className = "note-media-reply-prefix";
+      if (contentPrefix.startsWith("|")) prefix.classList.add("has-rail");
+      prefix.setAttribute("aria-hidden", "true");
+      item.append(prefix, body);
+    } else {
+      item.append(noteChrome(contentPrefix), body);
+    }
     return item;
-  });
+  }, { reusableGridWrap: consumeSavedMediaGrid() });
+  if (refMode === "quote") appendReplyMedia();
+  appendNestedReferenceLines(content, width, container, savedReferenceMediaGrids);
+  if (refMode !== "quote") appendReplyMedia();
   subtree.append(content);
   const selectHref = container.dataset.asciiSelectHref || "#";
   const reactionSeg = reactionLayoutSegments(container);
@@ -1814,7 +2431,7 @@ function renderReply(container, width) {
     }
     return 1 + bracket + close;
   };
-  const footerParts = [contentPrefix, noteChrome(" "), ...reactionSeg.footerParts, noteChrome(" ")];
+  const footerParts = [noteChrome(contentPrefix), noteChrome(" "), ...reactionSeg.footerParts, noteChrome(" ")];
   if (hasMedia && replyLabel) {
     const mid = ` ${mediaLabel} `;
     const remaining = Math.max(
@@ -1865,7 +2482,7 @@ function renderReply(container, width) {
   /* Trailing `|` connects into nested replies, or to the next sibling when
      this row is not the last child. */
   if (showRail) {
-    appendLine(subtree, [linePrefix]);
+    appendLine(subtree, [noteChrome(linePrefix)]);
   }
   pre.append(subtree);
   renderMountedMedia(container, replyMediaItems);
@@ -1891,8 +2508,12 @@ function renderSelected(container, width) {
     replyLabel = compactReplyBadge(replyCount);
   }
   const selectedSource = displaySourceForMedia(rawSource, mediaItems, imageMode);
+  const refMode = container.dataset.asciiRefMode || "";
   const author = authorForWidth(container, width);
   const age = container.dataset.asciiAge || "";
+  const hasVisibleChildren = container.dataset.asciiHasVisibleChildren === "true";
+  const bodyPrefix = hasVisibleChildren ? "| " : "";
+  const bodyPrefixRunes = runeLength(bodyPrefix);
   // Reserve enough header columns for the avatar's CSS padding-left so
   // the right-aligned `[...]` overflow menu stays inside the visible box.
   const headerAvatarReserve = 6;
@@ -1904,29 +2525,39 @@ function renderSelected(container, width) {
   const visibleAuthor = truncateMiddle(author, maxAuthor);
   const topPrefix = `${visibleAuthor} -- ${age} `;
   const topSuffix = "[...]+";
-  // One extra dash so the closing `+` lines up with the body/footer `|` column (same total width as content rows).
-  const topRule = repeat("-", Math.max(1, headerWidth - runeLength(topPrefix + topSuffix) + 1));
+  // The CSS avatar inset consumes `headerAvatarReserve` visual columns. Keep
+  // the complete `[...] +` header inside the same measured width as the body.
+  const topRule = repeat("-", Math.max(1, headerWidth - runeLength(topPrefix + topSuffix)));
+  let savedMediaGrid = takeMainMediaGridForPreRebuild(pre);
+  const savedReferenceMediaGrids = takeReferenceMediaGridsForPreRebuild(pre);
+  const consumeSavedMediaGrid = () => {
+    const wrap = savedMediaGrid;
+    savedMediaGrid = null;
+    return wrap;
+  };
   pre.textContent = "";
   appendLine(pre, [
     link(container.dataset.asciiUserHref || "#", visibleAuthor),
-    ` -- ${age} `,
-    topRule,
+    noteChrome(` -- ${age} `),
+    noteChrome(topRule),
     noteMenu(container),
-    "+",
+    noteChrome("+"),
   ]);
   const content = document.createElement("span");
   content.className = "note-content";
-  const contentWidth = Math.max(1, width - 2);
+  const contentWidth = Math.max(1, width - 2 - bodyPrefixRunes);
   const selectedPadSpaces = " ".repeat(contentWidth);
   const appendSelectedPadLine = () => {
     const item = document.createElement("span");
     item.className = "ascii-line";
+    if (bodyPrefix) item.append(noteChrome(bodyPrefix));
     const middle = document.createElement("span");
     middle.append(selectedPadSpaces);
     item.append(middle, noteChrome(" |"));
     content.append(item, "\n");
   };
-  const selectedRows = wrapText(selectedSource, replyTextWidth(width));
+  const selectedRows =
+    refMode === "repost" || !selectedSource.trim() ? [] : wrapText(selectedSource, contentWidth);
   if (selectedRows.length > 0) {
     appendSelectedPadLine();
   }
@@ -1942,23 +2573,44 @@ function renderSelected(container, width) {
         : null;
     const used = appendAsciiTextWithLineLink(middle, clipped, container, ext, urlState);
     middle.append(" ".repeat(Math.max(0, contentWidth - used)));
+    if (bodyPrefix) item.append(noteChrome(bodyPrefix));
     item.append(middle, noteChrome(" |"));
     content.append(item, "\n");
   });
   if (selectedRows.length > 0) {
     appendSelectedPadLine();
   }
-  appendNoteMedia(container, content, mediaItems, ({ className = "", body, hidden = false }) => {
+  const appendSelectedMedia = () => appendNoteMedia(container, content, mediaItems, ({ className = "", body, hidden = false, isGrid = false }) => {
     const item = document.createElement("span");
-    item.className = `ascii-line ${className}`.trim();
+    item.className = `ascii-line selected-media-row ${className}`.trim();
     item.hidden = hidden;
-    item.append(body, noteChrome(" |"));
+    const isFocusedReply = container.classList.contains("thread-focus-selected");
+    if (isGrid) {
+      const rightEdge = document.createElement("span");
+      rightEdge.className = "note-media-grid-edge note-media-grid-edge-right";
+      rightEdge.setAttribute("aria-hidden", "true");
+      if (isFocusedReply) {
+        item.append(body, rightEdge);
+      } else {
+        const leftEdge = document.createElement("span");
+        leftEdge.className = "note-media-grid-edge note-media-grid-edge-left";
+        leftEdge.setAttribute("aria-hidden", "true");
+        item.append(leftEdge, body, rightEdge);
+      }
+    } else {
+      if (!isFocusedReply) item.append(noteChrome("| "));
+      item.append(body, noteChrome(" |"));
+    }
     return item;
-  });
+  }, { reusableGridWrap: consumeSavedMediaGrid() });
+  if (refMode === "quote") appendSelectedMedia();
+  appendNestedReferenceLines(content, width, container, savedReferenceMediaGrids);
+  appendPollContent(content, width, container, bodyPrefix, "reply");
+  if (refMode !== "quote") appendSelectedMedia();
   pre.append(content);
   const threadHrefSel = container.dataset.asciiThreadHref || "#";
   const reactionSegSel = reactionLayoutSegments(container);
-  const leftFixedSel = 1 + reactionSegSel.runeBlockLen + 1;
+  const leftFixedSel = bodyPrefixRunes + 1 + reactionSegSel.runeBlockLen + 1;
   const tailSel = (withReplyLabel) => {
     const close = runeLength(" ---+");
     const bracket = runeLength("[reply]");
@@ -1967,7 +2619,9 @@ function renderSelected(container, width) {
     }
     return 1 + bracket + close;
   };
-  const replyParts = [noteChrome(" "), ...reactionSegSel.footerParts, noteChrome(" ")];
+  const replyParts = [];
+  if (bodyPrefix) replyParts.push(noteChrome(bodyPrefix));
+  replyParts.push(noteChrome(" "), ...reactionSegSel.footerParts, noteChrome(" "));
   if (hasMedia && replyLabel) {
     const mid = ` ${mediaLabel} `;
     const remaining = Math.max(2, width - leftFixedSel - runeLength(mid) - tailSel(true));
@@ -2021,17 +2675,35 @@ function renderContinueLinks(container, width, linePrefix) {
     const label = "continue thread";
     const spaces = " ".repeat(Math.max(1, width - runeLength(linePrefix + label)));
     item.textContent = "";
-    item.append(linePrefix, spaces, link(href, label));
+    item.append(noteChrome(linePrefix), noteChrome(spaces), link(href, label));
   });
 }
 
-function renderAscii(container) {
+function markAsciiDirty(container) {
+  if (!(container instanceof Element)) return;
+  container.dataset.ptxtAsciiDirty = "1";
+}
+
+function clearAsciiDirty(container) {
+  if (!(container instanceof Element)) return;
+  delete container.dataset.ptxtAsciiDirty;
+}
+
+function renderAscii(container, options = {}) {
   const pre = container.querySelector(":scope > .ascii-card, :scope > .ascii-reply");
   if (!pre) return;
-  const width = measureColumns(container, pre);
-  const cacheKey = `${width}:${mobileActionsQuery.matches}:${getImageModePref() ? "1" : "0"}`;
-  if (!width || container._ptxtAsciiColumns === cacheKey) return;
-  container._ptxtAsciiColumns = cacheKey;
+  const startedAt = performance.now();
+  const width = measureColumns(container, pre, options.widthHint || 0);
+  persistAsciiWidth(container, width);
+  const cacheKey = buildAsciiRenderCacheKey(width, mobileActionsQuery.matches, getImageModePref());
+  const dirty = options.force === true || container.dataset.ptxtAsciiDirty === "1";
+  if (!shouldRenderAscii(container._ptxtAsciiLayoutKey || "", cacheKey, dirty)) {
+    asciiPerf.state.renderCalls += 1;
+    asciiPerf.state.skippedRenderCalls += 1;
+    return;
+  }
+  container._ptxtAsciiLayoutKey = cacheKey;
+  const renderBodyStartedAt = performance.now();
   if (container.dataset.asciiKind === "note") {
     renderNote(container, width);
   } else if (container.dataset.asciiKind === "reply") {
@@ -2039,7 +2711,14 @@ function renderAscii(container) {
   } else if (container.dataset.asciiKind === "selected") {
     renderSelected(container, width);
   }
-  syncMuteToggleButtons(container);
+	if (localViewerPubkey()) {
+		void import("./mutations.js").then(({ syncMuteToggleButtons }) => syncMuteToggleButtons(container));
+	}
+  clearAsciiDirty(container);
+  asciiPerf.state.renderCalls += 1;
+  asciiPerf.state.renderedCards += 1;
+  asciiPerf.state.renderBodyMs += performance.now() - renderBodyStartedAt;
+  asciiPerf.state.renderMs += performance.now() - startedAt;
 }
 
 function observeAscii(container) {
@@ -2085,6 +2764,17 @@ function querySkeletonWaveCards(root = document) {
   return cards;
 }
 
+function queryThreadSkeletonCards(root = document) {
+  const selector = ".thread-reply-skeleton-item > .text-skeleton-note, .thread-focus-parent--skeleton > .text-skeleton-note, .thread-selected-skeleton > .text-skeleton-note";
+  if (root === document) {
+    return [...document.querySelectorAll(selector)];
+  }
+  if (!(root instanceof Element)) return [];
+  const cards = root.matches(selector) ? [root] : [];
+  cards.push(...root.querySelectorAll(selector));
+  return cards;
+}
+
 function renderSkeletonWaveCards(root = document) {
   const cards = querySkeletonWaveCards(root);
   cards.forEach((card, index) => {
@@ -2092,6 +2782,25 @@ function renderSkeletonWaveCards(root = document) {
     const scope = feedLoaderMeasureRoot(card);
     const width = measureColumns(scope, card) || minColumns;
     card.textContent = buildFeedLoaderCardText(width, cardIdx, feedLoaderTick % FEED_LOADER_FRAME_VARIANTS);
+  });
+  return cards.length;
+}
+
+function renderThreadSkeletonCards(root = document) {
+  const cards = queryThreadSkeletonCards(root);
+  cards.forEach((card) => {
+    const container = card.closest(".comment, .note") || card.parentElement || card;
+    const width = measureColumns(container, card) || minColumns;
+    if (card.closest(".thread-selected-skeleton")) {
+      card.textContent = buildThreadSelectedSkeletonText(width);
+      return;
+    }
+    if (card.closest(".thread-focus-parent--skeleton")) {
+      card.textContent = buildThreadParentSkeletonText(width);
+      return;
+    }
+    const item = card.closest(".thread-reply-skeleton-item");
+    card.textContent = buildThreadReplySkeletonText(width, { isLast: !item?.nextElementSibling });
   });
   return cards.length;
 }
@@ -2118,9 +2827,11 @@ function initFeedLoaders(root = document) {
   if (root === document) {
     updated += renderFeedLoaders(document);
     updated += renderSkeletonWaveCards(document);
+    renderThreadSkeletonCards(document);
   } else {
     updated += renderFeedLoaders(root);
     updated += renderSkeletonWaveCards(root);
+    renderThreadSkeletonCards(root);
   }
   if (updated === 0) return;
   startFeedLoaderAnimation();
@@ -2143,17 +2854,47 @@ function asciiKindRoots(root) {
 }
 
 function initAscii(root = document) {
-  ensureNoteReactionsDelegated();
+	if (localViewerPubkey()) {
+		void import("./reactions.js").then(({ ensureNoteReactionsDelegated }) => ensureNoteReactionsDelegated());
+	}
+  bindPollDelegates();
+  bindBroadcastDelegates();
   asciiKindRoots(root).forEach(observeAscii);
+  if (!document.body?.dataset?.guestV2) {
+    void hydrateVisibleZapTotals(root).catch(() => {});
+  }
+}
+
+function flushAsciiRefreshRoots(roots) {
+  roots.forEach((item) => {
+    asciiKindRoots(item).forEach((container) => {
+      markAsciiDirty(container);
+      renderAscii(container);
+    });
+    refreshThreadTreeQuotes(item);
+    renderThreadSkeletonCards(item);
+  });
+}
+
+/** Re-layout ascii immediately — use during route/focus swaps to avoid one-frame overflow. */
+export function refreshAsciiSync(root = document) {
+  flushAsciiRefreshRoots([root]);
 }
 
 export function refreshAscii(root = document) {
-  asciiKindRoots(root).forEach((container) => {
-    delete container._ptxtAsciiColumns;
-    renderAscii(container);
+  pendingAsciiRefreshRoots.add(root);
+  if (asciiRefreshScheduled) return;
+  asciiRefreshScheduled = true;
+  requestAnimationFrame(() => {
+    asciiRefreshScheduled = false;
+    const roots = [...pendingAsciiRefreshRoots];
+    pendingAsciiRefreshRoots.clear();
+    flushAsciiRefreshRoots(roots);
   });
-  refreshThreadTreeQuotes(root);
 }
+
+const pendingAsciiRefreshRoots = new Set();
+let asciiRefreshScheduled = false;
 
 const queuedAsciiRoots = new Set();
 let asciiInitScheduled = false;
@@ -2195,20 +2936,56 @@ new MutationObserver((mutations) => {
   });
 }).observe(asciiMutationRoot, { childList: true, subtree: true });
 
-document.addEventListener("click", () => closeActionMenus());
+document.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) return;
+  const trigger = event.target.closest("[data-ascii-action-menu-trigger]");
+  if (trigger) {
+    event.preventDefault();
+    event.stopPropagation();
+    toggleActionMenuFromTrigger(trigger);
+    return;
+  }
+  const action = event.target.closest("[data-note-menu-action]");
+  if (action) {
+    event.preventDefault();
+    event.stopPropagation();
+    handleNoteMenuAction(action.dataset.noteMenuAction || "", action, event);
+  }
+}, true);
+
+document.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) {
+    closeActionMenus();
+    return;
+  }
+  if (event.target.closest("[data-ascii-action-menu-trigger], [data-note-menu-action]")) return;
+  closeActionMenus();
+});
+
+window.addEventListener("ptxt:poll-updated", (event) => {
+  const noteId = String(event?.detail?.noteId || "").trim().toLowerCase();
+  if (!noteId) {
+    rerenderAllAscii();
+    return;
+  }
+  const node = document.getElementById(`note-${noteId}`);
+  if (node) refreshAscii(node);
+});
 
 function rerenderAllAscii() {
   asciiKindRoots(document).forEach((container) => {
-    delete container._ptxtAsciiColumns;
+    markAsciiDirty(container);
     renderAscii(container);
   });
   refreshThreadTreeQuotes(document);
+  renderThreadSkeletonCards(document);
 }
 
 mobileActionsQuery.addEventListener("change", () => {
   rerenderAllAscii();
   renderFeedLoaders(document);
   renderSkeletonWaveCards(document);
+  renderThreadSkeletonCards(document);
 });
 
 window.addEventListener("ptxt:image-mode-changed", () => {

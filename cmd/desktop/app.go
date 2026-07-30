@@ -8,8 +8,11 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	goruntime "runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +24,8 @@ import (
 	"ptxt-nstr/internal/nostrx"
 	"ptxt-nstr/internal/store"
 )
+
+const defaultDesktopLoopbackPort = 24787
 
 // App owns the desktop lifecycle: same stack as cmd/server, served on loopback
 // for the embedded webview after the splash screen.
@@ -74,6 +79,8 @@ func (a *App) onStartup(ctx context.Context) {
 	}
 	st.SetEventRetention(cfg.EventRetention)
 	st.SetReplaceableHistory(cfg.ReplaceableHistory)
+	st.SetRetentionPolicy(cfg.RetentionByAccess)
+	st.SetDiskRetentionPolicy(cfg.DBDiskMaxPercent, cfg.DBDiskPruneTargetPercent)
 	if cfg.CompactOnStart {
 		compactCtx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 		deleted, compactErr := st.Compact(compactCtx, cfg.EventRetention)
@@ -85,10 +92,6 @@ func (a *App) onStartup(ctx context.Context) {
 		}
 		slog.Info("startup compact complete", "deleted_events", deleted, "retention", cfg.EventRetention)
 	}
-	trendingMetaCtx, trendingMetaCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	st.EnsureTrendingCacheSchemaVersion(trendingMetaCtx)
-	trendingMetaCancel()
-
 	nostrClient := nostrx.NewClient(cfg.DefaultRelays, cfg.RequestTimeout)
 	srv, err := httpx.New(cfg, st, nostrClient)
 	if err != nil {
@@ -99,9 +102,10 @@ func (a *App) onStartup(ctx context.Context) {
 	a.store = st
 	a.server = srv
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	loopPort := desktopLoopbackPort()
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", loopPort))
 	if err != nil {
-		slog.Error("loopback listen failed", "err", err)
+		slog.Error("loopback listen failed", "err", err, "port", loopPort)
 		_ = st.Close()
 		return
 	}
@@ -121,6 +125,22 @@ func (a *App) onStartup(ctx context.Context) {
 	}()
 
 	a.bootOk = true
+}
+
+// desktopLoopbackPort is stable across launches so WebKit keeps one origin for
+// localStorage, IndexedDB, account state, relay preferences, and route caches.
+// Only the port is configurable; the listener remains pinned to 127.0.0.1.
+func desktopLoopbackPort() int {
+	raw := strings.TrimSpace(os.Getenv("PTXT_DESKTOP_PORT"))
+	if raw == "" {
+		return defaultDesktopLoopbackPort
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil || port < 1024 || port > 65535 {
+		slog.Warn("invalid PTXT_DESKTOP_PORT; using default", "value", raw, "default", defaultDesktopLoopbackPort)
+		return defaultDesktopLoopbackPort
+	}
+	return port
 }
 
 func (a *App) onDomReady(ctx context.Context) {

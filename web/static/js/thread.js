@@ -1,6 +1,6 @@
-import { refreshAscii, refreshThreadTreeQuotes } from "./ascii.js";
-import { prepareInlineVideo } from "./inline-video.js";
+import { openImageViewer, refreshAscii, refreshThreadTreeQuotes } from "./ascii.js";
 import { addAsciiWidthHint } from "./ascii-width-hint.js";
+import { createMediaGrid, hydrateMediaGrid, mediaGridSignature } from "./media-grid.js";
 import { refreshVisibleFeedReactionStats } from "./feed-metadata.js";
 import { fetchWithSession } from "./session.js";
 import { threadRepliesPageSkeletonMarkup, threadTreeSkeletonMarkup } from "./shell.js";
@@ -15,13 +15,14 @@ import { syncMobileAppNavHeight } from "./layout.js";
 import { scrollRouteToTop } from "./shell-swap.js";
 import { getImageModePref, getThreadRenderModePref, setThreadRenderModePref } from "./sort-prefs.js";
 import { openThreadInlineComposer } from "./mutations.js";
+import { withRelays } from "./nav-routing.js";
 import { refreshVisibleNoteProfiles } from "./note-profiles.js";
 
 let listenersAttached = false;
 let hashListenerBound = false;
 let treeMediaModeListenerBound = false;
 const threadTreeCardSelector = "#thread-tree-view [data-thread-tree-note]";
-/** Set before SPA navigate to a subthread so init opens linear mode even when tree pref is on. */
+/** Set before navigating to a subthread so init opens linear mode even when tree pref is on. */
 const THREAD_TREE_TO_LINEAR_KEY = "ptxtTreeToThreadLinear";
 const THREAD_INLINE_REPLY_PENDING_KEY = "ptxt-inline-reply-v1";
 
@@ -58,8 +59,28 @@ function appendThreadReplies(html) {
   return appended;
 }
 
-async function loadMoreReplies(button) {
+function threadRepliesFragmentURL(button) {
+  const current = new URL(window.location.href);
+  const params = new URLSearchParams({
+    fragment: "replies",
+    cursor: button.dataset.cursor || "",
+    cursor_id: button.dataset.cursorId || "",
+  });
+  const selectedID = button.dataset.selectedId || "";
+  if (selectedID) params.set("selected", selectedID);
+  addAsciiWidthHint(params, current.pathname);
+  return `${current.pathname}?${params.toString()}`;
+}
+
+export async function loadMoreReplies(button) {
   if (!button || button.dataset.loading === "1") return;
+  const {
+    isRelayNativeThread,
+    loadMoreRelayNativeThreadReplies,
+  } = await import("./client-render.js");
+  if (isRelayNativeThread()) {
+    return loadMoreRelayNativeThreadReplies(button);
+  }
   button.dataset.loading = "1";
   button.disabled = true;
   button.textContent = "Loading...";
@@ -72,31 +93,32 @@ async function loadMoreReplies(button) {
     if (pageSkeleton) list.append(pageSkeleton);
     refreshAscii(list);
   }
-  const current = new URL(window.location.href);
-  const params = new URLSearchParams({
-    fragment: "replies",
-    cursor: button.dataset.cursor || "",
-    cursor_id: button.dataset.cursorId || "",
-  });
-  const rootID = button.dataset.rootId || "";
-  const parentID = button.dataset.parentId || "";
-  const selectedID = button.dataset.selectedId || "";
-  if (rootID) params.set("root_id", rootID);
-  if (parentID) params.set("parent_id", parentID);
-  if (selectedID) params.set("selected_id", selectedID);
-  // Relays now flow via the X-Ptxt-Relays header (fetchWithSession).
-  addAsciiWidthHint(params, current.pathname);
   try {
-    const response = await fetchWithSession(`${current.pathname}?${params.toString()}`);
-    if (!response.ok) throw new Error(`Reply request failed: ${response.status}`);
+    const previousCursor = button.dataset.cursor || "";
+    const previousCursorID = button.dataset.cursorId || "";
+    const response = await fetchWithSession(threadRepliesFragmentURL(button), {
+      headers: { Accept: "text/html" },
+      credentials: "same-origin",
+    });
+    if (!response.ok) {
+      const error = new Error("Reply request failed");
+      error.status = response.status;
+      throw error;
+    }
     const html = await response.text();
     const appended = appendThreadReplies(html);
     button.dataset.cursor = response.headers.get("X-Ptxt-Cursor") || button.dataset.cursor || "";
     button.dataset.cursorId = response.headers.get("X-Ptxt-Cursor-Id") || button.dataset.cursorId || "";
     const hasMore = response.headers.get("X-Ptxt-Has-More") === "1";
+    const cursorAdvanced =
+      button.dataset.cursor !== previousCursor || button.dataset.cursorId !== previousCursorID;
     if (appended === 0 && hasMore) {
-      button.textContent = "No new replies to show";
-      button.disabled = true;
+      button.textContent = cursorAdvanced
+        ? (button.dataset.loadLabel || "Load more replies")
+        : "No new replies to show";
+      // A non-advancing cursor would otherwise let one click repeatedly issue
+      // the same store query. Stop locally; the server shield remains authoritative.
+      button.disabled = !cursorAdvanced;
       return;
     }
     if (!hasMore || !html.trim()) {
@@ -107,7 +129,9 @@ async function loadMoreReplies(button) {
     button.textContent = button.dataset.loadLabel || "Load more replies";
     button.disabled = false;
   } catch (error) {
-    button.textContent = error.message || "Load failed";
+    button.textContent = error?.status === 429
+      ? "Too many requests. Try again shortly."
+      : "Could not load replies. Try again.";
     button.disabled = false;
   } finally {
     pageSkeleton?.remove();
@@ -120,6 +144,15 @@ function parseFocusedHashID() {
   const raw = window.location.hash.replace(/^#/, "");
   if (!raw.startsWith("note-")) return "";
   return raw.slice(5);
+}
+
+function parseSelectedQueryID() {
+  try {
+    const id = new URL(window.location.href).searchParams.get("selected") || "";
+    return /^[0-9a-f]{64}$/i.test(id) ? id.toLowerCase() : "";
+  } catch {
+    return "";
+  }
 }
 
 function cloneThreadHistoryState() {
@@ -141,9 +174,28 @@ function syncThreadViewIntoBrowserHistory(showTree) {
 
 function threadHrefForNote(noteID) {
   const cur = new URL(window.location.href);
-  const next = new URL(`/thread/${noteID}`, cur.origin);
+  const id = String(noteID || "").trim().toLowerCase();
+  const root = threadDOMRootID() || id;
+  const next = new URL(`/thread/${root}`, cur.origin);
   next.search = cur.search;
+  next.searchParams.delete("selected");
+  next.searchParams.delete("tree_note");
+  next.searchParams.delete("fragment");
+  next.searchParams.delete("cursor");
+  next.searchParams.delete("cursor_id");
+  if (id && root && id !== root) {
+    next.searchParams.set("selected", id);
+    next.hash = `#note-${id}`;
+  }
   return next.toString();
+}
+
+function peekPendingTreeToThreadLinear() {
+  try {
+    return sessionStorage.getItem(THREAD_TREE_TO_LINEAR_KEY) === "1";
+  } catch {
+    return false;
+  }
 }
 
 function consumePendingTreeToThreadLinear() {
@@ -156,8 +208,111 @@ function consumePendingTreeToThreadLinear() {
   }
 }
 
+function threadTreeModeRoot(scope = document) {
+  if (!scope) return null;
+  if (scope instanceof Element && scope.matches("[data-thread-tree-view]")) {
+    return scope;
+  }
+  return scope.querySelector?.("[data-thread-tree-view]") || null;
+}
+
+function threadTreeNeedsFetch(scope = document) {
+  const section = scope.querySelector("#thread-tree-view") ?? threadTreeSection();
+  return Boolean(section && !threadTreeModeRoot(section));
+}
+
+function clearThreadTreeToggleLoadingState(button, showTree = resolveThreadViewMode()) {
+  if (!(button instanceof HTMLButtonElement)) return;
+  if (button.dataset.loading !== "1") return;
+  delete button.dataset.loading;
+  button.disabled = false;
+  button.removeAttribute("aria-busy");
+  button.classList.remove("is-pressed");
+  const mode = showTree ? "tree" : "thread";
+  const other = showTree ? "thread" : "tree";
+  button.textContent = mode;
+  button.dataset.threadViewCurrent = mode;
+  button.setAttribute("aria-label", `Viewing ${mode}. Tap to switch to ${other}.`);
+}
+
+function setThreadTreeToggleLoading(loading, root = document) {
+  root.querySelectorAll("[data-thread-view-toggle]").forEach((button) => {
+    if (!(button instanceof HTMLButtonElement)) return;
+    if (loading) {
+      if (button.dataset.loading === "1") return;
+      button.dataset.loading = "1";
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      button.classList.add("is-pressed");
+      button.innerHTML =
+        'loading<span class="thread-tree-toggle-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>';
+      return;
+    }
+    clearThreadTreeToggleLoadingState(button);
+  });
+}
+
+function syncThreadViewToggle(button, showTree) {
+  if (!(button instanceof HTMLButtonElement)) return;
+  if (button.dataset.loading === "1") return;
+  const mode = showTree ? "tree" : "thread";
+  const other = showTree ? "thread" : "tree";
+  button.textContent = mode;
+  button.dataset.threadViewCurrent = mode;
+  button.setAttribute("aria-label", `Viewing ${mode}. Tap to switch to ${other}.`);
+}
+
+/** Resolve tree vs linear from pending navigation, history, or localStorage pref. */
+export function resolveThreadViewMode() {
+  if (typeof window.__ptxtResolveThreadViewMode === "function") {
+    return window.__ptxtResolveThreadViewMode() === "tree";
+  }
+  if (peekPendingTreeToThreadLinear()) return false;
+  const raw = history.state;
+  const ptxt = raw && typeof raw === "object" && !Array.isArray(raw) ? raw.ptxt : null;
+  if (ptxt && (ptxt.threadView === "tree" || ptxt.threadView === "linear")) {
+    return ptxt.threadView === "tree";
+  }
+  return getThreadRenderModePref() === "tree";
+}
+
+export function applyThreadViewVisibility(showTree, root = document) {
+  document.documentElement.dataset.ptxtThreadView = showTree ? "tree" : "thread";
+  const tree = root.querySelector("#thread-tree-view") ?? threadTreeSection();
+  if (tree) tree.hidden = !showTree;
+  root.querySelectorAll("[data-thread-view-toggle]").forEach((button) => {
+    if (button instanceof HTMLButtonElement && button.dataset.loading === "1") {
+      clearThreadTreeToggleLoadingState(button, showTree);
+    }
+    syncThreadViewToggle(button, showTree);
+  });
+  [
+    root.querySelector("#thread-ancestors"),
+    root.querySelector("#thread-focus"),
+    root.querySelector(".thread-replies"),
+  ].forEach((section) => {
+    if (!section) return;
+    section.hidden = showTree;
+  });
+  syncThreadTreeWideBodyClass();
+}
+
+export function applyThreadViewVisibilityFromPreference(root = document) {
+  applyThreadViewVisibility(resolveThreadViewMode(), root);
+}
+
+export function setThreadParticipantsExpanded(expanded, root = document) {
+  root.querySelectorAll(".right-rail[data-thread-fragment='participants']").forEach((rail) => {
+    const collapsedList = rail.querySelector("[data-thread-collapsed-participants]");
+    const expandedList = rail.querySelector("[data-thread-expanded-participants]");
+    if (!(collapsedList instanceof HTMLElement) || !(expandedList instanceof HTMLElement)) return;
+    collapsedList.hidden = expanded;
+    expandedList.hidden = !expanded;
+  });
+}
+
 /**
- * @returns {"none"|"linear"|"full"} none if not applicable, linear for in-page switch, full when SPA navigation was dispatched.
+ * @returns {"none"|"linear"|"full"} none if not applicable, linear for in-page switch, full when document navigation was dispatched.
  */
 async function navigateFromTreeToThreadNote(noteID, options = {}) {
   if (!noteID || !isThreadTreeMode()) return "none";
@@ -169,29 +324,8 @@ async function navigateFromTreeToThreadNote(noteID, options = {}) {
   const treeTagged = { ...base, ptxt: { ...prevPtxt, threadView: "tree" } };
   history.replaceState(treeTagged, "", here);
 
-  const linearEl = threadLinearTarget(noteID);
-  if (linearEl) {
-    const nextURL = `${u.pathname}${u.search}#note-${noteID}`;
-    history.pushState(
-      { ...treeTagged, ptxt: { ...treeTagged.ptxt, threadView: "linear" } },
-      "",
-      nextURL,
-    );
-    const root = threadDOMRootID();
-    const jumpToRoot = Boolean(root && noteID.toLowerCase() === root);
-    await setThreadTreeMode(false, { persist: true, preserveFocus: false });
-    requestAnimationFrame(() => {
-      const main = document.querySelector("[data-nav-root]");
-      if (jumpToRoot) {
-        scrollRouteToTop(main);
-        focusThreadNoteByID(noteID, { preferTree: false, scroll: false, updateHash: false });
-        return;
-      }
-      focusThreadNoteByID(noteID, { preferTree: false, scroll: true, updateHash: false });
-    });
-    return "linear";
-  }
-
+  // Existing linear rows are only reply-list copies; selecting from tree must
+  // rebuild the canonical focused-note panel rather than just highlighting the row.
   try {
     sessionStorage.setItem(THREAD_TREE_TO_LINEAR_KEY, "1");
   } catch {
@@ -204,11 +338,13 @@ async function navigateFromTreeToThreadNote(noteID, options = {}) {
       /* ignore */
     }
   }
-  window.dispatchEvent(new CustomEvent("ptxt:navigate", { detail: { href: threadHrefForNote(noteID) } }));
+  window.location.assign(withRelays(threadHrefForNote(noteID)));
   return "full";
 }
 
 function currentFocusedThreadID() {
+  const selectedID = parseSelectedQueryID();
+  if (selectedID) return selectedID;
   const focused = document.querySelector(
     ".note.is-focused, .comment.is-focused, [data-thread-tree-note].is-focused",
   );
@@ -231,15 +367,17 @@ function threadTreeSection() {
 
 /** Lowercase hex OP id from the loaded tree fragment, or "" if not yet available. */
 function threadDOMRootID(scope = document) {
+  const section = scope.querySelector?.("#thread-tree-view") ?? scope;
   const raw =
-    scope
-      .querySelector("#thread-tree-view [data-thread-tree-view][data-thread-tree-root-id]")
-      ?.getAttribute("data-thread-tree-root-id") || "";
+    threadTreeModeRoot(section)?.getAttribute("data-thread-tree-root-id") ||
+    scope.querySelector?.(".feed-column[data-thread-root-id]")?.getAttribute("data-thread-root-id") ||
+    scope.querySelector?.("[data-thread-root-id]")?.getAttribute("data-thread-root-id") ||
+    "";
   return raw.toLowerCase();
 }
 
 /**
- * After SPA navigation to /thread/{id}, scroll to top when moving from a deeper
+ * After navigation to /thread/{id}, scroll to top when moving from a deeper
  * anchor note to the thread OP URL so the header and root are visible.
  */
 export function maybeScrollThreadPageToRootForNavigation(urlLike, prevPathNoteIdLower, mainEl) {
@@ -254,15 +392,6 @@ export function maybeScrollThreadPageToRootForNavigation(urlLike, prevPathNoteId
     scrollRouteToTop(mainEl);
     requestAnimationFrame(() => scrollRouteToTop(mainEl));
   });
-}
-
-function currentThreadFragmentURL(fragment, focusID = "") {
-  const current = new URL(window.location.href);
-  const params = new URLSearchParams({ fragment });
-  if (focusID) params.set("tree_note", focusID);
-  // Relays travel as X-Ptxt-Relays via fetchWithSession; no need in the URL.
-  addAsciiWidthHint(params, current.pathname);
-  return `${current.pathname}?${params.toString()}`;
 }
 
 function isThreadTreeMode() {
@@ -357,30 +486,64 @@ function focusThreadNoteByID(id, options = {}) {
   }
 }
 
-async function ensureTreeFragmentForFocus(focusID) {
+export async function ensureTreeFragmentForFocus(focusID) {
   const section = threadTreeSection();
-  if (!section) return;
+  if (!section) return false;
   // Full thread tree is always rooted at the OP; do not refetch to re-root on a different note.
-  if (section.querySelector("[data-thread-tree-view]")) {
-    return;
+  if (threadTreeModeRoot(section)) {
+    return true;
+  }
+  const {
+    isRelayNativeThread,
+    rerenderRelayNativeThread,
+    hydrateThreadRoute,
+  } = await import("./client-render.js");
+  if (isRelayNativeThread()) {
+    await rerenderRelayNativeThread();
+    return Boolean(threadTreeModeRoot(threadTreeSection()));
   }
   section.setAttribute("aria-busy", "true");
   section.innerHTML = threadTreeSkeletonMarkup();
   refreshAscii(section);
   try {
-    const response = await fetchWithSession(currentThreadFragmentURL("tree", focusID || ""));
-    if (!response.ok) throw new Error(`Tree request failed: ${response.status}`);
-    section.innerHTML = await response.text();
-    applyTreeMediaMode();
+    const url = new URL(window.location.href);
+    url.searchParams.set("fragment", "tree");
+    url.searchParams.delete("cursor");
+    url.searchParams.delete("cursor_id");
+    if (focusID) url.searchParams.set("tree_note", focusID);
+    const res = await fetch(withRelays(`${url.pathname}${url.search}${url.hash}`), {
+      headers: { Accept: "text/html" },
+      credentials: "same-origin",
+    });
+    if (!res.ok) throw new Error("Tree view fragment failed");
+    section.innerHTML = await res.text();
+    if (!threadTreeModeRoot(section)) {
+      throw new Error("Tree view fragment was empty");
+    }
     refreshAscii(section);
-    void refreshVisibleNoteProfiles(section);
+    try {
+      applyTreeMediaMode();
+    } catch {
+      // Media decoration is progressive; a valid tree fragment should still be usable.
+    }
+    return true;
   } catch {
-    section.textContent = "";
-    const err = document.createElement("p");
-    err.className = "muted thread-tree-load-error";
-    err.setAttribute("role", "alert");
-    err.textContent = "Could not load tree view.";
-    section.append(err);
+    try {
+      await hydrateThreadRoute(document, { forceRefresh: true });
+      if (!isRelayNativeThread()) {
+        throw new Error("Tree view requires client hydration");
+      }
+      await rerenderRelayNativeThread();
+      return Boolean(threadTreeModeRoot(threadTreeSection()));
+    } catch {
+      section.textContent = "";
+      const err = document.createElement("p");
+      err.className = "muted thread-tree-load-error";
+      err.setAttribute("role", "alert");
+      err.textContent = "Could not load tree view.";
+      section.append(err);
+      return false;
+    }
   } finally {
     section.removeAttribute("aria-busy");
   }
@@ -388,26 +551,32 @@ async function ensureTreeFragmentForFocus(focusID) {
 
 async function setThreadTreeMode(showTree, { persist = true, preserveFocus = true } = {}) {
   const focusID = preserveFocus ? currentFocusedThreadID() : "";
-  if (showTree) {
-    await ensureTreeFragmentForFocus(focusID);
+  const treeLoading = showTree && threadTreeNeedsFetch();
+  if (treeLoading) {
+    setThreadTreeToggleLoading(true);
   }
-  const tree = threadTreeSection();
-  if (tree) tree.hidden = !showTree;
-  if (showTree && tree) {
+  try {
+    if (showTree) {
+      const treeReady = await ensureTreeFragmentForFocus(focusID);
+      if (!treeReady) {
+        showTree = false;
+        persist = false;
+      }
+    }
+  } finally {
+    if (treeLoading) {
+      setThreadTreeToggleLoading(false);
+    }
+  }
+  applyThreadViewVisibility(showTree);
+  if (showTree && threadTreeSection()) {
     requestAnimationFrame(() => {
+      const tree = threadTreeSection();
+      if (!tree) return;
       initViewMore(tree);
       refreshThreadTreeQuotes(tree);
     });
   }
-  document.querySelectorAll("[data-thread-tree-toggle]").forEach((button) => {
-    button.textContent = showTree
-      ? button.dataset.expandedLabel || "thread view"
-      : button.dataset.collapsedLabel || "tree view";
-  });
-  threadLinearSections().forEach((section) => {
-    if (!section) return;
-    section.hidden = showTree;
-  });
   if (persist) {
     setThreadRenderModePref(showTree ? "tree" : "thread");
   }
@@ -423,7 +592,6 @@ async function setThreadTreeMode(showTree, { persist = true, preserveFocus = tru
   queueMicrotask(() => {
     syncMobileAppNavHeight();
   });
-  syncThreadTreeWideBodyClass();
   if (persist) {
     syncThreadViewIntoBrowserHistory(showTree);
   }
@@ -443,7 +611,7 @@ function applyThreadViewFromHistoryStateOrPreference() {
     return setThreadTreeMode(ptxt.threadView === "tree", { persist: true, preserveFocus: true });
   }
   return applyThreadRenderModePreference({
-    preserveFocus: getThreadRenderModePref() === "tree" || Boolean(parseFocusedHashID()),
+    preserveFocus: getThreadRenderModePref() === "tree" || Boolean(parseSelectedQueryID() || parseFocusedHashID()),
   });
 }
 
@@ -471,43 +639,37 @@ function treeMediaItems(item) {
   return items;
 }
 
-function treeMediaPreview(item) {
-  const figure = document.createElement("figure");
-  if (item.type === "video") {
-    figure.className = "note-media-preview note-video-preview";
-    const video = document.createElement("video");
-    video.src = item.url;
-    video.controls = true;
-    video.preload = "metadata";
-    prepareInlineVideo(video);
-    figure.append(video);
-    return figure;
-  }
-  figure.className = "note-media-preview note-image-preview";
-  const img = document.createElement("img");
-  img.src = item.url;
-  img.alt = "";
-  img.loading = "lazy";
-  img.decoding = "async";
-  figure.append(img);
-  return figure;
+function treeMediaGrid(item, items) {
+  return createMediaGrid(items, {
+    wrapperTag: "div",
+    gridTag: "div",
+    wrapperClass: "thread-tree-media-grid-wrap",
+    stopPropagation: true,
+    onOpen: (index) => openImageViewer(items, index, item),
+  });
 }
 
-function renderTreeMediaMount(item, items, expanded) {
+function renderTreeMediaMount(item, items, enabled) {
   const mount = item.querySelector("[data-thread-tree-media-mount]");
   if (!mount) return;
-  const shouldShow = expanded && items.length > 0;
-  // Avoid teardown/rebuild when nothing changed; checking children + hidden
-  // is enough since items are stable for a given row.
-  if (mount.hidden === !shouldShow && mount.children.length === items.length && !shouldShow) {
-    return;
+  const shouldShow = enabled && items.length > 0;
+  const existing = mount.querySelector(":scope > .note-media-grid-wrap");
+  if (
+    shouldShow &&
+    existing instanceof HTMLElement &&
+    existing.dataset.mediaGridSignature === mediaGridSignature(items)
+  ) {
+    mount.hidden = false;
+    const hydrated = hydrateMediaGrid(existing, items, {
+      stopPropagation: true,
+      onOpen: (index) => openImageViewer(items, index, item),
+    });
+    if (hydrated) return;
   }
   mount.textContent = "";
   mount.hidden = !shouldShow;
   if (!shouldShow) return;
-  items.forEach((entry) => {
-    mount.append(treeMediaPreview(entry));
-  });
+  mount.append(treeMediaGrid(item, items));
 }
 
 function applyTreeMediaItem(item, enabled) {
@@ -549,10 +711,9 @@ function applyTreeMediaItem(item, enabled) {
   const mediaButton = item.querySelector("[data-thread-tree-media-toggle]");
   const items = treeMediaItems(item);
   if (!mediaWrap || !mediaButton || items.length === 0) return;
-  mediaWrap.hidden = !enabled;
-  const expanded = enabled && mediaButton.getAttribute("aria-expanded") === "true";
-  mediaButton.setAttribute("aria-expanded", expanded ? "true" : "false");
-  renderTreeMediaMount(item, items, expanded);
+  mediaWrap.hidden = true;
+  mediaButton.setAttribute("aria-expanded", enabled ? "true" : "false");
+  renderTreeMediaMount(item, items, enabled);
 }
 
 function applyTreeMediaMode() {
@@ -618,8 +779,8 @@ function syncThreadTreeTailStubRails(section) {
 function syncThreadTreeConnectorGeometry() {
   const section = threadTreeSection();
   if (!section || section.hidden) return;
-  const mode = section.querySelector("[data-thread-tree-view].thread-tree-mode");
-  if (!mode) return;
+  const mode = threadTreeModeRoot(section);
+  if (!mode || !mode.classList.contains("thread-tree-mode")) return;
   /* HN-style flat tree has no gutter spines; connector math is unused. */
   if (!mode.querySelector(".thread-tree-gutter")) return;
 
@@ -689,7 +850,7 @@ async function handleThreadReplyComposeClick(link, container) {
     await doubleRaf();
   }
 
-  const anchor = document.getElementById(`note-${targetID}`);
+  const anchor = visibleThreadNoteElement(targetID, container);
   if (!anchor) return;
 
   await openThreadInlineComposer(document, {
@@ -699,6 +860,23 @@ async function handleThreadReplyComposeClick(link, container) {
     pubkey,
     replyingToLabel,
   });
+}
+
+function visibleThreadNoteElement(targetID, preferred = null) {
+  if (preferred instanceof HTMLElement && !preferred.hidden && !preferred.closest("[hidden]")) {
+    const rect = preferred.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) return preferred;
+  }
+  if (!targetID) return null;
+  const candidates = [...document.querySelectorAll(`#note-${CSS.escape(targetID)}`)];
+  for (const node of candidates) {
+    if (!(node instanceof HTMLElement)) continue;
+    if (node.hidden || node.closest("[hidden]")) continue;
+    const rect = node.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) return node;
+  }
+  const fallback = document.getElementById(`note-${targetID}`);
+  return fallback instanceof HTMLElement ? fallback : null;
 }
 
 function consumePendingThreadInlineReply() {
@@ -735,7 +913,7 @@ function consumePendingThreadInlineReply() {
     /* ignore */
   }
   void doubleRaf().then(() => {
-    const anchor = document.getElementById(`note-${p.targetID}`);
+    const anchor = visibleThreadNoteElement(p.targetID);
     if (anchor) {
       void openThreadInlineComposer(document, {
         anchorEl: anchor,
@@ -768,7 +946,9 @@ function attachListeners() {
         "a[data-reply-action], a[href^='/thread/'], button[data-reply-action]",
       );
       if (!link) return;
-      const container = link.closest("[data-reply-target-id]");
+      const container =
+        link.closest(".comment, article.note, [data-thread-tree-note]") ||
+        link.closest("[data-reply-target-id]");
       if (!container) return;
       if (link.hasAttribute("data-repost-action")) return;
       const text = (link.textContent || "").trim().toLowerCase();
@@ -801,10 +981,18 @@ function attachListeners() {
     }
   }, true);
   document.addEventListener("click", (event) => {
-    const treeToggle = closestFromEventTarget(event.target, "[data-thread-tree-toggle]");
-    if (treeToggle) {
+    const toggle = closestFromEventTarget(event.target, "[data-thread-view-toggle]");
+    if (toggle instanceof HTMLButtonElement) {
+      if (toggle.dataset.loading === "1") return;
       event.preventDefault();
-      void setThreadTreeMode(!isThreadTreeMode());
+      const currentMode = (toggle.dataset.threadViewCurrent || toggle.textContent || "thread")
+        .trim()
+        .toLowerCase();
+      const nextTree = currentMode === "thread";
+      if (nextTree && threadTreeNeedsFetch()) {
+        setThreadTreeToggleLoading(true);
+      }
+      void setThreadTreeMode(nextTree);
       return;
     }
 
@@ -812,6 +1000,7 @@ function attachListeners() {
     if (hiddenToggle) {
       const hiddenItems = [...document.querySelectorAll("[data-focused-hidden]")];
       if (!hiddenItems.length) return;
+      event.preventDefault();
       const expand = hiddenItems.some((item) => item.hidden);
       hiddenItems.forEach((item) => {
         item.hidden = !expand;
@@ -819,6 +1008,71 @@ function attachListeners() {
       hiddenToggle.textContent = expand
         ? hiddenToggle.dataset.expandedLabel || "hide messages above"
         : hiddenToggle.dataset.collapsedLabel || "show messages above";
+      if (expand) {
+        hiddenItems.forEach((item) => {
+          initViewMore(item);
+          refreshAscii(item);
+          void refreshVisibleNoteProfiles(item);
+        });
+      }
+      return;
+    }
+
+    const filteredToggle = closestFromEventTarget(event.target, "[data-thread-filtered-replies-toggle]");
+    if (filteredToggle) {
+      const filteredBlock = document.querySelector("[data-thread-filtered-replies]");
+      if (!filteredBlock) return;
+      event.preventDefault();
+      const expand = filteredBlock.hidden;
+      filteredBlock.hidden = !expand;
+      filteredToggle.dataset.expanded = expand ? "1" : "0";
+      filteredToggle.textContent = expand
+        ? filteredToggle.dataset.expandedLabel || "hide"
+        : filteredToggle.dataset.collapsedLabel || "show more";
+      if (expand) {
+        initViewMore(filteredBlock);
+        refreshAscii(filteredBlock);
+        void refreshVisibleNoteProfiles(filteredBlock);
+      }
+      setThreadParticipantsExpanded(expand);
+      scheduleThreadTreeConnectorGeometry();
+      return;
+    }
+
+    const treeFilteredToggle = closestFromEventTarget(
+      event.target,
+      "[data-thread-tree-filtered-replies-toggle]",
+    );
+    if (treeFilteredToggle) {
+      const treeMode = treeFilteredToggle.closest("[data-thread-tree-view]");
+      const filteredTree = treeMode?.querySelector("[data-thread-tree-filtered-replies]");
+      if (!filteredTree) return;
+      event.preventDefault();
+      const expand = filteredTree.hidden;
+      const previousTree = filteredTree.previousElementSibling;
+      const continuesVisibleTree = Boolean(
+        previousTree?.classList.contains("hn-comment-tree") &&
+        !previousTree.classList.contains("thread-tree-filtered-replies"),
+      );
+      filteredTree.hidden = !expand;
+      filteredTree.classList.toggle("continues-thread-tree", expand && continuesVisibleTree);
+      previousTree?.classList.toggle(
+        "has-expanded-filtered-replies",
+        expand && continuesVisibleTree,
+      );
+      treeFilteredToggle.dataset.expanded = expand ? "1" : "0";
+      treeFilteredToggle.setAttribute("aria-expanded", expand ? "true" : "false");
+      treeFilteredToggle.textContent = expand
+        ? treeFilteredToggle.dataset.expandedLabel || "hide"
+        : treeFilteredToggle.dataset.collapsedLabel || "show more";
+      setThreadParticipantsExpanded(expand);
+      if (expand) {
+        initViewMore(filteredTree);
+        refreshAscii(filteredTree);
+        refreshThreadTreeQuotes(filteredTree);
+        void refreshVisibleNoteProfiles(filteredTree);
+      }
+      scheduleThreadTreeConnectorGeometry();
       return;
     }
 
@@ -837,7 +1091,9 @@ function attachListeners() {
         const section = hiddenItems[0];
         initViewMore(section);
         refreshAscii(section);
+        void refreshVisibleNoteProfiles(section);
       }
+      scheduleThreadTreeConnectorGeometry();
       return;
     }
 
@@ -888,9 +1144,15 @@ function focusComment(comment) {
 }
 
 function focusFromHash() {
-  const id = parseFocusedHashID();
+  const selectedID = parseSelectedQueryID();
+  const hashID = parseFocusedHashID();
+  const id = selectedID || hashID;
   if (!id) return;
-  focusThreadNoteByID(id, { preferTree: isThreadTreeMode(), scroll: true, updateHash: false });
+  focusThreadNoteByID(id, {
+    preferTree: isThreadTreeMode(),
+    scroll: true,
+    updateHash: Boolean(selectedID && selectedID !== hashID),
+  });
 }
 
 export function teardownThreadTreeConnector() {
@@ -939,6 +1201,7 @@ function refreshThreadViewerReactionStateDeferred(root = document) {
 }
 
 export function initThreadPage() {
+  applyThreadViewVisibilityFromPreference();
   attachListeners();
   applyTreeMediaMode();
   void applyThreadViewFromHistoryStateOrPreference().then(() => {
@@ -948,8 +1211,10 @@ export function initThreadPage() {
   });
   bindThreadTreeConnectorObserver();
   scheduleThreadTreeConnectorGeometry();
-  void refreshVisibleNoteProfiles(document);
-  refreshThreadViewerReactionStateDeferred();
+  if (!document.body?.dataset?.guestV2) {
+    void refreshVisibleNoteProfiles(document);
+    refreshThreadViewerReactionStateDeferred();
+  }
   if (!hashListenerBound) {
     hashListenerBound = true;
     window.addEventListener("hashchange", focusFromHash);

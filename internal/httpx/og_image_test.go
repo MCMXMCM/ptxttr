@@ -2,12 +2,15 @@ package httpx
 
 import (
 	"bytes"
+	"image"
 	"image/png"
 	"strings"
 	"testing"
 	"time"
 
 	"ptxt-nstr/internal/nostrx"
+
+	"golang.org/x/image/font/inconsolata"
 )
 
 func TestResolveOGEventIDFromHex(t *testing.T) {
@@ -108,7 +111,11 @@ func TestDrawOGCardProducesPNG(t *testing.T) {
 		Content:   "Hello world from a test Nostr note. This should render onto an OG card.",
 	}
 	profile := nostrx.Profile{PubKey: testHexPubkey, Display: "Alice"}
-	img, err := drawOGCard(event, profile)
+	img, err := drawOGCard(ogCardData{
+		Event:    event,
+		Profile:  profile,
+		Profiles: map[string]nostrx.Profile{testHexPubkey: profile},
+	})
 	if err != nil {
 		t.Fatalf("drawOGCard err: %v", err)
 	}
@@ -135,7 +142,234 @@ func TestDrawOGCardHandlesEmptyContent(t *testing.T) {
 		CreatedAt: time.Now().Unix(),
 		Content:   "",
 	}
-	if _, err := drawOGCard(event, nostrx.Profile{}); err != nil {
+	if _, err := drawOGCard(ogCardData{Event: event, Profile: nostrx.Profile{}, Profiles: map[string]nostrx.Profile{}}); err != nil {
 		t.Fatalf("drawOGCard with empty content err: %v", err)
+	}
+}
+
+func TestOGBodyTextForRepostUsesReferencedNote(t *testing.T) {
+	refID := strings.Repeat("1", 64)
+	refPubKey := strings.Repeat("2", 64)
+	repost := nostrx.Event{
+		ID:      testHexEventID,
+		PubKey:  testHexPubkey,
+		Kind:    nostrx.KindRepost,
+		Content: `{"id":"` + refID + `","pubkey":"` + refPubKey + `","kind":1,"content":"embedded content should not be rendered raw"}`,
+		Tags:    [][]string{{"e", refID}},
+	}
+	ref := nostrx.Event{
+		ID:      refID,
+		PubKey:  refPubKey,
+		Kind:    nostrx.KindTextNote,
+		Content: "referenced repost body",
+	}
+	body := ogBodyText(ogCardData{
+		Event:     repost,
+		Profiles:  map[string]nostrx.Profile{refPubKey: {PubKey: refPubKey, Display: "Bob"}},
+		Reference: &ref,
+	})
+	if !strings.Contains(body, "Bob") {
+		t.Fatalf("body = %q, want repost lead", body)
+	}
+	if !strings.Contains(body, "referenced repost body") {
+		t.Fatalf("body = %q, want referenced content", body)
+	}
+	if strings.Contains(body, `"kind":1`) {
+		t.Fatalf("body leaked raw embedded repost json: %q", body)
+	}
+}
+
+func TestOGBodyTextForReplyIncludesParentSnippet(t *testing.T) {
+	parentID := strings.Repeat("3", 64)
+	parentPubKey := strings.Repeat("4", 64)
+	reply := nostrx.Event{
+		ID:      testHexEventID,
+		PubKey:  testHexPubkey,
+		Kind:    nostrx.KindTextNote,
+		Content: "child reply body",
+		Tags: [][]string{
+			{"e", parentID, "", "root"},
+			{"e", parentID, "", "reply"},
+			{"p", parentPubKey},
+		},
+	}
+	parent := nostrx.Event{
+		ID:      parentID,
+		PubKey:  parentPubKey,
+		Kind:    nostrx.KindTextNote,
+		Content: "parent note body",
+	}
+	body := ogBodyText(ogCardData{
+		Event:    reply,
+		Profiles: map[string]nostrx.Profile{parentPubKey: {PubKey: parentPubKey, Display: "Carol"}},
+		Parent:   &parent,
+	})
+	if !strings.Contains(body, "Replying to @Carol") {
+		t.Fatalf("body = %q, want reply lead", body)
+	}
+	if !strings.Contains(body, "parent note body") || !strings.Contains(body, "child reply body") {
+		t.Fatalf("body = %q, want parent + child content", body)
+	}
+}
+
+func TestOGBodyTextForQuoteStripsRawNeventFromMainText(t *testing.T) {
+	refID := strings.Repeat("5", 64)
+	refPubKey := strings.Repeat("6", 64)
+	quoteCode := nostrx.EncodeNEvent(refID, refPubKey)
+	quote := nostrx.Event{
+		ID:      testHexEventID,
+		PubKey:  testHexPubkey,
+		Kind:    nostrx.KindTextNote,
+		Content: "got this one wrong stay humble and stack sats nostr:" + quoteCode,
+		Tags:    [][]string{{"q", refID}},
+	}
+	ref := nostrx.Event{
+		ID:      refID,
+		PubKey:  refPubKey,
+		Kind:    nostrx.KindTextNote,
+		Content: "quoted note body",
+	}
+	body := ogBodyText(ogCardData{
+		Event:     quote,
+		Profiles:  map[string]nostrx.Profile{refPubKey: {PubKey: refPubKey, Display: "Odell"}},
+		Reference: &ref,
+	})
+	if strings.Contains(body, quoteCode) {
+		t.Fatalf("body leaked raw nevent: %q", body)
+	}
+	if !strings.Contains(body, "got this one wrong stay humble and stack sats") {
+		t.Fatalf("body = %q, want main text", body)
+	}
+	if !strings.Contains(body, "Odell") || !strings.Contains(body, "quoted note body") {
+		t.Fatalf("body = %q, want quoted section", body)
+	}
+}
+
+func TestBuildOGThreadLinesKeepsNestedRightBorder(t *testing.T) {
+	refPubKey := strings.Repeat("6", 64)
+	lines := buildOGThreadLines(ogCardData{
+		Event: nostrx.Event{
+			ID:        testHexEventID,
+			PubKey:    testHexPubkey,
+			Kind:      nostrx.KindTextNote,
+			CreatedAt: time.Now().Add(-3 * time.Hour).Unix(),
+			Content:   "got this one wrong stay humble and stack sats",
+			Tags:      [][]string{{"q", strings.Repeat("5", 64)}},
+		},
+		Profiles: map[string]nostrx.Profile{
+			testHexPubkey: {PubKey: testHexPubkey, Display: "Odell"},
+			refPubKey:     {PubKey: refPubKey, Display: "Odell"},
+		},
+		Reference: &nostrx.Event{
+			ID:      strings.Repeat("5", 64),
+			PubKey:  refPubKey,
+			Kind:    nostrx.KindTextNote,
+			Content: "quoted note body",
+		},
+	}, inconsolata.Bold8x16, inconsolata.Regular8x16, ogImageMaxCols)
+	found := false
+	for _, line := range lines {
+		if strings.Contains(line.Text, "|  +-- Odell --") {
+			found = true
+			if !strings.HasSuffix(line.Text, "|") {
+				t.Fatalf("nested quote line lost outer right border: %q", line.Text)
+			}
+			if !strings.Contains(line.Text, "+") {
+				t.Fatalf("nested quote line missing inner box corner: %q", line.Text)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected quoted note header line in %v", lines)
+	}
+	if len(lines) >= ogImageMaxRows+1 {
+		t.Fatalf("expected compact layout, got %d lines", len(lines))
+	}
+}
+
+func TestBuildOGThreadLinesFormatsReplyAsFocusedThread(t *testing.T) {
+	parentID := strings.Repeat("3", 64)
+	parentPubKey := strings.Repeat("4", 64)
+	reply := nostrx.Event{
+		ID:        testHexEventID,
+		PubKey:    testHexPubkey,
+		Kind:      nostrx.KindTextNote,
+		CreatedAt: time.Now().Add(-12 * time.Hour).Unix(),
+		Content:   "John Wick but it's bees.",
+		Tags: [][]string{
+			{"e", parentID, "", "root"},
+			{"e", parentID, "", "reply"},
+			{"p", parentPubKey},
+		},
+	}
+	parent := nostrx.Event{
+		ID:        parentID,
+		PubKey:    parentPubKey,
+		Kind:      nostrx.KindTextNote,
+		CreatedAt: time.Now().Add(-21 * time.Hour).Unix(),
+		Content:   "What's it about",
+	}
+	lines := buildOGThreadLines(ogCardData{
+		Event: reply,
+		Profiles: map[string]nostrx.Profile{
+			testHexPubkey: {PubKey: testHexPubkey, Display: "Jay"},
+			parentPubKey:  {PubKey: parentPubKey, Display: "MAHDOOD"},
+		},
+		Parent: &parent,
+	}, inconsolata.Bold8x16, inconsolata.Regular8x16, ogImageMaxCols)
+
+	var parentHeader, parentBody, replyHeader, replyBody int = -1, -1, -1, -1
+	for i, line := range lines {
+		switch {
+		case strings.Contains(line.Text, "MAHDOOD --"):
+			parentHeader = i
+		case strings.Contains(line.Text, "What's it about"):
+			parentBody = i
+		case strings.Contains(line.Text, "Jay --"):
+			replyHeader = i
+		case strings.Contains(line.Text, "John Wick but it's bees."):
+			replyBody = i
+		}
+		if strings.Contains(line.Text, "Replying to") {
+			t.Fatalf("reply preview used repost-style nested context: %q", line.Text)
+		}
+	}
+	if !(parentHeader >= 0 && parentHeader < parentBody && parentBody < replyHeader && replyHeader < replyBody) {
+		t.Fatalf("reply thread order = parent header %d, parent body %d, reply header %d, reply body %d; lines=%v", parentHeader, parentBody, replyHeader, replyBody, lines)
+	}
+	if !strings.Contains(lines[replyHeader].Text, "+") {
+		t.Fatalf("focused reply header missing right-edge corner: %q", lines[replyHeader].Text)
+	}
+	if len(lines) > ogImageMaxRows {
+		t.Fatalf("reply layout exceeds row budget: got %d lines", len(lines))
+	}
+}
+
+func TestOGHeaderLayoutCentersAvatarAndAddsTopInset(t *testing.T) {
+	rect := image.Rect(24, 10, 24+360, 10+196)
+	face := inconsolata.Regular8x16
+
+	noAvatarBaseline := ogHeaderBaselineY(rect, face, false)
+	withAvatarBaseline := ogHeaderBaselineY(rect, face, true)
+	if withAvatarBaseline <= noAvatarBaseline {
+		t.Fatalf("avatar baseline = %d, want > no-avatar baseline %d", withAvatarBaseline, noAvatarBaseline)
+	}
+
+	headerCenter := ogHeaderCenterY(rect, face, true)
+	avatarTop := headerCenter - (ogImageAvatarSize / 2)
+	avatarCenter := avatarTop + (ogImageAvatarSize / 2)
+	if avatarCenter != headerCenter {
+		t.Fatalf("avatar center = %d, want header center %d", avatarCenter, headerCenter)
+	}
+
+	headerTop := withAvatarBaseline - faceAscent(face)
+	headerBottom := withAvatarBaseline + faceDescent(face)
+	headerMid := headerTop + ((headerBottom - headerTop) / 2)
+	if headerMid != headerCenter {
+		t.Fatalf("header mid = %d, want header center %d", headerMid, headerCenter)
+	}
+
+	if avatarTop <= rect.Min.Y {
+		t.Fatalf("avatar top = %d, want padding above rect min %d", avatarTop, rect.Min.Y)
 	}
 }

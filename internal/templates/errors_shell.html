@@ -1,7 +1,6 @@
 {{define "error_shell"}}
 {{template "document_start" .}}
-<div class="{{if .AppShellClass}}{{.AppShellClass}}{{else}}app-shell{{end}}">
-  {{template "left_rail" .}}
+<div{{if .AppShellClass}} class="{{.AppShellClass}}"{{end}}>
   <section class="{{if .MainSectionClass}}{{.MainSectionClass}}{{else}}feed-column route-error-column{{end}}">
     {{if .ShowReadsBack}}
     <section class="page-heading">
@@ -12,7 +11,7 @@
   </section>
   {{if .ThreadRail}}{{template "thread_right_rail" .}}{{else}}{{template "right_rail_static" .}}{{end}}
 </div>
-<script type="module" src="/static/js/layout.js"></script>
-{{if .ExtraScript}}<script type="module" src="{{.ExtraScript}}"></script>{{end}}
+<script type="module" src="{{assetPath .AssetBasePath "/static/js/layout.js"}}"></script>
+{{if .ExtraScript}}<script type="module" src="{{assetPath .AssetBasePath .ExtraScript}}"></script>{{end}}
 {{template "document_end" .}}
 {{end}}

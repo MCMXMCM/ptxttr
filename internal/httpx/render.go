@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"hash/fnv"
+	"html/template"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -42,17 +43,37 @@ const (
 	// At desktop width (120) this allows ~14 KiB of wrapped text per note,
 	// which already exceeds anything we'd reasonably display in a feed cell.
 	maxWrapOutputLines = 512
+	// collapsedFeedNoteLines must match collapsedNoteLines in
+	// web/static/js/ascii.js so the server first paint and hydrated card use
+	// the same default preview.
+	collapsedFeedNoteLines = 3
 )
 
 type BasePageData struct {
-	Title       string
-	Active      string
-	PageClass   string
-	AsciiWidth  int
-	SearchQuery string
-	OG          OpenGraphMeta
+	Title              string
+	Active             string
+	PageClass          string
+	AsciiWidth         int
+	SearchQuery        string
+	SearchMode         string
+	SearchModeNotesURL string
+	SearchModeUsersURL string
+	AssetVersion       string
+	AssetBasePath      string
+	OG                 OpenGraphMeta
 	// HideTrendingRail strips the static right-rail trending placeholder (About, etc.).
 	HideTrendingRail bool
+	ViewerPubKey     string
+	GuestGeneration  int64
+	GuestSliceV2     bool
+	DesktopMode      bool
+}
+
+type AppShellPageData struct {
+	BasePageData
+	RouteContextJSON template.JS
+	AppBootstrapJSON template.JS
+	InitialRouteHTML template.HTML
 }
 
 // OpenGraphMeta carries the Open Graph + Twitter Card fields rendered into
@@ -139,11 +160,14 @@ type BookmarksPageData struct {
 }
 
 type NotificationEntry struct {
-	Type      string
-	Event     nostrx.Event
-	Rollup    store.ReactionRollupRow
-	CreatedAt int64
-	CursorID  string
+	Type           string
+	Category       string
+	Event          nostrx.Event
+	Rollup         store.ReactionRollupRow
+	CreatedAt      int64
+	CursorID       string
+	NotificationID string
+	TargetEventID  string
 }
 
 // NotificationsPageData is the paginated #p mentions list (kinds 1 and 6).
@@ -167,6 +191,34 @@ type NotificationsPageData struct {
 	LoggedOutWOTSeedDisplayName string
 }
 
+type SearchProfileResult struct {
+	PubKey  string
+	Profile nostrx.Profile
+}
+
+type SearchPageData struct {
+	BasePageData
+	Query            string
+	Mode             string
+	Scope            string
+	ScopeLabel       string
+	ScopeAllURL      string
+	ScopeNetworkURL  string
+	ShowScopeToggle  bool
+	Feed             []nostrx.Event
+	ReferencedEvents map[string]nostrx.Event
+	ReplyCounts      map[string]int
+	ReactionTotals   map[string]int
+	ReactionViewers  map[string]string
+	Profiles         map[string]nostrx.Profile
+	ProfileResults   []SearchProfileResult
+	Cursor           int64
+	CursorID         string
+	HasMore          bool
+	OldestCachedAt   int64
+	LatestCachedAt   int64
+}
+
 type LoginPageData struct {
 	BasePageData
 }
@@ -180,6 +232,7 @@ type RelaysPageData struct {
 
 type FollowListView struct {
 	Items         []string
+	Hashtags      []string
 	Query         string
 	Page          int
 	PageSize      int
@@ -194,27 +247,37 @@ type FollowListView struct {
 
 type UserPageData struct {
 	BasePageData
-	Profile          nostrx.Profile
-	FollowingList    FollowListView
-	FollowersList    FollowListView
-	UserRelays       []string
-	Feed             []nostrx.Event
-	Replies          []nostrx.Event
-	Media            []nostrx.Event
-	ReferencedEvents map[string]nostrx.Event
-	ReplyCounts      map[string]int
-	ReactionTotals   map[string]int
-	ReactionViewers  map[string]string
-	Profiles         map[string]nostrx.Profile
-	ContactProfiles  map[string]nostrx.Profile
-	Relays           []string
-	Cursor           int64
-	CursorID         string
-	HasMore          bool
+	Profile                 nostrx.Profile
+	NIP05Status             nostrx.NIP05VerificationResult
+	NIP05StatusLabel        string
+	ClientShellStats        bool
+	ProfileTimelineTerminal bool
+	CachedPostCount         int
+	CachedReplyCount        int
+	CachedMediaCount        int
+	HasCachedCounts         bool
+	FollowingList           FollowListView
+	FollowersList           FollowListView
+	UserRelays              []string
+	Feed                    []nostrx.Event
+	Replies                 []nostrx.Event
+	Media                   []nostrx.Event
+	ReferencedEvents        map[string]nostrx.Event
+	ReplyCounts             map[string]int
+	ReactionTotals          map[string]int
+	ReactionViewers         map[string]string
+	Profiles                map[string]nostrx.Profile
+	ContactProfiles         map[string]nostrx.Profile
+	Relays                  []string
+	Cursor                  int64
+	CursorID                string
+	HasMore                 bool
 }
 
 type ThreadPageData struct {
 	BasePageData
+	RouteContextJSON     template.JS
+	AppBootstrapJSON     template.JS
 	Thread               thread.View
 	Tree                 ThreadTreeData
 	ReferencedEvents     map[string]nostrx.Event
@@ -223,6 +286,7 @@ type ThreadPageData struct {
 	ReactionViewers      map[string]string
 	Profiles             map[string]nostrx.Profile
 	Participants         []ThreadParticipant
+	ExpandedParticipants []ThreadParticipant
 	SelectedID           string
 	TreeSelectedID       string
 	SelectedDepth        int
@@ -240,6 +304,11 @@ type ThreadPageData struct {
 	ReplyCursor          int64
 	ReplyCursorID        string
 	HasMore              bool
+	FilteredReplies      []nostrx.Event
+	FilteredReplyNodes   []thread.Node
+	WebOfTrustEnabled    bool
+	WebOfTrustFiltered   int
+	WebOfTrustDeferred   bool
 }
 
 type ThreadParticipant struct {
@@ -255,6 +324,9 @@ type ErrorPanelCopy struct {
 	Heading string
 	Message string
 	Detail  string
+	// ShowLoginHint adds guidance for guest-visible content that may be
+	// available after logging in with the viewer's own Web of Trust.
+	ShowLoginHint bool
 	// Shell layout knobs (only read by error_shell):
 	AppShellClass    string // defaults to "app-shell"
 	MainSectionClass string // defaults to "feed-column route-error-column"
@@ -279,27 +351,6 @@ type StubPageData struct {
 	BasePageData
 	Heading string
 	Message string
-}
-
-type SearchPageData struct {
-	BasePageData
-	Query            string
-	Scope            string
-	ScopeLabel       string
-	ScopeAllURL      string
-	ScopeNetworkURL  string
-	ShowScopeToggle  bool
-	Feed             []nostrx.Event
-	ReferencedEvents map[string]nostrx.Event
-	ReplyCounts      map[string]int
-	ReactionTotals   map[string]int
-	ReactionViewers  map[string]string
-	Profiles         map[string]nostrx.Profile
-	Cursor           int64
-	CursorID         string
-	HasMore          bool
-	OldestCachedAt   int64
-	LatestCachedAt   int64
 }
 
 // TagPageData renders /tag/{tag} hashtag timelines (NIP-12 "t" tag index).
@@ -344,24 +395,42 @@ func (s *Server) render(w http.ResponseWriter, name string, data any) {
 	s.renderStatus(w, 0, name, data)
 }
 
+func (s *Server) renderTemplateBytes(name string, data any) ([]byte, error) {
+	var buf strings.Builder
+	if err := s.templates.ExecuteTemplate(&buf, name, data); err != nil {
+		return nil, err
+	}
+	return []byte(buf.String()), nil
+}
+
 // renderStatus writes an HTML template with an optional explicit status code
 // (status == 0 leaves the default 200). Use a non-zero status for 404/500
 // pages so responses aren't silently 200 OK.
 func (s *Server) renderStatus(w http.ResponseWriter, status int, name string, data any) {
+	body, err := s.renderTemplateBytes(name, data)
+	if err != nil {
+		slog.Error("template render failed", "template", name, "err", err)
+		http.Error(w, "template error", http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if status != 0 {
 		w.WriteHeader(status)
 	}
-	if err := s.templates.ExecuteTemplate(w, name, data); err != nil {
-		slog.Error("template render failed", "template", name, "err", err)
-		http.Error(w, "template error", http.StatusInternalServerError)
-	}
+	_, _ = w.Write(body)
 }
 
 func (s *Server) renderNotFound(w http.ResponseWriter, name string, data any) {
 	setNegativeCache(w)
 	s.renderStatus(w, http.StatusNotFound, name, data)
 }
+
+const feedNoteAvatarRuneReserve = 5
+
+const (
+	replyHeaderAvatarRuneReserve    = 7
+	selectedHeaderAvatarRuneReserve = 6
+)
 
 func asciiAuthor(width int, profiles map[string]nostrx.Profile, pubkey string) string {
 	label := authorLabel(profiles, pubkey)
@@ -370,6 +439,12 @@ func asciiAuthor(width int, profiles map[string]nostrx.Profile, pubkey string) s
 		maxAuthor = 8
 	}
 	return truncateRunes(label, maxAuthor)
+}
+
+// asciiFeedAuthor reserves the same five visual columns consumed by the
+// feed-avatar gutter in app.css and web/static/js/ascii.js.
+func asciiFeedAuthor(width int, profiles map[string]nostrx.Profile, pubkey string) string {
+	return asciiAuthor(width-feedNoteAvatarRuneReserve, profiles, pubkey)
 }
 
 func contentLines(content string) []string {
@@ -406,6 +481,63 @@ func asciiFill(width int, parts ...string) string {
 		remaining = 1
 	}
 	return strings.Repeat("-", remaining)
+}
+
+func asciiFeedHeaderFill(width int, parts ...string) string {
+	return asciiFill(width-feedNoteAvatarRuneReserve, parts...)
+}
+
+func asciiThreadHeaderAuthor(width, reserve int, author, age string) string {
+	headerWidth := width - reserve
+	maxAuthor := headerWidth - stringDisplayWidth(" -- "+age) - stringDisplayWidth("[...]") - 1
+	if maxAuthor < 8 {
+		maxAuthor = 8
+	}
+	return truncateRunes(author, maxAuthor)
+}
+
+func asciiReplyHeaderAuthor(width int, author, age string) string {
+	return asciiThreadHeaderAuthor(width, replyHeaderAvatarRuneReserve, author, age)
+}
+
+func asciiSelectedHeaderAuthor(width int, author, age string) string {
+	return asciiThreadHeaderAuthor(width, selectedHeaderAvatarRuneReserve, author, age)
+}
+
+func asciiThreadHeaderFill(width, reserve int, fill string, parts ...string) string {
+	used := 0
+	for _, part := range parts {
+		used += stringDisplayWidth(part)
+	}
+	remaining := width - reserve - used
+	if remaining < 1 {
+		remaining = 1
+	}
+	return strings.Repeat(fill, remaining)
+}
+
+func asciiReplyHeaderFill(width int, author, age string) string {
+	return asciiThreadHeaderFill(width, replyHeaderAvatarRuneReserve, " ", author, " -- ", age, "[...]")
+}
+
+func asciiSelectedHeaderFill(width int, author, age string) string {
+	return asciiThreadHeaderFill(width, selectedHeaderAvatarRuneReserve, "-", author, " -- ", age, " ", "[...]+")
+}
+
+func asciiReplyFooterFill(width int, prefix, reactionBlock, replyLabel string) string {
+	parts := []string{prefix, " ", reactionBlock, " ", " [reply] ---+"}
+	if replyLabel != "" {
+		parts = append(parts, " ", replyLabel)
+	}
+	return asciiFill(width, parts...)
+}
+
+func asciiPaddedTextLine(value string, width int) string {
+	value, used := truncateRunesWithWidth(value, width)
+	if used >= width {
+		return value
+	}
+	return value + strings.Repeat(" ", width-used)
 }
 
 // reactionBracketBlock returns the ASCII reaction widget text "[△] n [▽]"
@@ -470,6 +602,89 @@ func asciiBoxLines(width int, content string) []string {
 		out = append(out, asciiBoxLine(width, line))
 	}
 	return out
+}
+
+type asciiFeedNotePreview struct {
+	Lines     []string
+	Collapsed bool
+}
+
+// asciiFeedNotePreviewFor mirrors renderNote's default three-row collapse so
+// long notes do not first paint at full height and then shrink during hydration.
+func asciiFeedNotePreviewFor(width int, content string) asciiFeedNotePreview {
+	width = clampRenderWidth(width)
+	contentWidth := max(1, width-4)
+	lines := asciiTextLines(content, contentWidth)
+	collapsed := len(lines) > collapsedFeedNoteLines
+	if collapsed {
+		lines = append([]string(nil), lines[:collapsedFeedNoteLines]...)
+		lines[len(lines)-1] = addTrailingASCIIDots(lines[len(lines)-1], contentWidth)
+	}
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, asciiBoxLine(width, line))
+	}
+	return asciiFeedNotePreview{Lines: out, Collapsed: collapsed}
+}
+
+// addTrailingASCIIDots matches addTrailingDots in web/static/js/ascii.js.
+func addTrailingASCIIDots(value string, width int) string {
+	const suffix = "..."
+	if width <= len(suffix) {
+		return suffix[:max(0, width)]
+	}
+	if stringDisplayWidth(value)+1+len(suffix) <= width {
+		return value + " " + suffix
+	}
+	return takeRunes(value, width-len(suffix)) + suffix
+}
+
+func asciiFeedViewMorePad(width int) string {
+	const (
+		boxChromeWidth = 4
+		avatarInset    = 7
+		labelWidth     = len("view more")
+	)
+	return strings.Repeat(" ", max(0, width-boxChromeWidth-avatarInset-labelWidth))
+}
+
+func asciiNoteCollapsedFooterFill(width int, reactionBlock, replyLabel string) string {
+	left := "+-- " + reactionBlock + " --- view more "
+	right := " [reply] ---+"
+	if replyLabel != "" {
+		right = " " + replyLabel + right
+	}
+	return strings.Repeat("-", max(1, width-stringDisplayWidth(left)-stringDisplayWidth(right)))
+}
+
+func asciiReferencePlaceholderLines(width int) []string {
+	width = clampRenderWidth(width)
+	innerWidth := width - 8
+	if innerWidth < 20 {
+		innerWidth = 20
+	}
+	label := "+- loading reposted note "
+	topRule := innerWidth - stringDisplayWidth(label) - 1
+	if topRule < 1 {
+		topRule = 1
+	}
+	top := "  " + label + strings.Repeat("-", topRule) + "+"
+	bodyWidth := innerWidth - 4
+	if bodyWidth < 1 {
+		bodyWidth = 1
+	}
+	body := "  | " + strings.Repeat("░", bodyWidth) + " |"
+	bottomRule := innerWidth - 2
+	if bottomRule < 1 {
+		bottomRule = 1
+	}
+	bottom := "  +" + strings.Repeat("-", bottomRule) + "+"
+	return []string{
+		asciiBoxLine(width, top),
+		asciiBoxLine(width, body),
+		asciiBoxLine(width, body),
+		asciiBoxLine(width, bottom),
+	}
 }
 
 func asciiTextLines(content string, width int) []string {
@@ -665,10 +880,31 @@ func replyTextWidth(width int) int {
 	return replyWidth
 }
 
+func selectedReplyTextWidth(width int) int {
+	selectedWidth := width - 2
+	if selectedWidth < 20 {
+		return 20
+	}
+	return selectedWidth
+}
+
+func threadTreeTextWidth(width int) int {
+	treeWidth := width - 4
+	if treeWidth < 20 {
+		return 20
+	}
+	return treeWidth
+}
+
 // asciiReplyPadLine is a spaces-only row for vertical padding in templates;
 // width matches asciiTextLines(..., replyTextWidth(w)) and ascii.js wrapText.
 func asciiReplyPadLine(width int) string {
 	tw := clampRenderWidth(replyTextWidth(width))
+	return strings.Repeat(" ", tw)
+}
+
+func asciiSelectedReplyPadLine(width int) string {
+	tw := clampRenderWidth(selectedReplyTextWidth(width))
 	return strings.Repeat(" ", tw)
 }
 

@@ -1,0 +1,7 @@
+{{define "app_shell"}}
+{{template "document_start" .}}
+{{.InitialRouteHTML}}
+<script id="ptxt-route-context" type="application/json">{{.RouteContextJSON}}</script>
+<script id="ptxt-app-bootstrap" type="application/json">{{.AppBootstrapJSON}}</script>
+{{template "document_end" .}}
+{{end}}

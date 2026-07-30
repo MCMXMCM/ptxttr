@@ -1,11 +1,10 @@
 {{define "about"}}
 {{template "document_start" .}}
-<div class="app-shell">
-  {{template "left_rail" .}}
+<div>
   {{template "about_main" .}}
   {{template "right_rail_static" .}}
 </div>
-<script type="module" src="/static/js/layout.js"></script>
+<script type="module" src="{{assetPath .AssetBasePath "/static/js/layout.js"}}"></script>
 {{template "document_end" .}}
 {{end}}
 
@@ -14,31 +13,41 @@
   <section class="page-heading about-page">
     <div class="about-page-brand">
       <span class="about-page-logo" aria-hidden="true">
-        <img src="/static/img/ascritch_icon_black.png" alt="" width="80" height="80" decoding="async" class="about-logo about-logo-light-scheme">
-        <img src="/static/img/ascritch_icon_white.png" alt="" width="80" height="80" decoding="async" class="about-logo about-logo-dark-scheme">
+        <img src="{{assetPath .AssetBasePath "/static/img/ascritch_icon_black.png"}}" alt="" width="80" height="80" decoding="async" class="about-logo about-logo-light-scheme">
+        <img src="{{assetPath .AssetBasePath "/static/img/ascritch_icon_white.png"}}" alt="" width="80" height="80" decoding="async" class="about-logo about-logo-dark-scheme">
       </span>
       <span class="about-page-app-name">Plain Text Nostr</span>
     </div>
     <h1>About</h1>
-    <p class="about-page-lead muted">A simple and fast Nostr web reader:
-      keys and signing in browser, 
-      server crawls relay hints, 
-      caches events, and makes them available via SQLite.
-      <p class="about-page-lead muted"> 
-      You browse over HTTP and get HTML; the server does the graphing, filtering, websocketing, 
-      deduplicating, JSONing, and all the other stuff that drains your battery, 
-      toasts your device, and makes notes over nostr feel clunky and slow.
-      </p>
+    <p class="about-page-lead muted">A simple and fast Nostr web reader.</p>
 
-    <h2 class="about-page-sub">Source code</h2>
+    <p class="about-page-lead muted">On the web, your keys and signing stay in your browser. The server caches slices of the web of trust from your follow graph and keeps notes from those people, plus overlapping users, on a least-recently-used basis. That shared cache helps keep the web reader fast to share and affordable to run.</p>
+    <p class="about-page-lead muted">If you want no app-server dependency and prefer to keep everything local, use the iOS app. It manages your data on-device and does not depend on the Plain Text Nostr web server.</p>
+
+
+
+    <!-- <h2 class="about-page-sub">Source code</h2>
     <nav class="rail-nav about-page-links" aria-label="Project source code">
       <a href="https://github.com/MCMXMCM/ptxttr" rel="noopener noreferrer" target="_blank"><span class="rail-icon" aria-hidden="true">></span><span class="rail-label">Plain Text Nostr on GitHub</span></a>
-    </nav>
+    </nav> -->
 
     <h2 class="about-page-sub">NIPs and libraries</h2>
     <nav class="rail-nav about-page-links" aria-label="Nostr specifications and dependencies">
       <a href="https://github.com/nostr-protocol/nips" rel="noopener noreferrer" target="_blank"><span class="rail-icon" aria-hidden="true">></span><span class="rail-label">Nostr NIPs (specs and implementations)</span></a>
       <a href="https://pkg.go.dev/fiatjaf.com/nostr" rel="noopener noreferrer" target="_blank"><span class="rail-icon" aria-hidden="true">></span><span class="rail-label">fiatjaf.com/nostr (events, nip19, relay types)</span></a>
+    </nav>
+
+    <h2 class="about-page-sub">iOS</h2>
+    <nav class="rail-nav about-page-links" aria-label="Plain Text Nostr for iOS">
+      <a href="/ios-plain-text-nostr" data-relay-aware data-main-menu-link><span class="rail-icon" aria-hidden="true">></span><span class="rail-label">Plain Text Nostr for iOS</span></a>
+      <a href="https://testflight.apple.com/join/pz6ggn7D" rel="noopener noreferrer" target="_blank"><span class="rail-icon" aria-hidden="true">></span><span class="rail-label">Join the TestFlight beta</span></a>
+    </nav>
+
+    <h2 class="about-page-sub">Legal and support</h2>
+    <nav class="rail-nav about-page-links" aria-label="Legal and support pages">
+      <a href="/support" data-relay-aware data-main-menu-link><span class="rail-icon" aria-hidden="true">></span><span class="rail-label">Support</span></a>
+      <a href="/privacy" data-relay-aware data-main-menu-link><span class="rail-icon" aria-hidden="true">></span><span class="rail-label">Privacy Policy</span></a>
+      <a href="/terms" data-relay-aware data-main-menu-link><span class="rail-icon" aria-hidden="true">></span><span class="rail-label">Terms of Service</span></a>
     </nav>
   </section>
 </section>

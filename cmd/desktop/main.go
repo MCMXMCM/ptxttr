@@ -5,6 +5,7 @@ package main
 
 import (
 	"embed"
+	"io/fs"
 	"log"
 	"log/slog"
 	"os"
@@ -18,7 +19,7 @@ import (
 	"ptxt-nstr/internal/memlimit"
 )
 
-//go:embed all:frontend/dist
+//go:embed frontend/index.html
 var frontendAssets embed.FS
 
 func main() {
@@ -26,10 +27,14 @@ func main() {
 	if err := applyDesktopDefaults(); err != nil {
 		log.Fatalf("desktop defaults: %v", err)
 	}
+	frontendRoot, err := fs.Sub(frontendAssets, "frontend")
+	if err != nil {
+		log.Fatalf("desktop assets: %v", err)
+	}
 
 	app := newApp()
 
-	err := wails.Run(&options.App{
+	err = wails.Run(&options.App{
 		Title:             "Plain Text Nostr",
 		Width:             1280,
 		Height:            900,
@@ -38,7 +43,7 @@ func main() {
 		HideWindowOnClose: false,
 		BackgroundColour:  options.NewRGB(15, 15, 15),
 		AssetServer: &assetserver.Options{
-			Assets: frontendAssets,
+			Assets: frontendRoot,
 		},
 		Menu:          buildMenu(app),
 		OnStartup:     app.onStartup,
@@ -60,7 +65,8 @@ func main() {
 // applyDesktopDefaults seeds env defaults for config.Load() before the Wails
 // app starts. Only sets keys that are not already present so power users can
 // override via PTXT_* from the shell. The desktop entry does not use PTXT_ADDR;
-// the HTTP server binds a dynamic loopback port in (*App).onStartup.
+// the HTTP server binds a stable, loopback-only PTXT_DESKTOP_PORT so WebKit
+// storage remains on the same origin across app launches.
 func applyDesktopDefaults() error {
 	dir, err := desktopDataDir()
 	if err != nil {
@@ -70,6 +76,15 @@ func applyDesktopDefaults() error {
 		return err
 	}
 	setEnvIfUnset("PTXT_DB", filepath.Join(dir, "ptxt-nstr.sqlite"))
+	// The desktop app is a local shell whose browser owns relay reads and writes.
+	// Do not start the hosted server's persistent crawler/warming stack: on a
+	// long-running personal app it does unnecessary work and can churn a very
+	// large SQLite WAL while the UI waits on incomplete anonymous SSR fragments.
+	setEnvIfUnset("PTXT_SERVER_MODE", "share")
+	setEnvIfUnset("PTXT_HYDRATION_ENABLED", "false")
+	setEnvIfUnset("PTXT_HOT_FEED_CRAWLER_ENABLED", "false")
+	setEnvIfUnset("PTXT_SEED_CRAWLER_ENABLED", "false")
+	setEnvIfUnset("PTXT_VIEWER_CRAWLER_ENABLED", "false")
 	// Background compaction can stall first launch on a fresh machine; the
 	// hosted server may compact on boot but desktop users would see a frozen window.
 	setEnvIfUnset("PTXT_COMPACT_ON_START", "false")

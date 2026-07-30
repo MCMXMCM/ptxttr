@@ -1,8 +1,6 @@
 package httpx
 
 import (
-	"context"
-	"fmt"
 	"hash/fnv"
 	"maps"
 	"strconv"
@@ -20,6 +18,10 @@ const (
 	searchPageCacheMaxLen    = 256
 	guestFeedPageCacheTTL    = 5 * time.Minute
 	guestFeedPageCacheMaxLen = 256
+	anonymousHTMLCacheTTL    = 30 * time.Second
+	anonymousHTMLCacheMaxLen = 512
+	relayTrendingCacheTTL    = 2 * time.Minute
+	relayTrendingCacheMaxLen = 8
 )
 
 var searchKindsKey = hashIntSlice(noteTimelineKinds)
@@ -37,6 +39,17 @@ type ttlCache[T any] struct {
 	clone   func(T) T
 }
 
+type searchStoreCall struct {
+	wg    sync.WaitGroup
+	val   store.SearchNotesResult
+	panic any
+}
+
+type searchStoreSingleFlight struct {
+	mu    sync.Mutex
+	calls map[string]*searchStoreCall
+}
+
 func newTTLCache[T any](ttl time.Duration, maxLen int, clone func(T) T) *ttlCache[T] {
 	return &ttlCache[T]{
 		entries: make(map[string]ttlCacheEntry[T]),
@@ -46,16 +59,52 @@ func newTTLCache[T any](ttl time.Duration, maxLen int, clone func(T) T) *ttlCach
 	}
 }
 
+func newTagStoreCache() *ttlCache[store.SearchNotesResult] {
+	return newTTLCache(searchStoreCacheTTL, searchStoreCacheMaxLen, cloneSearchNotesResult)
+}
+
 func newSearchStoreCache() *ttlCache[store.SearchNotesResult] {
 	return newTTLCache(searchStoreCacheTTL, searchStoreCacheMaxLen, cloneSearchNotesResult)
 }
 
-func newSearchPageCache() *ttlCache[SearchPageData] {
-	return newTTLCache(searchPageCacheTTL, searchPageCacheMaxLen, cloneSearchPageData)
+func newSearchStoreSingleFlight() *searchStoreSingleFlight {
+	return &searchStoreSingleFlight{calls: make(map[string]*searchStoreCall)}
 }
 
-func newTagStoreCache() *ttlCache[store.SearchNotesResult] {
-	return newTTLCache(searchStoreCacheTTL, searchStoreCacheMaxLen, cloneSearchNotesResult)
+func (g *searchStoreSingleFlight) do(key string, fn func() store.SearchNotesResult) store.SearchNotesResult {
+	if g == nil || key == "" {
+		return fn()
+	}
+	g.mu.Lock()
+	if call, ok := g.calls[key]; ok {
+		g.mu.Unlock()
+		call.wg.Wait()
+		if call.panic != nil {
+			panic(call.panic)
+		}
+		return cloneSearchNotesResult(call.val)
+	}
+	call := &searchStoreCall{}
+	call.wg.Add(1)
+	g.calls[key] = call
+	g.mu.Unlock()
+
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				call.panic = recovered
+			}
+			call.wg.Done()
+			g.mu.Lock()
+			delete(g.calls, key)
+			g.mu.Unlock()
+		}()
+		call.val = fn()
+	}()
+	if call.panic != nil {
+		panic(call.panic)
+	}
+	return cloneSearchNotesResult(call.val)
 }
 
 func newTagPageCache() *ttlCache[TagPageData] {
@@ -64,6 +113,18 @@ func newTagPageCache() *ttlCache[TagPageData] {
 
 func newGuestFeedPageCache() *ttlCache[FeedPageData] {
 	return newTTLCache(guestFeedPageCacheTTL, guestFeedPageCacheMaxLen, cloneFeedPageData)
+}
+
+func newReadsTrendingCache() *ttlCache[[]TrendingNote] {
+	return newTTLCache(relayTrendingCacheTTL, relayTrendingCacheMaxLen*16, cloneTrendingNotes)
+}
+
+type relayTrendingSnapshot struct {
+	Events []nostrx.Event
+}
+
+func newRelayTrendingCache() *ttlCache[relayTrendingSnapshot] {
+	return newTTLCache(relayTrendingCacheTTL, relayTrendingCacheMaxLen, cloneRelayTrendingSnapshot)
 }
 
 func (c *ttlCache[T]) get(key string, now time.Time) (T, bool) {
@@ -125,46 +186,6 @@ func (c *ttlCache[T]) reset() {
 	c.entries = make(map[string]ttlCacheEntry[T])
 }
 
-type searchPlan struct {
-	req           searchRequest
-	resolved      requestAuthors
-	query         store.PreparedSearch
-	scope         string
-	scopedAuthors []string
-	storeKey      string
-	pageKey       string
-}
-
-func (s *Server) newSearchPlan(ctx context.Context, req searchRequest, query store.PreparedSearch) searchPlan {
-	resolved := s.resolveRequestAuthors(ctx, req.Pubkey, req.SeedPubkey, req.Relays, req.WoT)
-	scope := normalizeSearchScope(req.Scope, resolved.loggedOut && !resolved.seedWOTEnabled, resolved.wotEnabled)
-	var scopedAuthors []string
-	if scope == searchScopeNetwork {
-		scopedAuthors = resolved.authors
-	}
-	viewer := resolved.viewerForMuteFilter()
-	storeKey := fmt.Sprintf("%s|%s|%s|%s|%s|%d|%s|%d",
-		viewer,
-		scope,
-		searchKindsKey,
-		authorsCacheKey(scopedAuthors),
-		query.Normalized,
-		req.Cursor,
-		req.CursorID,
-		req.Limit,
-	)
-	pageKey := storeKey + "|" + strconv.FormatBool(req.WoT.Enabled) + "|" + strconv.Itoa(req.WoT.Depth) + "|" + hashStringSlice(req.Relays)
-	return searchPlan{
-		req:           req,
-		resolved:      resolved,
-		query:         query,
-		scope:         scope,
-		scopedAuthors: scopedAuthors,
-		storeKey:      storeKey,
-		pageKey:       pageKey,
-	}
-}
-
 func hashStringSlice(values []string) string {
 	if len(values) == 0 {
 		return "0"
@@ -195,29 +216,6 @@ func cloneSearchNotesResult(in store.SearchNotesResult) store.SearchNotesResult 
 	out := in
 	if len(in.Events) > 0 {
 		out.Events = append([]nostrx.Event(nil), in.Events...)
-	}
-	return out
-}
-
-func cloneSearchPageData(in SearchPageData) SearchPageData {
-	out := in
-	if len(in.Feed) > 0 {
-		out.Feed = append([]nostrx.Event(nil), in.Feed...)
-	}
-	if in.ReferencedEvents != nil {
-		out.ReferencedEvents = maps.Clone(in.ReferencedEvents)
-	}
-	if in.ReplyCounts != nil {
-		out.ReplyCounts = maps.Clone(in.ReplyCounts)
-	}
-	if in.ReactionTotals != nil {
-		out.ReactionTotals = maps.Clone(in.ReactionTotals)
-	}
-	if in.ReactionViewers != nil {
-		out.ReactionViewers = maps.Clone(in.ReactionViewers)
-	}
-	if in.Profiles != nil {
-		out.Profiles = maps.Clone(in.Profiles)
 	}
 	return out
 }
@@ -272,4 +270,19 @@ func cloneFeedPageData(in FeedPageData) FeedPageData {
 		out.Relays = append([]string(nil), in.Relays...)
 	}
 	return out
+}
+
+func cloneRelayTrendingSnapshot(in relayTrendingSnapshot) relayTrendingSnapshot {
+	out := in
+	if len(in.Events) > 0 {
+		out.Events = append([]nostrx.Event(nil), in.Events...)
+	}
+	return out
+}
+
+func cloneTrendingNotes(in []TrendingNote) []TrendingNote {
+	if len(in) == 0 {
+		return nil
+	}
+	return append([]TrendingNote(nil), in...)
 }

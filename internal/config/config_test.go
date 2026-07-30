@@ -63,6 +63,35 @@ func TestLoadHotFeedCrawlerDefaultsAndOverrides(t *testing.T) {
 	}
 }
 
+func TestGuestSliceV2UsesSmallInstanceWorkerDefaults(t *testing.T) {
+	for _, key := range []string{
+		"PTXT_WARM_WORKERS", "PTXT_WARM_QUEUE_CAPACITY", "PTXT_WARM_JOB_TIMEOUT_MS",
+		"PTXT_RELAY_MAX_OUTBOUND_CONNS", "PTXT_HYDRATION_NOTE_REPLIES_BATCH",
+	} {
+		t.Setenv(key, "")
+	}
+	t.Setenv("PTXT_GUEST_SLICE_V2", "1")
+	cfg := Load()
+	if !cfg.GuestSliceV2Enabled || cfg.WarmWorkers != 2 || cfg.WarmQueueCapacity != 128 ||
+		cfg.WarmJobTimeout != 20*time.Second || cfg.RelayMaxOutboundConns != 12 || cfg.HydrationNoteRepliesBatch != 8 {
+		t.Fatalf("unexpected v2 small-instance defaults: %#v", cfg)
+	}
+}
+
+func TestTrafficShieldUsesSmallInstanceDefaults(t *testing.T) {
+	for _, key := range []string{
+		"PTXT_ANON_RATE_BURST", "PTXT_ANON_RATE_PER_SEC",
+		"PTXT_BOT_RATE_BURST", "PTXT_BOT_RATE_PER_SEC",
+	} {
+		t.Setenv(key, "")
+	}
+	cfg := Load()
+	if cfg.AnonymousRateBurst != 30 || cfg.AnonymousRatePerSec != 2 ||
+		cfg.BotRateBurst != 6 || cfg.BotRatePerSec != 0.1 {
+		t.Fatalf("unexpected traffic shield defaults: %#v", cfg)
+	}
+}
+
 func TestDurationEnvFallsBackForInvalidValues(t *testing.T) {
 	t.Setenv("PTXT_TEST_TIMEOUT", "not-a-number")
 	if got := durationEnv("PTXT_TEST_TIMEOUT", 1500*time.Millisecond); got != 1500*time.Millisecond {
@@ -104,6 +133,17 @@ func TestIntEnvFallsBackForInvalidValues(t *testing.T) {
 	t.Setenv("PTXT_TEST_INT", "123")
 	if got := intEnv("PTXT_TEST_INT", 42); got != 123 {
 		t.Fatalf("intEnv = %d, want 123", got)
+	}
+}
+
+func TestNonNegativeIntEnvAllowsZero(t *testing.T) {
+	t.Setenv("PTXT_TEST_NON_NEGATIVE", "0")
+	if got := nonNegativeIntEnv("PTXT_TEST_NON_NEGATIVE", 42); got != 0 {
+		t.Fatalf("nonNegativeIntEnv zero = %d, want 0", got)
+	}
+	t.Setenv("PTXT_TEST_NON_NEGATIVE", "-1")
+	if got := nonNegativeIntEnv("PTXT_TEST_NON_NEGATIVE", 42); got != 42 {
+		t.Fatalf("nonNegativeIntEnv negative = %d, want fallback", got)
 	}
 }
 
@@ -160,5 +200,42 @@ func TestIngestVerifyParallelEnv(t *testing.T) {
 	t.Setenv("PTXT_INGEST_VERIFY_PARALLEL", "-1")
 	if got := ingestVerifyParallelEnv(); got != 0 {
 		t.Fatalf("negative = %d, want 0", got)
+	}
+}
+
+func TestServerModeEnvDefaultsAndCompatibility(t *testing.T) {
+	t.Setenv("PTXT_SERVER_MODE", "")
+	t.Setenv("PTXT_OPTIONAL_RELAY_BACKEND", "")
+	t.Setenv("PTXT_SHARE_SERVER_TRANSITIONAL_FALLBACKS", "")
+	cfg := Load()
+	if cfg.ServerMode != ServerModeApp {
+		t.Fatalf("default server mode = %q, want %q", cfg.ServerMode, ServerModeApp)
+	}
+	if cfg.ShareServerTransitionalFallbacks {
+		t.Fatal("default share transitional fallbacks = true, want false")
+	}
+
+	t.Setenv("PTXT_OPTIONAL_RELAY_BACKEND", "1")
+	cfg = Load()
+	if cfg.ServerMode != ServerModeShare {
+		t.Fatalf("optional relay backend compatibility mode = %q, want %q", cfg.ServerMode, ServerModeShare)
+	}
+
+	t.Setenv("PTXT_SERVER_MODE", "app")
+	cfg = Load()
+	if cfg.ServerMode != ServerModeApp {
+		t.Fatalf("explicit app mode = %q, want %q", cfg.ServerMode, ServerModeApp)
+	}
+
+	t.Setenv("PTXT_SERVER_MODE", "share")
+	cfg = Load()
+	if cfg.ServerMode != ServerModeShare {
+		t.Fatalf("explicit share mode = %q, want %q", cfg.ServerMode, ServerModeShare)
+	}
+
+	t.Setenv("PTXT_SHARE_SERVER_TRANSITIONAL_FALLBACKS", "0")
+	cfg = Load()
+	if cfg.ShareServerTransitionalFallbacks {
+		t.Fatal("share transitional fallbacks override = true, want false")
 	}
 }

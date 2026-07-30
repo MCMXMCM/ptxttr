@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"ptxt-nstr/internal/nostrx"
+	"ptxt-nstr/internal/store"
 )
 
 const (
@@ -32,6 +33,21 @@ func (s *Server) nip50Relays() []string {
 		max = 4
 	}
 	relays := s.cfg.IndexerNIP50Relays
+	if len(relays) == 0 {
+		relays = s.cfg.IndexerRelays
+	}
+	return nostrx.NormalizeRelayList(relays, max)
+}
+
+func (s *Server) trendingSearchRelays() []string {
+	if s == nil {
+		return nil
+	}
+	max := s.cfg.TrendingSearchMaxRelays
+	if max <= 0 {
+		max = 4
+	}
+	relays := s.cfg.TrendingSearchRelays
 	if len(relays) == 0 {
 		relays = s.cfg.IndexerRelays
 	}
@@ -82,6 +98,43 @@ func (s *Server) appendAuthorRelayHints(ctx context.Context, merged []string, pu
 	return merged
 }
 
+func (s *Server) appendMentionedAuthorRelayHints(ctx context.Context, merged []string, events ...*nostrx.Event) []string {
+	if s == nil || s.store == nil {
+		return merged
+	}
+	seen := make(map[string]bool)
+	pubkeys := make([]string, 0)
+	for _, event := range events {
+		if event == nil {
+			continue
+		}
+		if event.PubKey != "" {
+			seen[event.PubKey] = true
+		}
+		for _, pubkey := range replyContextTargets(*event) {
+			if pubkey == "" || seen[pubkey] {
+				continue
+			}
+			seen[pubkey] = true
+			pubkeys = append(pubkeys, pubkey)
+		}
+	}
+	hints, err := s.store.RelayHintsByUsageForPubkeys(ctx, pubkeys)
+	if err != nil {
+		return merged
+	}
+	for _, pubkey := range pubkeys {
+		merged = appendRelayHintSet(merged, hints[pubkey])
+	}
+	return merged
+}
+
+func appendRelayHintSet(merged []string, set store.RelayHintSet) []string {
+	merged = append(merged, set.Read...)
+	merged = append(merged, set.Write...)
+	return append(merged, set.All...)
+}
+
 // threadHydrationRelays builds the primary relay set for thread reply hydration.
 func (s *Server) threadHydrationRelays(ctx context.Context, viewer string, root, selected *nostrx.Event, requestRelays []string) []string {
 	if s == nil {
@@ -106,6 +159,7 @@ func (s *Server) threadHydrationRelays(ctx context.Context, viewer string, root,
 		}, 2)
 		merged = append(merged, observed[root.PubKey]...)
 	}
+	merged = s.appendMentionedAuthorRelayHints(ctx, merged, root, selected)
 	if selected != nil && (root == nil || selected.ID != root.ID) {
 		merged = s.appendAuthorRelayHints(ctx, merged, selected.PubKey)
 		merged = append(merged, s.threadRelays(nil, *selected)...)

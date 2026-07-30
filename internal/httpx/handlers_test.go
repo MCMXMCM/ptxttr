@@ -11,6 +11,8 @@ import (
 	"ptxt-nstr/internal/nostrx"
 	"ptxt-nstr/internal/store"
 	"ptxt-nstr/internal/thread"
+
+	fnostr "fiatjaf.com/nostr"
 )
 
 func saveLongFormRead(t *testing.T, st *store.Store, readID, pubkey string) {
@@ -230,6 +232,11 @@ func TestThreadSelectedExpectsFocusView(t *testing.T) {
 	if !threadSelectedExpectsFocusView(legacy) {
 		t.Fatal("legacy e-tag reply should expect focus view")
 	}
+	comment := testEvent("comment", "dawn", 4, [][]string{{"E", "root"}, {"e", "parent"}})
+	comment.Kind = nostrx.KindComment
+	if !threadSelectedExpectsFocusView(comment) {
+		t.Fatal("NIP-22 comment should expect focus view")
+	}
 }
 
 func TestCollectThreadChainCandidatesIncludesSelectedTags(t *testing.T) {
@@ -243,35 +250,6 @@ func TestCollectThreadChainCandidatesIncludesSelectedTags(t *testing.T) {
 	}
 	if !seen[parentID] {
 		t.Fatalf("expected parent from selected tags, got %v", got)
-	}
-}
-
-func TestHandleThreadHydrateIncompleteHeaderWhenAncestorMissing(t *testing.T) {
-	srv, st := testServer(t)
-	ctx := context.Background()
-	root := testEvent("root", "alice", 1, nil)
-	if err := st.SaveEvent(ctx, root); err != nil {
-		t.Fatal(err)
-	}
-	selected := testEvent("selected", "erin", 5, [][]string{{"e", "root", "", "root"}, {"e", "missing", "", "reply"}})
-	if err := st.SaveEvent(ctx, selected); err != nil {
-		t.Fatal(err)
-	}
-	req := httptest.NewRequest(http.MethodGet, "/thread/"+selected.ID+"?fragment=hydrate", nil)
-	rr := httptest.NewRecorder()
-	srv.handleThread(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rr.Code)
-	}
-	if got := rr.Header().Get("X-Ptxt-Thread-Incomplete"); got != "" {
-		t.Fatalf("X-Ptxt-Thread-Incomplete = %q, want empty after missing-parent repair", got)
-	}
-	body := rr.Body.String()
-	if !strings.Contains(body, `data-thread-expects-focus="1"`) {
-		t.Fatalf("expected data-thread-expects-focus in hydrate body: %s", truncateForLog(body, 400))
-	}
-	if !strings.Contains(body, `thread-focus-selected" id="note-`+selected.ID+`"`) {
-		t.Fatalf("expected selected reply focused after missing-parent repair: %s", truncateForLog(body, 800))
 	}
 }
 
@@ -360,7 +338,9 @@ func TestResolveThreadRootIDWalksAncestorChainWithoutExplicitRootOnSelected(t *t
 func TestHandleThreadRedirectsLongFormToReads(t *testing.T) {
 	srv, st := testServer(t)
 	readID := strings.Repeat("e", 64)
-	saveLongFormRead(t, st, readID, strings.Repeat("a", 64))
+	author := strings.Repeat("a", 64)
+	saveLongFormRead(t, st, readID, author)
+	allowAnonymousAuthors(t, st, author)
 	req := httptest.NewRequest(http.MethodGet, "/thread/"+readID, nil)
 	rr := httptest.NewRecorder()
 	srv.handleThread(rr, req)
@@ -372,25 +352,12 @@ func TestHandleThreadRedirectsLongFormToReads(t *testing.T) {
 	}
 }
 
-func TestHandleThreadLongFormHydrateSendsNavigateHeader(t *testing.T) {
-	srv, st := testServer(t)
-	readID := strings.Repeat("f", 64)
-	saveLongFormRead(t, st, readID, strings.Repeat("b", 64))
-	req := httptest.NewRequest(http.MethodGet, "/thread/"+readID+"?fragment=hydrate", nil)
-	rr := httptest.NewRecorder()
-	srv.handleThread(rr, req)
-	if rr.Code != http.StatusNoContent {
-		t.Fatalf("status = %d, want 204", rr.Code)
-	}
-	if got := rr.Header().Get("X-Ptxt-Navigate"); got != "/reads/"+readID {
-		t.Fatalf("X-Ptxt-Navigate = %q, want /reads/%s", got, readID)
-	}
-}
-
 func TestHandleThreadLongFormWithBackReadDoesNotRedirect(t *testing.T) {
 	srv, st := testServer(t)
 	readID := strings.Repeat("d", 64)
-	saveLongFormRead(t, st, readID, strings.Repeat("c", 64))
+	author := strings.Repeat("c", 64)
+	saveLongFormRead(t, st, readID, author)
+	allowAnonymousAuthors(t, st, author)
 	req := httptest.NewRequest(http.MethodGet, "/thread/"+readID+"?back_read="+readID, nil)
 	rr := httptest.NewRecorder()
 	srv.handleThread(rr, req)
@@ -404,8 +371,75 @@ func TestHandleThreadLongFormWithBackReadDoesNotRedirect(t *testing.T) {
 		t.Fatalf("unexpected X-Ptxt-Navigate %q", nav)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "thread-header") {
+	if !strings.Contains(body, `data-route-outlet`) {
 		t.Fatalf("expected thread shell markup, got:\n%s", truncateForLog(body, 800))
+	}
+}
+
+func TestHandleThreadAppShellCarriesNoteOGMeta(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	noteID := strings.Repeat("7", 64)
+	author := strings.Repeat("8", 64)
+	imageURL := "https://cdn.example.com/note-photo.jpg"
+	content := "look at this\n" + imageURL
+	if err := st.SaveEvent(ctx, nostrx.Event{
+		ID:        noteID,
+		PubKey:    author,
+		Kind:      nostrx.KindTextNote,
+		CreatedAt: 1700000000,
+		Content:   content,
+		Sig:       "sig",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	allowAnonymousAuthors(t, st, author)
+
+	req := httptest.NewRequest(http.MethodGet, "/thread/"+noteID, nil)
+	req.Host = "example.test"
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	rr := httptest.NewRecorder()
+	srv.handleThread(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `id="thread-focus"`) || !strings.Contains(body, "data-thread-view-toggle") {
+		t.Fatalf("expected SSR thread markup, got:\n%s", truncateForLog(body, 800))
+	}
+	if !strings.Contains(body, imageURL) {
+		t.Fatalf("expected note image metadata/body in SSR document, got:\n%s", truncateForLog(body, 1200))
+	}
+	if !strings.Contains(body, `<script id="ptxt-route-context"`) || !strings.Contains(body, `"route":"thread"`) {
+		t.Fatalf("expected route context in SSR thread document, got:\n%s", truncateForLog(body, 1200))
+	}
+}
+
+func TestHandleThreadBrowserDocumentReturnsAuthoritativeSSR(t *testing.T) {
+	srv, st := testServer(t)
+	noteID := strings.Repeat("9", 64)
+	if err := st.SaveEvent(context.Background(), nostrx.Event{
+		ID: noteID, PubKey: strings.Repeat("8", 64), CreatedAt: time.Now().Unix(), Kind: nostrx.KindTextNote, Content: "authoritative guest thread",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/thread/"+noteID, nil)
+	req.Header.Set("User-Agent", "Mozilla/5.0")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml")
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	rr := httptest.NewRecorder()
+	srv.handleThread(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `id="thread-focus"`) || !strings.Contains(body, "authoritative guest thread") {
+		t.Fatalf("expected authoritative SSR thread document, got:\n%s", truncateForLog(body, 1200))
+	}
+	if strings.Contains(body, `data-thread-route-pending`) || strings.Contains(body, `thread-telemetry-loader`) {
+		t.Fatalf("guest document must not depend on a pending hydrate shell, got:\n%s", truncateForLog(body, 1200))
 	}
 }
 
@@ -445,6 +479,7 @@ func TestHandleThreadUsesExplicitRootWhenParentChainMissing(t *testing.T) {
 	if err := st.SaveEvent(ctx, selEv); err != nil {
 		t.Fatal(err)
 	}
+	allowAnonymousAuthors(t, st, pkRoot, pkSel)
 	req := httptest.NewRequest(http.MethodGet, "/thread/"+selID, nil)
 	rr := httptest.NewRecorder()
 	srv.handleThread(rr, req)
@@ -452,11 +487,107 @@ func TestHandleThreadUsesExplicitRootWhenParentChainMissing(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "#note-"+fullRoot) {
-		t.Fatalf("expected root link to explicit thread root id, got body:\n%s", truncateForLog(body, 1200))
+	if !strings.Contains(body, `data-route-outlet`) {
+		t.Fatalf("expected app shell route outlet, got body:\n%s", truncateForLog(body, 1200))
+	}
+	if !strings.Contains(body, `"path":"/thread/`+selID+`"`) {
+		t.Fatalf("expected thread path route context, got body:\n%s", truncateForLog(body, 1200))
 	}
 	if !strings.Contains(body, "/og/"+selID+".png") {
-		t.Fatalf("expected OpenGraph image for selected note id:\n%s", truncateForLog(body, 1200))
+		t.Fatalf("expected SSR thread document with server OG body markup:\n%s", truncateForLog(body, 1200))
+	}
+}
+
+func TestHandleThreadFetchesMissingDirectParentFromIndexerRelays(t *testing.T) {
+	srv, st := newTestServer(t, testServerOptions{relayTimeout: 50 * time.Millisecond})
+	ctx := context.Background()
+
+	parentExternal := fnostr.Event{
+		CreatedAt: fnostr.Timestamp(1700000000),
+		Kind:      fnostr.Kind(nostrx.KindTextNote),
+		Content:   "parent from indexer relay",
+	}
+	if err := parentExternal.Sign(fnostr.Generate()); err != nil {
+		t.Fatalf("Sign() parent error = %v", err)
+	}
+	parent := fnostrToNostrxEvent(parentExternal)
+	selected := nostrx.Event{
+		ID:        strings.Repeat("b", 64),
+		PubKey:    strings.Repeat("2", 64),
+		Kind:      nostrx.KindTextNote,
+		CreatedAt: 1700000001,
+		Content:   "selected reply",
+		Sig:       "sig",
+		Tags: [][]string{
+			{"e", parent.ID, "", "reply"},
+		},
+	}
+	if err := st.SaveEvent(ctx, selected); err != nil {
+		t.Fatal(err)
+	}
+
+	relay := newTestRelayREQEventWhenIDsContain(ctx, parent.ID, parentExternal)
+	defer relay.Close()
+	srv.cfg.IndexerRelays = []string{wsURL(relay.URL)}
+
+	req := httptest.NewRequest(http.MethodGet, "/thread/"+selected.ID, nil)
+	markTestRequestLoggedIn(req)
+	rr := httptest.NewRecorder()
+	srv.handleThread(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `data-route-outlet`) {
+		t.Fatalf("expected app shell route outlet, got body:\n%s", truncateForLog(body, 1200))
+	}
+}
+
+func TestHandleThreadSelectedQueryUsesRootPathWithFocusedReply(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	rootID := strings.Repeat("a", 64)
+	selectedID := strings.Repeat("b", 64)
+	pk := strings.Repeat("1", 64)
+	root := nostrx.Event{
+		ID:        rootID,
+		PubKey:    pk,
+		Kind:      nostrx.KindTextNote,
+		CreatedAt: 1000,
+		Content:   "root",
+		Sig:       "sig",
+	}
+	selected := nostrx.Event{
+		ID:        selectedID,
+		PubKey:    pk,
+		Kind:      nostrx.KindTextNote,
+		CreatedAt: 1001,
+		Content:   "reply",
+		Sig:       "sig",
+		Tags: [][]string{
+			{"e", rootID, "", "root"},
+			{"e", rootID, "", "reply"},
+		},
+	}
+	for _, ev := range []nostrx.Event{root, selected} {
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	allowAnonymousAuthors(t, st, pk)
+
+	req := httptest.NewRequest(http.MethodGet, "/thread/"+rootID+"?selected="+selectedID, nil)
+	rr := httptest.NewRecorder()
+	srv.handleThread(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, `"path":"/thread/`+rootID+`"`) {
+		t.Fatalf("expected root thread path in route context, got body:\n%s", truncateForLog(body, 1200))
+	}
+	if !strings.Contains(body, `selected=`+selectedID) {
+		t.Fatalf("expected selected reply id in route context search, got body:\n%s", truncateForLog(body, 1200))
 	}
 }
 

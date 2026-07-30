@@ -11,7 +11,7 @@ import (
 type sidecarMetricSink func(name string, delta int64)
 
 // sidecarCaches holds bounded in-memory read-through caches for hot projection
-// paths. SQLite remains authoritative; entries are
+// paths that used to live in bbolt. SQLite remains authoritative; entries are
 // invalidated on explicit checklist paths (purge* / invalidate*).
 type sidecarCaches struct {
 	mu sync.Mutex

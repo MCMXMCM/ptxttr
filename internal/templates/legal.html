@@ -1,0 +1,281 @@
+{{define "info_page_brand"}}
+<div class="about-page-brand">
+  <span class="about-page-logo" aria-hidden="true">
+    <img src="{{assetPath .AssetBasePath "/static/img/ascritch_icon_black.png"}}" alt="" width="80" height="80" decoding="async" class="about-logo about-logo-light-scheme">
+    <img src="{{assetPath .AssetBasePath "/static/img/ascritch_icon_white.png"}}" alt="" width="80" height="80" decoding="async" class="about-logo about-logo-dark-scheme">
+  </span>
+  <span class="about-page-app-name">Plain Text Nostr</span>
+</div>
+{{end}}
+
+{{define "info_page_footer"}}
+<nav class="rail-nav legal-page-links" aria-label="Related pages">
+  <a href="/support" data-relay-aware data-main-menu-link><span class="rail-icon" aria-hidden="true">></span><span class="rail-label">Support</span></a>
+  <a href="/ios-plain-text-nostr" data-relay-aware data-main-menu-link><span class="rail-icon" aria-hidden="true">></span><span class="rail-label">iOS app</span></a>
+  <a href="/terms" data-relay-aware data-main-menu-link><span class="rail-icon" aria-hidden="true">></span><span class="rail-label">Terms of Service</span></a>
+  <a href="/privacy" data-relay-aware data-main-menu-link><span class="rail-icon" aria-hidden="true">></span><span class="rail-label">Privacy Policy</span></a>
+  <a href="/about" data-relay-aware data-main-menu-link><span class="rail-icon" aria-hidden="true">></span><span class="rail-label">About</span></a>
+</nav>
+{{end}}
+
+{{define "support"}}
+{{template "document_start" .}}
+<div class="app-shell">
+  {{template "left_rail" .}}
+  {{template "support_main" .}}
+  {{template "right_rail_static" .}}
+</div>
+<script type="module" src="{{assetPath .AssetBasePath "/static/js/layout.js"}}"></script>
+{{template "document_end" .}}
+{{end}}
+
+{{define "support_main"}}
+<section class="feed-column shell-main-top" data-shell-main>
+  <section class="page-heading legal-page">
+    {{template "info_page_brand" .}}
+    <h1>Support</h1>
+    <p class="legal-page-lead muted">Help for Plain Text Nostr on iOS and the web reader at <a href="https://plaintextnostr.com">plaintextnostr.com</a>.</p>
+
+    <h2>Contact</h2>
+    <p>Email: <a href="mailto:support@plaintextnostr.com">support@plaintextnostr.com</a></p>
+    <p>Bug reports and feature requests: <a href="https://github.com/MCMXMCM/ptxttr/issues" rel="noopener noreferrer" target="_blank">GitHub issues</a></p>
+
+    <h2>Getting started</h2>
+    <ul>
+      <li><strong>Browse without signing in.</strong> Launch the app or open the website to read notes from public Nostr relays using the default web-of-trust feed.</li>
+      <li><strong>Sign in (optional).</strong> Use your Nostr key to publish notes, reactions, reposts, and bookmarks. Keys stay on your device.</li>
+      <li><strong>Manage relays.</strong> Open Relays in the menu to view connections or add your own relay URLs.</li>
+    </ul>
+
+    <h2>Common questions</h2>
+    <h3>What is Nostr?</h3>
+    <p>Nostr is an open protocol for decentralized social networking. Notes are published to relays you choose, not to a single company server. Plain Text Nostr is a client that reads and publishes that public data.</p>
+
+    <h3>Where are my keys stored?</h3>
+    <p>On iOS, signing keys are stored in the device Keychain. On the web reader, keys are kept in your browser session. Plain Text Nostr does not operate a centralized account system and cannot recover a lost private key (<code>nsec</code>).</p>
+
+    <h3>Who can see my posts?</h3>
+    <p>Public Nostr notes are broadcast to relays and can be read by anyone using any compatible client. Direct messages use NIP-17/NIP-44 encryption between participants. Treat relay operators as third parties with their own policies.</p>
+
+    <h3>Photo library access (iOS)</h3>
+    <p>The app requests photo-library permission only when you tap Save on an image in a note. It does not scan or upload your photo library.</p>
+
+    <h3>Reporting content</h3>
+    <p>Plain Text Nostr displays user-generated content from third-party relays. You can mute accounts, adjust web-of-trust depth, or switch relays. For urgent safety issues, contact <a href="mailto:support@plaintextnostr.com">support@plaintextnostr.com</a>.</p>
+
+    {{template "info_page_footer" .}}
+  </section>
+</section>
+{{end}}
+
+{{define "marketing"}}
+{{template "document_start" .}}
+<div class="app-shell">
+  {{template "left_rail" .}}
+  {{template "marketing_main" .}}
+  {{template "right_rail_static" .}}
+</div>
+<script type="module" src="{{assetPath .AssetBasePath "/static/js/layout.js"}}"></script>
+{{template "document_end" .}}
+{{end}}
+
+{{define "marketing_main"}}
+<section class="feed-column shell-main-top" data-shell-main>
+  <section class="page-heading legal-page">
+    {{template "info_page_brand" .}}
+    <h1>Plain Text Nostr for iOS</h1>
+    <p class="legal-page-lead muted">A simple and fast Nostr web reader for iOS.</p>
+
+    <h2>TestFlight beta</h2>
+    <p><a href="https://testflight.apple.com/join/pz6ggn7D" rel="noopener noreferrer" target="_blank">Join the TestFlight beta</a> to install the latest builds on your iPhone or iPad.</p>
+
+    <h2>Read the open social web</h2>
+    <p>Plain Text Nostr connects to public Nostr relays and renders notes, threads, profiles, and long-form articles with a minimal interface. Your feed is stored locally in SQLite so you can keep scrolling through content you have already loaded, even when relays are slow or offline.</p>
+
+    <h2>Features</h2>
+    <ul>
+      <li>Home feed with web-of-trust filtering</li>
+      <li>Thread view with full conversation context</li>
+      <li>Long-form Reads for kind-30023 articles</li>
+      <li>Search, hashtags, and profile pages</li>
+      <li>Bookmarks and notifications when signed in</li>
+      <li>Relay management — defaults or your own relays</li>
+      <li>Media mode for image grids and fullscreen viewing</li>
+      <li>Save images from notes to your photo library</li>
+    </ul>
+
+    <h2>Optional sign-in</h2>
+    <p>Browse logged out with a curated web-of-trust seed, or sign in with your Nostr key to publish notes, reactions, reposts, and bookmarks. Keys are stored on your device in the iOS Keychain.</p>
+
+    <h2>Also on the web</h2>
+    <p>The same Plain Text Nostr reader is available in your browser at <a href="/feed" data-relay-aware data-feed-home>plaintextnostr.com</a>. The iOS app is a native SwiftUI client; it is not affiliated with any single relay or Nostr service.</p>
+
+    <h2>Legal</h2>
+    <p>Review our <a href="/privacy" data-relay-aware data-main-menu-link>Privacy Policy</a> and <a href="/terms" data-relay-aware data-main-menu-link>Terms of Service</a>. Questions? Visit <a href="/support" data-relay-aware data-main-menu-link>Support</a>.</p>
+
+    {{template "info_page_footer" .}}
+  </section>
+</section>
+{{end}}
+
+{{define "terms"}}
+{{template "document_start" .}}
+<div class="app-shell">
+  {{template "left_rail" .}}
+  {{template "terms_main" .}}
+  {{template "right_rail_static" .}}
+</div>
+<script type="module" src="{{assetPath .AssetBasePath "/static/js/layout.js"}}"></script>
+{{template "document_end" .}}
+{{end}}
+
+{{define "terms_main"}}
+<section class="feed-column shell-main-top" data-shell-main>
+  <section class="page-heading legal-page">
+    {{template "info_page_brand" .}}
+    <h1>Terms of Service</h1>
+    <p class="legal-page-meta muted">Last updated: June 12, 2026</p>
+    <p class="legal-page-lead muted">These Terms of Service ("Terms") govern your use of Plain Text Nostr, including the iOS application and the web reader at <a href="https://plaintextnostr.com">plaintextnostr.com</a> (together, the "Service"), operated by Matthew McCarty ("we", "us", or "our").</p>
+
+    <h2>1. Acceptance</h2>
+    <p>By accessing or using the Service, you agree to these Terms. If you do not agree, do not use the Service.</p>
+
+    <h2>2. Description of the Service</h2>
+    <p>Plain Text Nostr is a Nostr protocol client. It fetches public events from relays you configure, caches them locally for performance, and lets you publish signed events when you choose to sign in. The Service does not operate Nostr relays and does not control content on the Nostr network.</p>
+
+    <h2>3. Eligibility</h2>
+    <p>You must be at least 13 years old (or the minimum age required in your country) to use the Service. If you are under 18, you represent that you have permission from a parent or guardian.</p>
+
+    <h2>4. Accounts and keys</h2>
+    <ul>
+      <li>Nostr identity is cryptographic. Your public key (<code>npub</code>) and private key (<code>nsec</code>) are created or imported by you.</li>
+      <li>You are solely responsible for safeguarding your private key and any device used to sign events.</li>
+      <li>We do not host centralized accounts and cannot reset, recover, or revoke lost keys.</li>
+      <li>Signing in is optional for reading; publishing requires a key under your control.</li>
+    </ul>
+
+    <h2>5. User content and conduct</h2>
+    <p>The Service displays user-generated content retrieved from third-party relays. You are responsible for content you publish and for complying with applicable law. You agree not to use the Service to:</p>
+    <ul>
+      <li>Violate any law or third-party rights</li>
+      <li>Harass, threaten, or abuse others</li>
+      <li>Distribute malware or attempt to disrupt relays or the Service</li>
+      <li>Impersonate others or misrepresent your affiliation</li>
+    </ul>
+    <p>We do not pre-moderate Nostr network content. You may mute accounts, adjust filters, or stop using specific relays.</p>
+
+    <h2>6. Third-party relays and services</h2>
+    <p>Relays, media servers (including Blossom-compatible hosts), Lightning wallets, and linked websites are operated by third parties. Their availability, policies, and data handling are outside our control. Your use of those services is at your own risk and subject to their terms.</p>
+
+    <h2>7. Intellectual property</h2>
+    <p>The Plain Text Nostr application, website design, and branding are owned by us or our licensors. Nostr events and public protocol data remain the responsibility of their publishers. Open-source components are subject to their respective licenses.</p>
+
+    <h2>8. Disclaimer of warranties</h2>
+    <p>THE SERVICE IS PROVIDED "AS IS" AND "AS AVAILABLE" WITHOUT WARRANTIES OF ANY KIND, WHETHER EXPRESS OR IMPLIED, INCLUDING MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. WE DO NOT WARRANT THAT THE SERVICE WILL BE UNINTERRUPTED, ERROR-FREE, OR FREE OF HARMFUL CONTENT FROM THIRD-PARTY RELAYS.</p>
+
+    <h2>9. Limitation of liability</h2>
+    <p>TO THE MAXIMUM EXTENT PERMITTED BY LAW, WE WILL NOT BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR ANY LOSS OF DATA, KEYS, PROFITS, OR GOODWILL, ARISING FROM YOUR USE OF THE SERVICE OR THIRD-PARTY RELAYS, EVEN IF WE HAVE BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. OUR TOTAL LIABILITY FOR ANY CLAIM RELATING TO THE SERVICE WILL NOT EXCEED USD $100.</p>
+
+    <h2>10. Indemnification</h2>
+    <p>You agree to indemnify and hold us harmless from claims arising out of your use of the Service, your published content, or your violation of these Terms.</p>
+
+    <h2>11. Changes</h2>
+    <p>We may update these Terms from time to time. The "Last updated" date above will change when we do. Continued use after changes become effective constitutes acceptance of the revised Terms.</p>
+
+    <h2>12. Termination</h2>
+    <p>You may stop using the Service at any time. You may delete local data from the app or browser. Publishing a NIP-62 vanish request, when supported, is your mechanism to request removal of your events from relays that honor it. We may discontinue the Service at any time.</p>
+
+    <h2>13. Governing law</h2>
+    <p>These Terms are governed by the laws of the United States and the State of Delaware, without regard to conflict-of-law rules, except where mandatory local consumer protections apply.</p>
+
+    <h2>14. Contact</h2>
+    <p>Questions about these Terms: <a href="mailto:support@plaintextnostr.com">support@plaintextnostr.com</a> or <a href="/support" data-relay-aware data-main-menu-link>Support</a>.</p>
+
+    {{template "info_page_footer" .}}
+  </section>
+</section>
+{{end}}
+
+{{define "privacy"}}
+{{template "document_start" .}}
+<div class="app-shell">
+  {{template "left_rail" .}}
+  {{template "privacy_main" .}}
+  {{template "right_rail_static" .}}
+</div>
+<script type="module" src="{{assetPath .AssetBasePath "/static/js/layout.js"}}"></script>
+{{template "document_end" .}}
+{{end}}
+
+{{define "privacy_main"}}
+<section class="feed-column shell-main-top" data-shell-main>
+  <section class="page-heading legal-page">
+    {{template "info_page_brand" .}}
+    <h1>Privacy Policy</h1>
+    <p class="legal-page-meta muted">Last updated: June 12, 2026</p>
+    <p class="legal-page-lead muted">This Privacy Policy describes how Plain Text Nostr ("we", "us", or "our") handles information when you use the iOS application and the web reader at <a href="https://plaintextnostr.com">plaintextnostr.com</a> (together, the "Service").</p>
+
+    <h2>Summary</h2>
+    <p>Plain Text Nostr is a decentralized social client. We do not operate a traditional account system, do not sell personal data, and do not use advertising trackers. Most data stays on your device or is fetched from public Nostr relays you choose.</p>
+
+    <h2>Information we do not collect</h2>
+    <ul>
+      <li>We do not require your name, email address, or phone number to browse the Service.</li>
+      <li>We do not run third-party advertising or cross-app tracking SDKs.</li>
+      <li>We do not receive your private key (<code>nsec</code>) on our servers when you use the iOS app.</li>
+    </ul>
+
+    <h2>Information stored on your device</h2>
+    <p>The Service caches Nostr events, profiles, and related metadata locally for speed and offline reading:</p>
+    <ul>
+      <li><strong>iOS:</strong> SQLite database on device; signing keys in the iOS Keychain when you sign in; app preferences in local storage.</li>
+      <li><strong>Web:</strong> SQLite database on the server for the web reader's aggregated cache; browser session storage for keys and relay preferences during your session.</li>
+    </ul>
+    <p>You can clear cached data from in-app settings where available, or by removing the app.</p>
+
+    <h2>Nostr network data</h2>
+    <p>When you use the Service, it requests public events from Nostr relays. That data is defined by the Nostr protocol and is public by design (notes, reactions, profiles, relay lists, and similar event kinds). Publishing attaches your public key to events you sign. Relay operators may log connections, IP addresses, and subscription filters according to their own policies.</p>
+
+    <h2>Signing and publishing</h2>
+    <p>If you sign in, events are signed on your device (iOS) or in your browser (web) and sent to relays you select. We do not operate a centralized posting backend for the iOS app. The web reader may proxy relay connections from its server to improve performance.</p>
+
+    <h2>Encrypted direct messages</h2>
+    <p>When you use encrypted direct messages (NIP-17/NIP-44), ciphertext is exchanged via relays. Plain Text Nostr decrypts messages locally for display. We do not hold plaintext of your DMs on a central server.</p>
+
+    <h2>Media and linked content</h2>
+    <p>Notes may link to images, videos, or files hosted on third-party media servers (including Blossom-compatible hosts). Loading that media contacts those hosts directly or through optional proxies. Those hosts have their own privacy practices.</p>
+
+    <h2>Photo library (iOS only)</h2>
+    <p>If you tap Save on an image in a note, the app requests permission to add that image to your photo library. The app does not read or upload unrelated photos.</p>
+
+    <h2>Support communications</h2>
+    <p>If you email <a href="mailto:support@plaintextnostr.com">support@plaintextnostr.com</a> or open a GitHub issue, we receive the information you choose to send (such as your email address, device model, and description of the problem) solely to respond to your request.</p>
+
+    <h2>Server logs (web reader)</h2>
+    <p>The plaintextnostr.com web deployment may record standard web server logs (IP address, user agent, requested URL, timestamps) for security and operations. These logs are not used for advertising profiles.</p>
+
+    <h2>Children</h2>
+    <p>The Service is not directed to children under 13, and we do not knowingly collect personal information from children.</p>
+
+    <h2>Your choices</h2>
+    <ul>
+      <li>Browse without signing in.</li>
+      <li>Choose which relays to use.</li>
+      <li>Mute accounts and adjust web-of-trust settings.</li>
+      <li>Delete local app data or uninstall the iOS app.</li>
+      <li>Request account deletion flows supported in-app (including NIP-62 vanish requests where available).</li>
+    </ul>
+
+    <h2>International users</h2>
+    <p>Relays and media hosts may be located worldwide. By using the Service you understand that data may be processed in jurisdictions with different privacy laws.</p>
+
+    <h2>Changes</h2>
+    <p>We may update this Privacy Policy from time to time. The "Last updated" date above will change when we do. Material changes will be posted on this page.</p>
+
+    <h2>Contact</h2>
+    <p>Privacy questions: <a href="mailto:support@plaintextnostr.com">support@plaintextnostr.com</a> or <a href="/support" data-relay-aware data-main-menu-link>Support</a>.</p>
+
+    {{template "info_page_footer" .}}
+  </section>
+</section>
+{{end}}

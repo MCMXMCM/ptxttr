@@ -3,10 +3,20 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build:web": "node scripts/build-web-app.mjs",
+    "build:web-vendors": "node scripts/build-web-vendors.mjs",
+    "check:web-budget": "node scripts/build-web-app.mjs",
+    "test:unit": "node --test web/static/js/*.test.js",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui"
   },
   "devDependencies": {
     "@playwright/test": "^1.52.0"
+  },
+  "dependencies": {
+    "@chenglou/pretext": "^0.0.8",
+    "@nostrify/nostrify": "^0.53.0",
+    "@tanstack/query-core": "^5.101.1",
+    "esbuild": "^0.28.1"
   }
 }

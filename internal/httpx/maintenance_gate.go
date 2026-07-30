@@ -21,6 +21,9 @@ const (
 	// channel (see runBackgroundUserAsync); excess work is dropped and
 	// re-fired by the next request that observes the missing/stale entry.
 	userAsyncQueueCapacity = 64
+
+	userAsyncDropActiveRequestThreshold = 2
+	userAsyncDropQueueLenThreshold      = userAsyncQueueCapacity * 3 / 4
 )
 
 type maintenanceLane int
@@ -121,20 +124,30 @@ func (s *Server) runWithRelayWriteBudget(ctx context.Context, kind string, fn fu
 // stall a foreground request handler. Each call site is gated by an
 // endRefresh/cache-TTL key, so dropped work is re-fired by the next request
 // that observes the missing/stale entry.
-func (s *Server) runBackgroundUserAsync(fn func()) {
+func (s *Server) runBackgroundUserAsync(fn func()) bool {
 	if s == nil || fn == nil {
-		return
+		return false
+	}
+	if s.activeRequests.Load() >= userAsyncDropActiveRequestThreshold {
+		s.metrics.Add("bg.user_async_dropped_foreground_hot", 1)
+		return false
+	}
+	if len(s.userAsyncQueue) >= userAsyncDropQueueLenThreshold {
+		s.metrics.Add("bg.user_async_dropped_queue_hot", 1)
+		return false
 	}
 	select {
 	case <-s.ctx.Done():
-		return
+		return false
 	default:
 	}
 	select {
 	case s.userAsyncQueue <- fn:
 		s.metrics.Add("bg.user_async_enqueued", 1)
+		return true
 	default:
 		s.metrics.Add("bg.user_async_dropped", 1)
+		return false
 	}
 }
 

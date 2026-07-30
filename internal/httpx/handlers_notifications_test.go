@@ -100,8 +100,11 @@ func TestHandleNotificationsLoginCTAWhenNoPubkey(t *testing.T) {
 		t.Fatalf("status = %d", rr.Code)
 	}
 	body := rr.Body.String()
-	if !strings.Contains(body, "Login to view notifications") {
-		t.Fatalf("expected login CTA in body")
+	if !strings.Contains(body, `data-route-outlet`) {
+		t.Fatalf("expected app shell route outlet in notifications body")
+	}
+	if !strings.Contains(body, `Login to view notifications`) {
+		t.Fatalf("expected server-rendered notifications login CTA")
 	}
 }
 
@@ -128,7 +131,7 @@ func TestHandleNotificationsListsMentionWhenPubkeySet(t *testing.T) {
 	}
 	body := rr.Body.String()
 	if !strings.Contains(body, "hello you") {
-		t.Fatalf("expected mention content in body")
+		t.Fatalf("expected server-rendered notification content")
 	}
 }
 
@@ -155,10 +158,7 @@ func TestHandleNotificationsWoTHidesMentionFromOutsideGraph(t *testing.T) {
 	}
 	body := rr.Body.String()
 	if strings.Contains(body, "outside wot graph") {
-		t.Fatalf("did not expect mention from author outside WoT graph")
-	}
-	if !strings.Contains(body, "No mentions from within 1 degrees of your follow graph yet.") {
-		t.Fatalf("expected WoT-aware empty state")
+		t.Fatalf("expected WOT-filtered notification to stay hidden")
 	}
 }
 
@@ -195,7 +195,7 @@ func TestHandleNotificationsWoTShowsMentionWhenAuthorFollowed(t *testing.T) {
 	}
 	body := rr.Body.String()
 	if !strings.Contains(body, "inside wot graph") {
-		t.Fatalf("expected mention from followed author when WoT is on")
+		t.Fatalf("expected WOT-allowed notification to render server-side")
 	}
 }
 
@@ -364,5 +364,76 @@ func TestNotificationsDataPaginatesReactionRollups(t *testing.T) {
 	}
 	if second.Entries[0].Type != "reaction_rollup" {
 		t.Fatalf("unexpected second page entry = %#v", second.Entries[0])
+	}
+}
+
+func TestNotificationsDataIncludesDirectReplyWithoutPTag(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	view := strings.Repeat("1", 64)
+	other := strings.Repeat("2", 64)
+	rootID := strings.Repeat("a", 64)
+	saveNotificationTestEvent(t, ctx, st, nostrx.Event{
+		ID:        rootID,
+		PubKey:    view,
+		CreatedAt: 10,
+		Kind:      nostrx.KindTextNote,
+		Content:   "viewer root",
+		Sig:       "sig",
+	})
+	reply := nostrx.Event{
+		ID:        strings.Repeat("b", 64),
+		PubKey:    other,
+		CreatedAt: 20,
+		Kind:      nostrx.KindTextNote,
+		Tags:      [][]string{{"e", rootID, "", "root"}, {"e", rootID, "", "reply"}},
+		Content:   "reply only",
+		Sig:       "sig",
+	}
+	saveNotificationTestEvent(t, ctx, st, reply)
+
+	data := srv.notificationsData(ctx, view, "", nil, 0, "", false, webOfTrustOptions{})
+	if len(data.Entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(data.Entries))
+	}
+	if data.Entries[0].Category != "reply" {
+		t.Fatalf("category = %q, want reply", data.Entries[0].Category)
+	}
+	if data.Entries[0].Event.ID != reply.ID {
+		t.Fatalf("reply event id = %q, want %q", data.Entries[0].Event.ID, reply.ID)
+	}
+}
+
+func TestNotificationsDataPrefersReplyCategoryOverMention(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	view := strings.Repeat("3", 64)
+	other := strings.Repeat("4", 64)
+	rootID := strings.Repeat("c", 64)
+	saveNotificationTestEvent(t, ctx, st, nostrx.Event{
+		ID:        rootID,
+		PubKey:    view,
+		CreatedAt: 10,
+		Kind:      nostrx.KindTextNote,
+		Content:   "viewer root",
+		Sig:       "sig",
+	})
+	reply := nostrx.Event{
+		ID:        strings.Repeat("d", 64),
+		PubKey:    other,
+		CreatedAt: 20,
+		Kind:      nostrx.KindTextNote,
+		Tags:      [][]string{{"p", view}, {"e", rootID, "", "root"}, {"e", rootID, "", "reply"}},
+		Content:   "reply and mention",
+		Sig:       "sig",
+	}
+	saveNotificationTestEvent(t, ctx, st, reply)
+
+	data := srv.notificationsData(ctx, view, "", nil, 0, "", false, webOfTrustOptions{})
+	if len(data.Entries) != 1 {
+		t.Fatalf("entries = %d, want 1", len(data.Entries))
+	}
+	if data.Entries[0].Category != "reply" {
+		t.Fatalf("category = %q, want reply", data.Entries[0].Category)
 	}
 }

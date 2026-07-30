@@ -22,7 +22,9 @@ func (s *Server) runSeedCrawler() {
 		interval = 30 * time.Second
 	}
 	for {
-		s.tryRunMaintenanceWork(maintenanceLaneSeed, s.crawlSeedTick)
+		s.tryRunMaintenanceWork(maintenanceLaneSeed, func() {
+			s.runWithRelayWriteBudget(s.ctx, "crawler.seed", s.crawlSeedTick)
+		})
 		select {
 		case <-s.ctx.Done():
 			return
@@ -52,6 +54,9 @@ func (s *Server) crawlSeedTick() {
 		slog.Debug("seed crawler stale batch failed", "err", err)
 		s.metrics.Add("crawler.seed.query_error", 1)
 		return
+	}
+	if isDefaultLoggedOutSeed(viewer) {
+		targets = appendPinnedSeedContactTargets(targets)
 	}
 	if len(targets) == 0 {
 		s.metrics.Add("crawler.seed.skipped", 1)
@@ -143,7 +148,39 @@ func (s *Server) crawlSeedTick() {
 	s.metrics.Add("crawler.seed.refresh_events", refreshEvents)
 	if graphExpanded {
 		s.invalidateLoggedOutSeedCenter()
+		if isDefaultLoggedOutSeed(viewer) {
+			if err := s.refreshDefaultLoggedOutAuthorMemberships(ctx); err != nil {
+				s.metrics.Add("crawler.seed.membership_cache_error", 1)
+				slog.Warn("seed crawler guest membership cache refresh failed", "err", err)
+			}
+		}
 	}
+	if (graphExpanded || refreshEvents > 0) && isDefaultLoggedOutSeed(viewer) {
+		s.scheduleCanonicalDefaultSeedGuestFeedWarmOneShot()
+	}
+}
+
+func appendPinnedSeedContactTargets(targets []store.HydrationTarget) []store.HydrationTarget {
+	seen := make(map[string]struct{}, len(targets))
+	for _, target := range targets {
+		if target.EntityID != "" {
+			seen[target.EntityID] = struct{}{}
+		}
+	}
+	for _, pubkey := range defaultLoggedOutPinnedPubkeys() {
+		if pubkey == "" {
+			continue
+		}
+		if _, ok := seen[pubkey]; ok {
+			continue
+		}
+		targets = append(targets, store.HydrationTarget{
+			EntityType: store.EntityTypeSeedContact,
+			EntityID:   pubkey,
+			Priority:   4,
+		})
+	}
+	return targets
 }
 
 func (s *Server) setLoggedOutSeedCenterHex(pk string) {
@@ -212,7 +249,7 @@ const (
 )
 
 // seedCrawlerPerTickTimeout returns a context budget for each seed crawl tick.
-// It is floored so cold-start Jack hydration is not cut off by the short HTTP
+// It is floored so cold-start Gigi hydration is not cut off by the short HTTP
 // request timeout used for interactive requests. When authorCount > 0, extra
 // time is added so a full batch can run refreshAuthor + sync + refreshRecent
 // per author without the tick context expiring mid-loop.

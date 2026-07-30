@@ -93,6 +93,60 @@ func TestRootAndParentID(t *testing.T) {
 	}
 }
 
+func TestLegacyPositionalNIP10UsesLastETagAsParent(t *testing.T) {
+	reply := event("reply", "bob", 2, [][]string{
+		{"e", "root"},
+		{"e", "mentioned-event"},
+		{"e", "parent"},
+	})
+	if got := RootID(reply); got != "root" {
+		t.Fatalf("RootID(legacy positional) = %q, want root", got)
+	}
+	if got := ParentID("root", reply); got != "parent" {
+		t.Fatalf("ParentID(legacy positional) = %q, want parent", got)
+	}
+}
+
+func TestMentionTaggedQuoteIsNotAThreadReply(t *testing.T) {
+	quotedID := strings.Repeat("a", 64)
+	quote := nostrx.Event{
+		ID:   strings.Repeat("b", 64),
+		Kind: nostrx.KindTextNote,
+		Tags: [][]string{
+			{"e", quotedID, "wss://relay.example", "mention", strings.Repeat("c", 64)},
+			{"q", quotedID, "wss://relay.example", strings.Repeat("c", 64)},
+		},
+	}
+	if got := RootID(quote); got != "" {
+		t.Fatalf("RootID(mention quote) = %q, want empty", got)
+	}
+	if got := ParentID("", quote); got != "" {
+		t.Fatalf("ParentID(mention quote) = %q, want empty", got)
+	}
+}
+
+func TestNIP22CommentRootAndParentID(t *testing.T) {
+	rootID := strings.Repeat("a", 64)
+	parentID := strings.Repeat("b", 64)
+	comment := nostrx.Event{
+		ID:   strings.Repeat("c", 64),
+		Kind: nostrx.KindComment,
+		Tags: [][]string{
+			{"E", strings.ToUpper(rootID), "wss://root.example", strings.Repeat("d", 64)},
+			{"e", strings.ToUpper(parentID), "wss://parent.example", strings.Repeat("e", 64)},
+		},
+	}
+	if got := ExplicitRootID(comment); got != rootID {
+		t.Fatalf("ExplicitRootID(kind 1111) = %q, want %q", got, rootID)
+	}
+	if got := RootID(comment); got != rootID {
+		t.Fatalf("RootID(kind 1111) = %q, want %q", got, rootID)
+	}
+	if got := ParentID(rootID, comment); got != parentID {
+		t.Fatalf("ParentID(kind 1111) = %q, want %q", got, parentID)
+	}
+}
+
 func TestExplicitRootIDRequiresRootMarker(t *testing.T) {
 	replyOnly := event("reply", "bob", 2, [][]string{
 		{"e", "parent", "", "reply"},

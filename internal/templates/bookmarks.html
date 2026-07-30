@@ -1,12 +1,11 @@
 {{define "bookmarks"}}
 {{template "document_start" .}}
-<div class="app-shell">
-  {{template "left_rail" .}}
+<div>
   {{template "bookmarks_main" .}}
   {{template "right_rail_static" .}}
 </div>
-<script type="module" src="/static/js/feed.js"></script>
-<script type="module" src="/static/js/layout.js"></script>
+<script type="module" src="{{assetPath .AssetBasePath "/static/js/feed.js"}}"></script>
+<script type="module" src="{{assetPath .AssetBasePath "/static/js/layout.js"}}"></script>
 {{template "document_end" .}}
 {{end}}
 

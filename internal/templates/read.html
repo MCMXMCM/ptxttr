@@ -1,7 +1,6 @@
 {{define "read"}}
 {{template "document_start" .}}
-<div class="app-shell reads-shell">
-  {{template "left_rail" .}}
+<div class="reads-shell">
   <section class="feed-column reads-column read-detail-column">
     <section class="page-heading">
       <p><a href="/reads" data-relay-aware data-session-reads-link>&lt;-- Back to reads</a></p>
@@ -14,7 +13,7 @@
           <header class="read-meta">
             <div class="read-meta-copy">
               <h1 class="read-title">{{.Read.Title}}</h1>
-              <p class="muted"><a href="/u/{{.Read.Event.PubKey}}" data-relay-aware>{{displayName .Profiles .Read.Event.PubKey}}</a> · <span class="mono">{{formatDate .Read.PublishedAt}}</span></p>
+              <p class="muted"><a href="{{profileHref .Read.Event.PubKey .Read.Event.RelayURL}}" data-relay-aware>{{displayName .Profiles .Read.Event.PubKey}}</a> · <span class="mono">{{formatDate .Read.PublishedAt}}</span></p>
             </div>
             {{if .Read.ImageURL}}
               <div class="read-thumb read-thumb-full">
@@ -49,6 +48,6 @@
     </section>
   </aside>
 </div>
-<script type="module" src="/static/js/layout.js"></script>
+<script type="module" src="{{assetPath .AssetBasePath "/static/js/layout.js"}}"></script>
 {{template "document_end" .}}
 {{end}}

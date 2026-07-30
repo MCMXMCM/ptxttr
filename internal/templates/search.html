@@ -1,63 +1,102 @@
 {{define "search"}}
 {{template "document_start" .}}
-<div class="app-shell">
-  {{template "left_rail" .}}
+<div>
   {{template "search_main" .}}
   {{template "right_rail_static" .}}
 </div>
-<script type="module" src="/static/js/layout.js"></script>
+<script type="module" src="{{assetPath .AssetBasePath "/static/js/layout.js"}}"></script>
 {{template "document_end" .}}
 {{end}}
 
 {{define "search_main"}}
 <section class="feed-column shell-main-top" data-shell-main>
-  <section class="page-heading search-heading" data-search-heading>
-    <h1>Search</h1>
-    {{if .ShowScopeToggle}}
-      <p class="muted search-scope-links">
-        Scope:
-        {{if eq .Scope "network"}}
-          <strong>current network</strong>
-          <span aria-hidden="true">·</span>
-          <a href="{{.ScopeAllURL}}" data-relay-aware>expand to all cached notes</a>
-        {{else}}
-          <a href="{{.ScopeNetworkURL}}" data-relay-aware>current network</a>
-          <span aria-hidden="true">·</span>
-          <strong>all cached notes</strong>
-        {{end}}
-      </p>
+  {{template "search_heading" .}}
+  {{if eq .Mode "users"}}
+    <section class="feed search-results" data-search-users>
+      {{template "search_user_items" .}}
+    </section>
+  {{else}}
+    <section class="feed search-results" data-feed data-search-results>
+      {{template "search_note_items" .}}
+    </section>
+    {{if and .Query .HasMore}}
+      <button class="load-more" data-load-more data-feed-url="/search" data-fragment="items" data-cursor="{{.Cursor}}" data-cursor-id="{{.CursorID}}" data-search-query="{{.Query}}" data-search-scope="{{.Scope}}" type="button">Load more</button>
     {{end}}
-    {{if .Query}}
-      <p class="muted">Best effort search from this server's local event cache (not global Nostr search).</p>
-      {{if and (gt .OldestCachedAt 0) (gt .LatestCachedAt 0)}}
-        <p class="muted search-cache-window">Cache window for this scope: <strong>{{formatDate .OldestCachedAt}}</strong> to <strong>{{formatDate .LatestCachedAt}}</strong>.</p>
-      {{else}}
-        <p class="muted search-cache-window">Cache window is still warming for this scope.</p>
-      {{end}}
-      <p class="muted">Showing matches for <strong>"{{.Query}}"</strong> in {{.ScopeLabel}}.</p>
-    {{else}}
-      <p class="muted">Enter terms in the search box to find notes from local cache.</p>
-    {{end}}
-  </section>
-
-  <section class="feed search-results" data-feed data-search-results>
-    {{template "search_items" .}}
-  </section>
-
-  {{if and .Query .HasMore}}
-    <button class="load-more" data-load-more data-feed-url="/search" data-fragment="1" data-cursor="{{.Cursor}}" data-cursor-id="{{.CursorID}}" data-search-query="{{.Query}}" data-search-scope="{{.Scope}}" type="button">Load more</button>
   {{end}}
 </section>
 {{end}}
 
-{{define "search_items"}}
+{{define "search_heading"}}
+<section class="page-heading search-heading" data-search-heading>
+  <h1>{{if .Query}}Search results for "{{.Query}}"{{else if eq .Mode "users"}}Search users{{else}}Search notes{{end}}</h1>
+  <p class="muted search-mode-links">
+    Mode:
+    {{if eq .Mode "users"}}
+      <a href="{{.SearchModeNotesURL}}" data-relay-aware>notes</a>
+      <span aria-hidden="true">·</span>
+      <strong>users</strong>
+    {{else}}
+      <strong>notes</strong>
+      <span aria-hidden="true">·</span>
+      <a href="{{.SearchModeUsersURL}}" data-relay-aware>users</a>
+    {{end}}
+  </p>
+  {{if and (ne .Mode "users") .ShowScopeToggle}}
+    <p class="muted search-scope-links">
+      Scope:
+      {{if eq .Scope "network"}}
+        <strong>current network</strong>
+        <span aria-hidden="true">·</span>
+        <a href="{{.ScopeAllURL}}" data-relay-aware>expand to all cached notes</a>
+      {{else}}
+        <a href="{{.ScopeNetworkURL}}" data-relay-aware>current network</a>
+        <span aria-hidden="true">·</span>
+        <strong>all cached notes</strong>
+      {{end}}
+    </p>
+  {{end}}
+  {{if eq .Mode "users"}}
+    <p class="muted">Searching cached profile metadata on this server.</p>
+  {{else if and (gt .OldestCachedAt 0) (gt .LatestCachedAt 0)}}
+    <p class="muted search-cache-window">Cache window for this scope: <strong>{{formatDate .OldestCachedAt}}</strong> to <strong>{{formatDate .LatestCachedAt}}</strong>.</p>
+  {{else}}
+    <p class="muted search-cache-window">Cache window is still warming for this scope.</p>
+  {{end}}
+</section>
+{{end}}
+
+{{define "search_note_items"}}
 {{if not .Query}}
-  <p class="muted">Search notes by keyword.</p>
+  <p class="muted">Enter a search query.</p>
 {{else}}
   {{range .Feed}}
     {{template "note" dict "Event" . "Profiles" $.Profiles "Width" $.AsciiWidth "ReplyCount" (index $.ReplyCounts .ID) "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "ReferencedEvents" $.ReferencedEvents}}
   {{else}}
-    <p class="muted">No cached notes matched that query in {{.ScopeLabel}}.</p>
+    <p class="muted">No results.</p>
   {{end}}
+{{end}}
+{{end}}
+
+{{define "search_user_items"}}
+{{if not .Query}}
+  <p class="muted">Enter a search query for users.</p>
+{{else if .ProfileResults}}
+  <ul class="profile-follow-list">
+    {{range .ProfileResults}}
+      {{$avatar := avatarSrcURL .PubKey .Profile.Picture}}
+      <li class="profile-follow-item" data-profile-follow-item data-profile-follow-search="{{profileSearchText .PubKey .Profile}}">
+        <a href="{{profileHref .PubKey}}" class="profile-follow-link" data-relay-aware>
+          <span class="profile-follow-avatar">{{if $avatar}}<img class="profile-follow-avatar-image" src="{{$avatar}}" data-ptxt-avatar-retry-src="{{.Profile.Picture}}" alt="" loading="lazy" decoding="async">{{else}}<span class="profile-follow-avatar-fallback" aria-hidden="true">@</span>{{end}}</span>
+          <span class="profile-follow-copy">
+            <span class="profile-follow-display">{{displayName $.Profiles .PubKey}}</span>
+            <span class="muted profile-follow-secondary">{{if .Profile.NIP05}}{{.Profile.NIP05}}{{else}}no nip-05 published{{end}}</span>
+            <span class="muted profile-follow-npub mono">{{npub .PubKey}}</span>
+          </span>
+        </a>
+      </li>
+    {{end}}
+  </ul>
+{{else}}
+  <p class="muted">No cached profiles matched that query.</p>
 {{end}}
 {{end}}

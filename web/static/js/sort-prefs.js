@@ -1,5 +1,5 @@
 import { normalizedPubkey } from "./session.js";
-import { isTruthyToken, prefUnset } from "./prefs-utils.js";
+import { isTruthyToken } from "./prefs-utils.js";
 import {
   applyDefaultViewerPrefsIfUnset,
   DEFAULT_LOGGED_OUT_WOT_DEPTH,
@@ -42,34 +42,10 @@ const DEFAULT_LOGGED_OUT_WOT_SEED = DEFAULT_LOGGED_OUT_WOT_SEED_NPUB;
 
 export const WEB_OF_TRUST_SEED_PRESETS = [
   {
-    id: "jack",
-    label: "Jack Dorsey",
-    value: DEFAULT_LOGGED_OUT_WOT_SEED_NPUB,
-    bio: "cofounder of Twitter, cofounder and chairman of Block, and active Nostr user",
-  },
-  {
-    id: "fiatjaf",
-    label: "Fiatjaf",
-    value: "npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6",
-    bio: "Nostr protocol contributor and creator of several Nostr tools",
-  },
-  {
     id: "gigi",
     label: "Gigi",
-    value: "npub1dergggklka99wwrs92yz8wdjs952h2ux2ha2ed598ngwu9w7a6fsh9xzpc",
+    value: DEFAULT_LOGGED_OUT_WOT_SEED_NPUB,
     bio: "Bitcoin educator and writer focused on open protocols",
-  },
-  {
-    id: "lyn_alden",
-    label: "Lyn Alden",
-    value: "npub1a2cww4kn9wqte4ry70vyfwqyqvpswksna27rtxd8vty6c74era8sdcw83a",
-    bio: "macro and Bitcoin researcher sharing long-form analysis",
-  },
-  {
-    id: "odell",
-    label: "Odell",
-    value: "npub1qny3tkh0acurzla8x3zy4nhrjz5zd8l9sy9jys09umwng00manysew95gx",
-    bio: "Bitcoin signal curator and host of discussion spaces",
   },
 ];
 
@@ -157,6 +133,9 @@ export function setImageModePref(enabled) {
   } catch {
     // ignore
   }
+  if (typeof document !== "undefined") {
+    document.documentElement.dataset.ptxtImageMode = enabled ? "on" : "off";
+  }
 }
 
 export function getThreadRenderModePref() {
@@ -181,28 +160,20 @@ export function setThreadRenderModePref(mode) {
 }
 
 export function getWebOfTrustEnabledPref() {
-  try {
-    const raw = localStorage.getItem(WEB_OF_TRUST_ENABLED_KEY);
-    if (prefUnset(WEB_OF_TRUST_ENABLED_KEY)) return !normalizedPubkey();
-    return isTruthyToken(raw);
-  } catch {
-    return false;
-  }
+  return true;
 }
 
 export function setWebOfTrustEnabledPref(enabled) {
   try {
-    localStorage.setItem(WEB_OF_TRUST_ENABLED_KEY, enabled ? "1" : "0");
+    localStorage.setItem(WEB_OF_TRUST_ENABLED_KEY, "1");
   } catch {
     // ignore
   }
 }
 
 export function getWebOfTrustDepthPref() {
+  if (!normalizedPubkey()) return DEFAULT_LOGGED_OUT_WOT_DEPTH;
   try {
-    if (prefUnset(WEB_OF_TRUST_DEPTH_KEY) && !normalizedPubkey()) {
-      return DEFAULT_LOGGED_OUT_WOT_DEPTH;
-    }
     const raw = localStorage.getItem(WEB_OF_TRUST_DEPTH_KEY);
     return normalizeWebOfTrustDepth(raw);
   } catch {
@@ -212,6 +183,10 @@ export function getWebOfTrustDepthPref() {
 
 export function setWebOfTrustDepthPref(value) {
   try {
+    if (!normalizedPubkey()) {
+      localStorage.setItem(WEB_OF_TRUST_DEPTH_KEY, String(DEFAULT_LOGGED_OUT_WOT_DEPTH));
+      return;
+    }
     localStorage.setItem(WEB_OF_TRUST_DEPTH_KEY, `${normalizeWebOfTrustDepth(value)}`);
   } catch {
     // ignore
@@ -220,6 +195,7 @@ export function setWebOfTrustDepthPref(value) {
 
 export function getWebOfTrustSeedPref() {
   try {
+    if (!normalizedPubkey()) return "";
     return String(localStorage.getItem(WEB_OF_TRUST_SEED_KEY) || "").trim();
   } catch {
     return "";
@@ -228,6 +204,10 @@ export function getWebOfTrustSeedPref() {
 
 export function setWebOfTrustSeedPref(seed) {
   try {
+    if (!normalizedPubkey()) {
+      localStorage.removeItem(WEB_OF_TRUST_SEED_KEY);
+      return;
+    }
     const next = String(seed || "").trim();
     if (next) localStorage.setItem(WEB_OF_TRUST_SEED_KEY, next);
     else localStorage.removeItem(WEB_OF_TRUST_SEED_KEY);
@@ -237,7 +217,7 @@ export function setWebOfTrustSeedPref(seed) {
 }
 
 export function getEffectiveLoggedOutWebOfTrustSeed() {
-  return getWebOfTrustSeedPref() || DEFAULT_LOGGED_OUT_WOT_SEED;
+  return DEFAULT_LOGGED_OUT_WOT_SEED;
 }
 
 /** Feed sidebar trending; empty storage means default 24h window. */
@@ -367,4 +347,3 @@ export function getBlossomPresetIdForURLs(list) {
 export function getBlossomPresetId() {
   return getBlossomPresetIdForURLs(getBlossomServerURLs());
 }
-

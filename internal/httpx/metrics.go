@@ -33,6 +33,15 @@ func (m *appMetrics) Add(name string, delta int64) {
 	m.counters[name] += delta
 }
 
+func (m *appMetrics) Set(name string, value int64) {
+	if m == nil || name == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.counters[name] = value
+}
+
 func (m *appMetrics) Observe(name string, duration time.Duration) {
 	if m == nil || name == "" {
 		return

@@ -1,7 +1,6 @@
 {{define "login"}}
 {{template "document_start" .}}
-<div class="app-shell">
-  {{template "left_rail" .}}
+<div>
   <section class="feed-column shell-main-top" data-shell-main>
     <section class="page-heading">
       <div class="ascii-border">{{asciiBorder}}</div>
@@ -50,7 +49,7 @@
           <input type="radio" name="login-tab" id="login-tab-yolo" class="user-tab-state">
           <section class="user-tab-panel login-tab-panel login-tab-panel-danger" aria-label="Nsec login">
             <h2>Nsec Login (Private key YOLO)</h2>
-            <p class="muted">Dangerous: your private key is handled in browser JavaScript and stored for this login only.</p>
+            <p class="muted">Dangerous: your private key is handled in browser JavaScript and stored in this browser so the account can persist across restarts and be switched locally.</p>
             <form data-login-yolo class="login-tab-stacked-form">
               <input name="secret" placeholder="nsec or hex private key" autocomplete="off">
               <div class="login-tab-panel-actions">
@@ -64,7 +63,7 @@
       <div class="login-split-column login-split-column--signup">
         <h2 class="login-split-heading">Sign up</h2>
         <section class="login-signup-panel login-tab-panel login-tab-panel-danger" aria-label="Sign up">
-          <p class="muted" data-signup-intro>Create a new Nostr identity. Your browser generates a keypair; keys never leave this device until you copy them.</p>
+          <p class="muted" data-signup-intro>Create a new Nostr identity. Your browser generates a keypair, keeps it on this device for future logins, and never sends it anywhere until you choose to post.</p>
           <div class="login-tab-panel-actions" data-signup-intro-actions>
             <button type="button" data-signup-generate>Create account</button>
           </div>
@@ -100,6 +99,11 @@
           <a data-session-feed-link data-relay-aware href="/">Open feed</a>
           <a data-session-user-link data-relay-aware href="/login">Open profile</a>
         </p>
+        <section class="login-recent-accounts-panel" data-recent-accounts-section hidden>
+          <h3>Recent accounts</h3>
+          <p class="muted">Stored signing accounts stay available on this browser so you can switch back without re-entering your <code>nsec</code>.</p>
+          <ul class="login-recent-accounts-list" data-recent-accounts-list></ul>
+        </section>
         <div class="login-tab-panel-actions" data-session-logout-wrap hidden>
           <button type="button" data-logout>Log out</button>
         </div>
@@ -108,7 +112,7 @@
   </section>
   {{template "login_right_rail" .}}
 </div>
-<script type="module" src="/static/js/layout.js"></script>
-<script type="module" src="/static/js/login.js"></script>
+<script type="module" src="{{assetPath .AssetBasePath "/static/js/layout.js"}}"></script>
+<script type="module" src="{{assetPath .AssetBasePath "/static/js/login.js"}}"></script>
 {{template "document_end" .}}
 {{end}}

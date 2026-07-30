@@ -1,59 +1,8 @@
 import { positionPopoverNearAnchor } from "./popover_anchor.js";
-import { fetchWithSession, getSession, normalizedPubkey, normalizeRelayURL, saveSelectedRelays, selectedRelays } from "./session.js";
-
-let list = null;
-let suggestions = null;
+import { nip11 } from "../lib/nostr-tools.js";
+import { directRelaysEnabled } from "./relay-config.js";
 let globalClickBound = false;
-
-function addRelay(url) {
-  const normalized = normalizeRelayURL(url);
-  if (!normalized) {
-    alert("Relay URL must start with ws:// or wss://");
-    return;
-  }
-  if (!list) return;
-  if (list.querySelector(`[data-relay="${CSS.escape(normalized)}"]`)) return;
-  const li = document.createElement("li");
-  li.dataset.relay = normalized;
-
-  const code = document.createElement("code");
-  code.className = "relay-url-popover";
-  code.textContent = normalized;
-  code.dataset.checkRelay = normalized;
-  code.tabIndex = 0;
-  code.setAttribute("role", "button");
-
-  const removeButton = document.createElement("button");
-  removeButton.type = "button";
-  removeButton.textContent = "remove";
-  removeButton.dataset.removeRelay = normalized;
-
-  li.append(code, document.createTextNode(" "), removeButton);
-  list.append(li);
-}
-
-function syncSelectedRelays() {
-  if (!list) return;
-  const seen = new Set(Array.from(list.querySelectorAll("[data-relay]")).map((item) => item.dataset.relay));
-  for (const relay of selectedRelays()) {
-    if (seen.has(relay)) continue;
-    addRelay(relay);
-  }
-}
-
-function bindRelayForm() {
-  const form = document.querySelector("[data-relay-form]");
-  if (!form || form.dataset.bound === "1") return;
-  form.dataset.bound = "1";
-  form.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const relay = normalizeRelayURL(String(new FormData(event.currentTarget).get("relay") || ""));
-    if (!relay) return;
-    addRelay(relay);
-    saveSelectedRelays([...selectedRelays(), relay]);
-    event.currentTarget.reset();
-  });
-}
+const relayInfoCache = new Map();
 
 function eventTargetElement(event) {
   const t = event.target;
@@ -70,31 +19,14 @@ function bindGlobalRelayClicks() {
   document.addEventListener("click", async (event) => {
     const from = eventTargetElement(event);
     if (!from) return;
-    const add = from.closest("[data-add-relay]");
-    if (add) {
-      const relay = add.dataset.addRelay;
-      addRelay(relay);
-      saveSelectedRelays([...selectedRelays(), relay]);
-      add.textContent = "added";
-      return;
-    }
-
-    const remove = from.closest("[data-remove-relay]");
-    if (remove) {
-      const relay = remove.dataset.removeRelay;
-      saveSelectedRelays(selectedRelays().filter((item) => item !== relay));
-      remove.closest("[data-relay]")?.remove();
-      return;
-    }
-
     const anchor = from.closest("[data-check-relay]");
     if (!anchor) return;
     const pop = ensureRelayInfoPopover();
     pop.textContent = "Loading...";
     positionPopoverNearAnchor(anchor, pop, { maxWidth: 360, fallbackHeight: 120 });
     showRelayInfoPopover();
-    const response = await fetch(`/api/relay-info?url=${encodeURIComponent(anchor.dataset.checkRelay)}`);
-    pop.textContent = formatRelayInfo(await response.json());
+    const info = await fetchCachedRelayInfo(anchor.dataset.checkRelay);
+    pop.textContent = formatRelayInfo(info || { error: "Could not load relay info." });
     positionPopoverNearAnchor(anchor, pop, { maxWidth: 360, fallbackHeight: 120 });
   });
   document.addEventListener("keydown", (event) => {
@@ -106,27 +38,111 @@ function bindGlobalRelayClicks() {
   });
 }
 
-async function loadSessionRelaySuggestions() {
-  if (!suggestions) return;
-  const pubkey = normalizedPubkey(getSession());
-  if (!pubkey) return;
-  // Selected relays travel as X-Ptxt-Relays via fetchWithSession; no need in URL.
-  try {
-    const response = await fetchWithSession(`/relays?fragment=suggestions`);
-    if (!response.ok) return;
-    suggestions.innerHTML = await response.text();
-  } catch {
-    // Relay suggestions are progressive enhancement; the page is useful without them.
+export function initRelaysPage(root = document) {
+  hydrateRelayInfoCards(root);
+}
+
+export function hydrateRelayInfoCards(root = document) {
+  root.querySelectorAll?.("[data-relay-info-card]").forEach((card) => {
+    if (!(card instanceof HTMLElement)) return;
+    if (card.dataset.relayInfoHydrated === "1" || card.dataset.relayInfoHydrating === "1") return;
+    const relay = card.dataset.relayUrl || card.querySelector("[data-check-relay]")?.getAttribute("data-check-relay") || "";
+    if (!relay) return;
+    card.dataset.relayInfoHydrating = "1";
+    void fetchCachedRelayInfo(relay).then((info) => {
+      card.dataset.relayInfoHydrated = "1";
+      delete card.dataset.relayInfoHydrating;
+      applyRelayInfoToCard(card, relay, info);
+    });
+  });
+}
+
+async function fetchCachedRelayInfo(relay) {
+  const relayURL = String(relay || "").trim();
+  if (!relayURL || !directRelaysEnabled()) return null;
+  if (!relayInfoCache.has(relayURL)) {
+    relayInfoCache.set(relayURL, nip11.fetchRelayInformation(relayURL).catch(() => null));
+  }
+  return relayInfoCache.get(relayURL);
+}
+
+function applyRelayInfoToCard(card, relay, info) {
+  if (!info || typeof info !== "object") return;
+  const title = relayDisplayName(relay, info);
+  const titleNode = card.querySelector("[data-relay-title]");
+  if (titleNode && title) titleNode.textContent = title;
+  const description = String(info.description || "").trim();
+  const descriptionNode = card.querySelector("[data-relay-description]");
+  if (descriptionNode instanceof HTMLElement) {
+    descriptionNode.textContent = description;
+    descriptionNode.hidden = !description;
+  }
+  const nipsNode = card.querySelector("[data-relay-nips]");
+  if (nipsNode instanceof HTMLElement) {
+    const nips = relayNIPLabels(info.supported_nips);
+    nipsNode.replaceChildren(...nips.map((label) => {
+      const chip = document.createElement("span");
+      chip.className = "relay-card-nip";
+      chip.textContent = label;
+      return chip;
+    }));
+    nipsNode.hidden = nips.length === 0;
+  }
+  const icon = String(info.icon || "").trim();
+  const iconNode = card.querySelector("[data-relay-icon]");
+  const iconURL = safeImageURL(icon, relay);
+  if (iconNode instanceof HTMLElement && iconURL) {
+    iconNode.textContent = "";
+    const image = document.createElement("img");
+    image.src = iconURL;
+    image.alt = "";
+    image.loading = "lazy";
+    image.decoding = "async";
+    iconNode.append(image);
   }
 }
 
-export function initRelaysPage(root = document) {
-  list = root.querySelector("[data-relay-list]");
-  suggestions = root.querySelector("[data-relay-suggestions]");
-  if (!list) return;
-  bindRelayForm();
-  syncSelectedRelays();
-  void loadSessionRelaySuggestions();
+function relayDisplayName(relay, info = {}) {
+  const name = String(info.name || "").trim();
+  if (name) return name;
+  return relayHostLabel(relay);
+}
+
+export function relayHostLabel(relay) {
+  try {
+    return new URL(String(relay || "").replace(/^ws:\/\//, "http://").replace(/^wss:\/\//, "https://")).hostname || String(relay || "").trim();
+  } catch {
+    return String(relay || "").trim();
+  }
+}
+
+function relayNIPLabels(raw) {
+  if (!Array.isArray(raw)) return [];
+  return [...new Set(raw
+    .map((nip) => Number.parseInt(`${nip}`, 10))
+    .filter((nip) => Number.isFinite(nip) && nip >= 0))]
+    .sort((a, b) => a - b)
+    .slice(0, 12)
+    .map((nip) => `NIP-${nip}`);
+}
+
+function relayHTTPBaseURL(relay) {
+  try {
+    const parsed = new URL(String(relay || "").replace(/^ws:\/\//, "http://").replace(/^wss:\/\//, "https://"));
+    return parsed.origin + "/";
+  } catch {
+    return window.location?.href || "https://example.com/";
+  }
+}
+
+function safeImageURL(raw, relay) {
+  try {
+    const parsed = new URL(raw, relayHTTPBaseURL(relay));
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return "";
+    return parsed.href;
+  } catch {
+    return "";
+  }
 }
 
 let relayInfoPopover = null;

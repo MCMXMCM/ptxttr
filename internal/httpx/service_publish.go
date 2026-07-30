@@ -22,12 +22,23 @@ type relayInsightEntry struct {
 }
 
 type relayInsightResponse struct {
-	PubKey            string              `json:"pubkey"`
-	PublishedEventID  string              `json:"published_event_id,omitempty"`
-	PublishedCreated  int64               `json:"published_created_at,omitempty"`
-	PublishedRelays   []relayInsightEntry `json:"published_relays"`
-	DiscoveredRelays  []relayInsightEntry `json:"discovered_relays"`
-	RecommendedRelays []relayInsightEntry `json:"recommended_relays"`
+	PubKey                 string                   `json:"pubkey"`
+	PublishedEventID       string                   `json:"published_event_id,omitempty"`
+	PublishedCreated       int64                    `json:"published_created_at,omitempty"`
+	SessionRelays          []string                 `json:"session_relays"`
+	EffectiveDefaultRelays []string                 `json:"effective_default_relays"`
+	PublishedRelays        []relayInsightEntry      `json:"published_relays"`
+	DiscoveredRelays       []relayInsightEntry      `json:"discovered_relays"`
+	RecommendedRelays      []relayInsightEntry      `json:"recommended_relays"`
+	ActiveOutboxRelays     []string                 `json:"active_outbox_relays"`
+	OutboxGroups           []relayInsightRouteGroup `json:"outbox_groups"`
+	CachedHintAuthorCount  int                      `json:"cached_hint_author_count"`
+	FeedAuthorCount        int                      `json:"feed_author_count"`
+}
+
+type relayInsightRouteGroup struct {
+	Authors []string `json:"authors"`
+	Relays  []string `json:"relays"`
 }
 
 // planPublishRelays returns a deduplicated outbound relay list with this
@@ -134,13 +145,21 @@ func (s *Server) publishParticipantPubkeys(ctx context.Context, event nostrx.Eve
 	return uniqueNonEmptyStrings(participants)
 }
 
-func (s *Server) buildRelayInsight(ctx context.Context, pubkey string, requestRelays []string) relayInsightResponse {
+func (s *Server) buildRelayInsight(ctx context.Context, pubkey string, requestRelays []string, sessionRelays []string) relayInsightResponse {
+	effectiveDefaultRelays := requestRelays
+	if len(effectiveDefaultRelays) == 0 {
+		effectiveDefaultRelays = nostrx.NormalizeRelayList(append([]string(nil), s.cfg.DefaultRelays...), nostrx.MaxRelays)
+	}
 	statuses, _ := s.store.RelayStatuses(ctx)
 	response := relayInsightResponse{
-		PubKey:            pubkey,
-		PublishedRelays:   []relayInsightEntry{},
-		DiscoveredRelays:  []relayInsightEntry{},
-		RecommendedRelays: []relayInsightEntry{},
+		PubKey:                 pubkey,
+		SessionRelays:          nostrx.NormalizeRelayList(sessionRelays, nostrx.MaxRelays),
+		EffectiveDefaultRelays: nostrx.NormalizeRelayList(effectiveDefaultRelays, nostrx.MaxRelays),
+		PublishedRelays:        []relayInsightEntry{},
+		DiscoveredRelays:       []relayInsightEntry{},
+		RecommendedRelays:      []relayInsightEntry{},
+		ActiveOutboxRelays:     []string{},
+		OutboxGroups:           []relayInsightRouteGroup{},
 	}
 	newEntry := func(url string, sources []string, usage, confidence string) relayInsightEntry {
 		status, ok := statuses[url]
@@ -212,6 +231,26 @@ func (s *Server) buildRelayInsight(ctx context.Context, pubkey string, requestRe
 		response.RecommendedRelays = append(response.RecommendedRelays, newEntry(relay, []string{"backend_recommended"}, "write", "high"))
 	}
 	sortRelayInsightEntries(response.RecommendedRelays)
+
+	authors := s.following(ctx, pubkey, maxFeedAuthors)
+	response.FeedAuthorCount = len(authors)
+	if len(authors) > 0 {
+		hintSets, _ := s.store.RelayHintsByUsageForPubkeys(ctx, authors)
+		for _, author := range authors {
+			if len(hintSets[author].All) > 0 {
+				response.CachedHintAuthorCount++
+			}
+		}
+		outboxGroups := s.groupAuthorsForOutbox(ctx, pubkey, authors, response.EffectiveDefaultRelays)
+		for _, group := range outboxGroups {
+			response.OutboxGroups = append(response.OutboxGroups, relayInsightRouteGroup{
+				Authors: append([]string(nil), group.authors...),
+				Relays:  append([]string(nil), group.relays...),
+			})
+			response.ActiveOutboxRelays = append(response.ActiveOutboxRelays, group.relays...)
+		}
+		response.ActiveOutboxRelays = nostrx.NormalizeRelayList(response.ActiveOutboxRelays, nostrx.MaxRelays*2)
+	}
 	return response
 }
 

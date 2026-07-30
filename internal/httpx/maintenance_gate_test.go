@@ -8,7 +8,7 @@ import (
 )
 
 // TestRunBackgroundUserAsyncDropsWhenQueueFull verifies runBackgroundUserAsync
-// never blocks when the queue is full (bg.user_async_dropped).
+// never blocks once the queue is hot/full (bg.user_async_dropped_queue_hot).
 func TestRunBackgroundUserAsyncDropsWhenQueueFull(t *testing.T) {
 	srv, _ := newTestServer(t, testServerOptions{})
 
@@ -30,18 +30,18 @@ func TestRunBackgroundUserAsyncDropsWhenQueueFull(t *testing.T) {
 	// drained except for jobs we explicitly enqueue below.
 	waitOrFail(t, &stalled, 2*time.Second, "stall workers")
 
-	// Fill the buffered channel to capacity. Each successful enqueue
+	// Fill the buffered channel to the hot threshold. Each successful enqueue
 	// increments bg.user_async_enqueued.
 	noop := func() {}
-	for i := 0; i < userAsyncQueueCapacity; i++ {
+	for i := 0; i < userAsyncDropQueueLenThreshold; i++ {
 		srv.runBackgroundUserAsync(noop)
 	}
 
 	enqueuedBefore := metricCounter(srv, "bg.user_async_enqueued")
-	droppedBefore := metricCounter(srv, "bg.user_async_dropped")
+	droppedBefore := metricCounter(srv, "bg.user_async_dropped_queue_hot")
 
-	// Now the buffer is full and both workers are stalled. Any further
-	// call MUST return immediately and increment bg.user_async_dropped.
+	// Now the buffer is hot and both workers are stalled. Any further
+	// call MUST return immediately and increment the queue-hot drop metric.
 	const overflow = 8
 	deadline := time.Now().Add(500 * time.Millisecond)
 	done := make(chan struct{})
@@ -58,10 +58,10 @@ func TestRunBackgroundUserAsyncDropsWhenQueueFull(t *testing.T) {
 	}
 
 	enqueuedAfter := metricCounter(srv, "bg.user_async_enqueued")
-	droppedAfter := metricCounter(srv, "bg.user_async_dropped")
+	droppedAfter := metricCounter(srv, "bg.user_async_dropped_queue_hot")
 
 	if got, want := droppedAfter-droppedBefore, int64(overflow); got != want {
-		t.Fatalf("bg.user_async_dropped delta = %d, want %d", got, want)
+		t.Fatalf("bg.user_async_dropped_queue_hot delta = %d, want %d", got, want)
 	}
 	if got := enqueuedAfter - enqueuedBefore; got != 0 {
 		t.Fatalf("bg.user_async_enqueued grew by %d while queue was full; expected 0", got)
@@ -134,6 +134,52 @@ func TestUserAsyncWorkerParallelism(t *testing.T) {
 
 	if got := peak.Load(); got < int32(want) {
 		t.Fatalf("peak concurrent workers = %d, want >= %d (relayWriteSem may be undersized)", got, want)
+	}
+}
+
+func TestWarmQueueDropsAndStopsAfterServerCancel(t *testing.T) {
+	srv, _ := newTestServer(t, testServerOptions{})
+	srv.Stop()
+
+	srv.warmer.enqueue(warmJob{
+		key:  "recent:cancelled",
+		kind: "recent",
+	})
+	srv.warmer.close()
+
+	if got := metricCounter(srv, "warm.enqueued"); got != 0 {
+		t.Fatalf("warm.enqueued = %d after server cancel, want 0", got)
+	}
+	if got := srv.warmer.pendingCount(); got != 0 {
+		t.Fatalf("pending warm jobs = %d after server cancel, want 0", got)
+	}
+}
+
+func TestServerCloseReturnsWhenBackgroundIgnoresCancel(t *testing.T) {
+	srv, _ := newTestServer(t, testServerOptions{})
+	previous := serverCloseTimeout
+	serverCloseTimeout = 20 * time.Millisecond
+	defer func() { serverCloseTimeout = previous }()
+
+	release := make(chan struct{})
+	srv.runBackground(func() {
+		<-release
+	})
+	defer close(release)
+
+	done := make(chan struct{})
+	started := time.Now()
+	go func() {
+		srv.Close()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("Close blocked on background goroutine that ignored cancellation")
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("Close took %s, want bounded shutdown", elapsed)
 	}
 }
 

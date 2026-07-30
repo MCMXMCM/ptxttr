@@ -1,11 +1,12 @@
 {{define "settings"}}
 {{template "document_start" .}}
-<div class="app-shell">
-  {{template "left_rail" .}}
+<div>
   {{template "settings_main" .}}
   {{template "right_rail_static" .}}
 </div>
-<script type="module" src="/static/js/layout.js"></script>
+<script type="module" src="{{assetPath .AssetBasePath "/static/js/layout.js"}}"></script>
+<script type="module" src="{{assetPath .AssetBasePath "/static/js/relays.js"}}"></script>
+<script type="module" src="{{assetPath .AssetBasePath "/static/js/multi-account.js"}}"></script>
 {{template "document_end" .}}
 {{end}}
 
@@ -29,6 +30,23 @@
               <input id="image-mode-toggle" type="checkbox" data-image-mode-toggle>
               <button type="button" class="settings-mode-option" data-image-mode-set="off">OFF</button>
               <button type="button" class="settings-mode-option" data-image-mode-set="on">ON</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <h2>Accounts</h2>
+      <div class="settings-mode-tree-group" data-account-switcher-root>
+        <div class="settings-mode-tree-group-main">
+          <div class="settings-slider-tree settings-mode-tree-stacked">
+            <div class="settings-mode-branch" aria-hidden="true"></div>
+            <div class="settings-mode-row-head">
+              <strong>Recent signing accounts</strong>
+            </div>
+            <div class="settings-mode-row-body">
+              <small class="muted">Switch the active signer for replies and new notes in this browser. Stored signing accounts remain limited to the most recent three.</small>
+              <ul class="settings-account-list" data-account-switcher-list>
+                <li class="muted">No recent signing accounts yet.</li>
+              </ul>
             </div>
           </div>
         </div>
@@ -101,25 +119,10 @@
       <h2>Web of Trust</h2>
       <div class="settings-mode-tree-group">
         <div class="settings-mode-tree-group-main">
-          <div class="settings-mode-tree settings-mode-tree-stacked" data-settings-mode-row>
-            <div class="settings-mode-branch" aria-hidden="true"></div>
-            <div class="settings-mode-row-head">
-              <strong>Filter Notes By Web of Trust</strong>
-              <div class="settings-mode-switch" role="group" aria-label="Web of Trust toggle">
-                <input id="wot-toggle" type="checkbox" data-wot-toggle>
-                <button type="button" class="settings-mode-option" data-wot-set="off" aria-pressed="false">OFF</button>
-                <button type="button" class="settings-mode-option" data-wot-set="on" aria-pressed="false">ON</button>
-              </div>
-            </div>
-            <div class="settings-mode-row-body">
-              <small class="muted">Limit note feeds to authors reachable within a selected follow graph. Default setup uses 3 degrees from Jack Dorsey. You can choose another seed profile, or log in to use your own follow list.</small>
-              <small class="muted" data-wot-eligibility-note hidden>To use your own follow graph, log in and follow at least 1 user.</small>
-            </div>
-          </div>
           <div class="settings-slider-tree settings-mode-tree-stacked" data-settings-slider-row>
             <div class="settings-mode-branch" aria-hidden="true"></div>
             <div class="settings-mode-row-head">
-              <strong>Degrees of Separation</strong>
+              <strong>Feed Scope</strong>
               <div class="settings-depth-control">
                 <select id="settings-wot-depth" class="feed-wot-depth-select settings-wot-depth-select" data-wot-depth aria-label="Web of Trust depth">
                   <option value="1">wot: 1°</option>
@@ -129,17 +132,114 @@
               </div>
             </div>
             <div class="settings-mode-row-body">
-              <small class="muted">Choose how many follow hops to include, from 1 to {{.WebOfTrustMaxDepth}}.</small>
+              <small class="muted">Feeds stay limited to a web of trust so relay reads remain bounded. Logged-out browsing uses Gigi's graph; signed-in browsing uses your follow list.</small>
+              <small class="muted" data-wot-eligibility-note hidden>Follow at least 1 user to build your own graph.</small>
             </div>
           </div>
-          <div class="settings-slider-tree settings-mode-tree-stacked" data-wot-seed-row{{if .UserPubKey}} hidden{{end}}>
+        </div>
+      </div>
+      <h2>Relays</h2>
+      <div class="settings-mode-tree-group">
+        <div class="settings-mode-tree-group-main">
+          <div class="settings-slider-tree settings-mode-tree-stacked">
             <div class="settings-mode-branch" aria-hidden="true"></div>
             <div class="settings-mode-row-head">
-              <strong>Seed Profile</strong>
+              <strong>Effective Read Relays</strong>
             </div>
             <div class="settings-mode-row-body">
-              <small class="muted">Browse from this profile's follow graph when you're not logged in.</small>
-              <fieldset class="settings-wot-seed-group" data-wot-seed-group aria-label="Seed profiles"></fieldset>
+              <ul class="relay-list" data-relay-insight-effective>
+                <li class="muted">No effective read relays.</li>
+              </ul>
+            </div>
+          </div>
+          <div class="settings-slider-tree settings-mode-tree-stacked">
+            <div class="settings-mode-branch" aria-hidden="true"></div>
+            <div class="settings-mode-row-head">
+              <strong>Your Relays (NIP-65)</strong>
+            </div>
+            <div class="settings-mode-row-body">
+              <p class="muted" data-relay-insight-status>Loading relay insight...</p>
+              <ul class="relay-list" data-relay-insight-published>
+                <li class="muted">No published relay preferences yet.</li>
+              </ul>
+            </div>
+          </div>
+          <div class="settings-slider-tree settings-mode-tree-stacked settings-relay-advanced" hidden>
+            <div class="settings-mode-branch" aria-hidden="true"></div>
+            <div class="settings-mode-row-head">
+              <strong>Effective Defaults</strong>
+            </div>
+            <div class="settings-mode-row-body">
+              <ul class="relay-list" data-relay-insight-defaults>
+                <li class="muted">No effective defaults available yet.</li>
+              </ul>
+            </div>
+          </div>
+          <div class="settings-slider-tree settings-mode-tree-stacked settings-relay-advanced" hidden>
+            <div class="settings-mode-branch" aria-hidden="true"></div>
+            <div class="settings-mode-row-head">
+              <strong>Discovered Relay Hints</strong>
+            </div>
+            <div class="settings-mode-row-body">
+              <ul class="relay-list" data-relay-insight-discovered>
+                <li class="muted">No discovered relay hints yet.</li>
+              </ul>
+            </div>
+          </div>
+          <div class="settings-slider-tree settings-mode-tree-stacked settings-relay-advanced" hidden>
+            <div class="settings-mode-branch" aria-hidden="true"></div>
+            <div class="settings-mode-row-head">
+              <strong>Backend Recommendations</strong>
+            </div>
+            <div class="settings-mode-row-body">
+              <ul class="relay-list" data-relay-insight-recommended>
+                <li class="muted">No recommendations available yet.</li>
+              </ul>
+            </div>
+          </div>
+          <div class="settings-slider-tree settings-mode-tree-stacked">
+            <div class="settings-mode-branch" aria-hidden="true"></div>
+            <div class="settings-mode-row-head">
+              <strong>Outbox Routing</strong>
+            </div>
+            <div class="settings-mode-row-body">
+              <p class="muted" data-relay-outbox-summary>No outbox routing data yet.</p>
+              <ul class="relay-list" data-relay-insight-outbox>
+                <li class="muted">No active outbox relays yet.</li>
+              </ul>
+            </div>
+          </div>
+          <div class="settings-slider-tree settings-mode-tree-stacked" data-relay-edit-section hidden>
+            <div class="settings-mode-branch" aria-hidden="true"></div>
+            <div class="settings-mode-row-head">
+              <strong>Edit Relay List</strong>
+            </div>
+            <div class="settings-mode-row-body">
+              <small class="muted">Write relays are where you publish. Read relays are where replies and reactions may be delivered.</small>
+              <form class="settings-form" data-relay-preferences-form>
+                <label>Relay URL
+                  <input type="text" name="relay" data-relay-preference-input placeholder="wss://relay.example.com">
+                </label>
+                <label>Usage
+                  <select name="usage" data-relay-preference-usage>
+                    <option value="any">Read + write</option>
+                    <option value="write">Write only</option>
+                    <option value="read">Read only</option>
+                  </select>
+                </label>
+                <div class="toolbar dialog-actions">
+                  <button type="button" data-relay-preference-add>Add relay</button>
+                  <button type="button" data-relay-preference-fetch>Fetch relay list</button>
+                  <button type="button" data-relay-preference-use-defaults>Use effective defaults</button>
+                  <button type="button" data-relay-preference-use-recommended>Use recommendations</button>
+                </div>
+                <ul class="relay-list" data-relay-preferences-list>
+                  <li class="muted">Add relay preferences here.</li>
+                </ul>
+                <div class="toolbar dialog-actions" data-relay-preferences-publish-actions hidden>
+                  <button type="submit" data-relay-preferences-submit>Publish relay preferences</button>
+                </div>
+              </form>
             </div>
           </div>
         </div>

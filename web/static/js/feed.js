@@ -1,4 +1,15 @@
 import { addAsciiWidthHint } from "./ascii-width-hint.js";
+import {
+  appendClientFeedPage,
+  appendClientNotificationsPage,
+  appendClientProfilePage,
+  appendClientReadsPage,
+  appendClientSearchPage,
+  isRelayNativeFeed,
+  isRelayNativeProfile,
+  appendClientTagPage,
+  isRelayNativeTag,
+} from "./client-render.js";
 import { wireAvatarImageFallbacks } from "./layout.js";
 import { fetchWithSession, normalizedPubkey } from "./session.js";
 import { refreshVisibleFeedNoteMetadata } from "./feed-metadata.js";
@@ -6,14 +17,43 @@ import { bindProfileStatLinks } from "./profile-tabs.js";
 import { initViewMore } from "./notes.js";
 import { syncBookmarkState } from "./bookmarks.js";
 import { feedSortForSession, getFeedSortPref } from "./sort-prefs.js";
-import { notifyFeedNotesChanged } from "./thread-prefetch.js";
 import { refreshVisibleNoteProfiles } from "./note-profiles.js";
+import { powerSaverActive } from "./power-mode.js";
+import {
+  hideInlineRetroLoader,
+  initRetroLoaders,
+  setRetroLoaderProgress,
+  settleRetroLoader,
+  showInlineRetroLoader,
+} from "./retro-loader.js";
 
 let initialized = false;
 const loadMoreRequestTimeoutMs = 12000;
 const boundLoadMoreButtons = new WeakSet();
 const loadMoreIntersectionObservers = new WeakMap();
 const loadMoreHandlers = new WeakMap();
+
+function startButtonLoader(button, options) {
+  const loader = showInlineRetroLoader(button, options);
+  if (loader) {
+    setRetroLoaderProgress(loader, {
+      percent: 8,
+      statusMessage: "starting request...",
+    });
+  }
+  return loader;
+}
+
+function loadMoreContextIsLive(feed, button) {
+  return Boolean(feed?.isConnected && button?.isConnected);
+}
+
+function scheduleLoadMoreRetry(feed, button, loadMoreFn) {
+  window.setTimeout(() => {
+    if (!loadMoreContextIsLive(feed, button)) return;
+    void loadMoreFn();
+  }, 0);
+}
 
 function disconnectLoadMoreIntersection(button) {
   const existing = loadMoreIntersectionObservers.get(button);
@@ -27,6 +67,7 @@ function disconnectLoadMoreIntersection(button) {
 /** Infinite scroll must not run while the SSR deferred feed shell still shows `[data-feed-loader]` (race with navigation hydration). */
 function tryConnectLoadMoreIntersection(feed, button, loadMoreFn) {
   if (!("IntersectionObserver" in window)) return;
+  if (powerSaverActive()) return;
   if (button.dataset.ptxtLoadMoreIo === "1") return;
   if (feed.querySelector("[data-feed-loader]")) return;
   const observer = new IntersectionObserver(
@@ -34,7 +75,7 @@ function tryConnectLoadMoreIntersection(feed, button, loadMoreFn) {
       if (entries.some((entry) => entry.isIntersecting)) void loadMoreFn();
     },
     {
-      rootMargin: "600px 0px",
+      rootMargin: "250px 0px",
     },
   );
   observer.observe(button);
@@ -59,15 +100,19 @@ function appendReadArticles(reads, html) {
 }
 
 export function initFeedLoadMore(root = document) {
+  initRetroLoaders(root);
   const button = root.querySelector("[data-load-more]");
   if (!button) return;
   const feedPath = button.dataset.feedUrl || "/feed";
   const feedPathname = new URL(feedPath, window.location.origin).pathname;
+  const isHomeFeed = feedPath === "/feed" || feedPathname === "/";
   const isReads = feedPath === "/reads";
   const isSearch = feedPath === "/search";
   const isTag = feedPathname.startsWith("/tag/");
   const isNotifications = feedPath === "/notifications";
-  const cursorFromHeaders = isReads || isSearch || isTag || isNotifications;
+  const isProfile = feedPathname.startsWith("/u/");
+  const serverFragmentRoute = isHomeFeed || isReads || isSearch || isTag || isProfile;
+  const cursorFromHeaders = isReads || isSearch || isTag || isNotifications || isProfile;
   const feed = isReads
     ? root.querySelector("[data-reads]")
     : root.querySelector("[data-feed]");
@@ -112,7 +157,7 @@ export function initFeedLoadMore(root = document) {
     setLoadingState(false);
     let doneLabel = "No more notes";
     if (isReads) doneLabel = "No more reads";
-    else if (isNotifications) doneLabel = "No more mentions";
+    else if (isNotifications) doneLabel = "No more notifications";
     button.textContent = doneLabel;
     button.disabled = true;
     stopLoading();
@@ -123,16 +168,344 @@ export function initFeedLoadMore(root = document) {
     if (feed.querySelector("[data-feed-loader]")) return;
     loading = true;
     setLoadingState(true);
+    const loader = startButtonLoader(button, {
+      loaderType: "feed-page",
+      title: isReads ? "loading reads" : "loading notes",
+      summary: isReads ? "pulling the next batch of reads." : "pulling the next batch of notes.",
+      statusMessages: ["starting request..."],
+      completionMessage: isReads ? "reads loaded." : "notes loaded.",
+      progressWidth: 24,
+      statusWindow: 3,
+    });
     let reachedEnd = false;
     try {
+      if (!serverFragmentRoute && isHomeFeed && isRelayNativeFeed(root)) {
+        if (loader) {
+          setRetroLoaderProgress(loader, {
+            percent: 18,
+            statusMessage: "requesting relay page...",
+          });
+        }
+        const result = await appendClientFeedPage(root);
+        if (!loadMoreContextIsLive(feed, button)) return;
+        const hasMore = result.hasMore;
+        button.dataset.hasMore = hasMore ? "1" : "0";
+        if (!result.appended) {
+          if (!hasMore) {
+            reachedEnd = true;
+            setNoMore();
+            await settleRetroLoader(loader, { completionMessage: "feed is caught up." });
+            hideInlineRetroLoader(button, { keepTargetHidden: true });
+            return;
+          }
+          button.textContent = defaultLabel;
+          if (result.cursorAdvanced) {
+            if (loader) {
+              setRetroLoaderProgress(loader, {
+                percent: 66,
+                statusMessage: "advancing to the next cursor...",
+              });
+            }
+            scheduleLoadMoreRetry(feed, button, loadMore);
+          } else {
+            hideInlineRetroLoader(button);
+          }
+          return;
+        }
+        if (!hasMore) {
+          reachedEnd = true;
+          setNoMore();
+          await settleRetroLoader(loader, { completionMessage: "feed is caught up." });
+          hideInlineRetroLoader(button, { keepTargetHidden: true });
+          return;
+        }
+        if (loader) {
+          setRetroLoaderProgress(loader, {
+            percent: 86,
+            statusMessage: "rendering page...",
+          });
+        }
+        await settleRetroLoader(loader);
+        hideInlineRetroLoader(button);
+        button.textContent = defaultLabel;
+        return;
+      }
+
+      if (!serverFragmentRoute && isTag && isRelayNativeTag(root)) {
+        if (loader) {
+          setRetroLoaderProgress(loader, {
+            percent: 18,
+            statusMessage: "requesting tagged notes...",
+          });
+        }
+        const result = await appendClientTagPage(root);
+        if (!loadMoreContextIsLive(feed, button)) return;
+        const hasMore = result.hasMore;
+        button.dataset.hasMore = hasMore ? "1" : "0";
+        if (!result.appended) {
+          if (!hasMore) {
+            reachedEnd = true;
+            setNoMore();
+            await settleRetroLoader(loader, { completionMessage: "tag feed is caught up." });
+            hideInlineRetroLoader(button, { keepTargetHidden: true });
+            return;
+          }
+          button.textContent = defaultLabel;
+          if (result.cursorAdvanced) {
+            if (loader) {
+              setRetroLoaderProgress(loader, {
+                percent: 66,
+                statusMessage: "advancing to the next cursor...",
+              });
+            }
+            scheduleLoadMoreRetry(feed, button, loadMore);
+          } else {
+            hideInlineRetroLoader(button);
+          }
+          return;
+        }
+        if (!hasMore) {
+          reachedEnd = true;
+          setNoMore();
+          await settleRetroLoader(loader, { completionMessage: "tag feed is caught up." });
+          hideInlineRetroLoader(button, { keepTargetHidden: true });
+          return;
+        }
+        if (loader) {
+          setRetroLoaderProgress(loader, {
+            percent: 86,
+            statusMessage: "rendering notes...",
+          });
+        }
+        await settleRetroLoader(loader);
+        hideInlineRetroLoader(button);
+        button.textContent = defaultLabel;
+        return;
+      }
+
+      if (!serverFragmentRoute && isProfile && isRelayNativeProfile(root)) {
+        if (loader) {
+          setRetroLoaderProgress(loader, {
+            percent: 18,
+            statusMessage: "requesting profile posts...",
+          });
+        }
+        const result = await appendClientProfilePage(root);
+        if (!loadMoreContextIsLive(feed, button)) return;
+        const hasMore = result.hasMore;
+        button.dataset.hasMore = hasMore ? "1" : "0";
+        if (!result.appended) {
+          if (!hasMore) {
+            reachedEnd = true;
+            setNoMore();
+            await settleRetroLoader(loader, { completionMessage: "profile is caught up." });
+            hideInlineRetroLoader(button, { keepTargetHidden: true });
+            return;
+          }
+          button.textContent = defaultLabel;
+          if (result.cursorAdvanced) {
+            if (loader) {
+              setRetroLoaderProgress(loader, {
+                percent: 66,
+                statusMessage: "advancing to the next cursor...",
+              });
+            }
+            scheduleLoadMoreRetry(feed, button, loadMore);
+          } else {
+            hideInlineRetroLoader(button);
+          }
+          return;
+        }
+        if (!hasMore) {
+          reachedEnd = true;
+          setNoMore();
+          await settleRetroLoader(loader, { completionMessage: "profile is caught up." });
+          hideInlineRetroLoader(button, { keepTargetHidden: true });
+          return;
+        }
+        if (loader) {
+          setRetroLoaderProgress(loader, {
+            percent: 86,
+            statusMessage: "rendering posts...",
+          });
+        }
+        await settleRetroLoader(loader);
+        hideInlineRetroLoader(button);
+        button.textContent = defaultLabel;
+        return;
+      }
+
+      if (isNotifications && directRelayNativeNotifications(feed)) {
+        if (loader) {
+          setRetroLoaderProgress(loader, {
+            percent: 18,
+            statusMessage: "requesting notifications...",
+          });
+        }
+        const result = await appendClientNotificationsPage(root);
+        if (!loadMoreContextIsLive(feed, button)) return;
+        const hasMore = result.hasMore;
+        button.dataset.hasMore = hasMore ? "1" : "0";
+        if (!result.appended) {
+          if (!hasMore) {
+            reachedEnd = true;
+            setNoMore();
+            await settleRetroLoader(loader, { completionMessage: "notifications are caught up." });
+            hideInlineRetroLoader(button, { keepTargetHidden: true });
+            return;
+          }
+          button.textContent = defaultLabel;
+          if (result.cursorAdvanced) {
+            if (loader) {
+              setRetroLoaderProgress(loader, {
+                percent: 66,
+                statusMessage: "advancing to the next cursor...",
+              });
+            }
+            scheduleLoadMoreRetry(feed, button, loadMore);
+          } else {
+            hideInlineRetroLoader(button);
+          }
+          return;
+        }
+        if (!hasMore) {
+          reachedEnd = true;
+          setNoMore();
+          await settleRetroLoader(loader, { completionMessage: "notifications are caught up." });
+          hideInlineRetroLoader(button, { keepTargetHidden: true });
+          return;
+        }
+        if (loader) {
+          setRetroLoaderProgress(loader, {
+            percent: 86,
+            statusMessage: "rendering notifications...",
+          });
+        }
+        await settleRetroLoader(loader);
+        hideInlineRetroLoader(button);
+        button.textContent = defaultLabel;
+        return;
+      }
+
+      if (!serverFragmentRoute && isReads) {
+        if (loader) {
+          setRetroLoaderProgress(loader, {
+            percent: 18,
+            statusMessage: "requesting reads...",
+          });
+        }
+        const result = await appendClientReadsPage(root);
+        if (!loadMoreContextIsLive(feed, button)) return;
+        const hasMore = result.hasMore;
+        button.dataset.hasMore = hasMore ? "1" : "0";
+        if (!result.appended) {
+          if (!hasMore) {
+            reachedEnd = true;
+            setNoMore();
+            await settleRetroLoader(loader, { completionMessage: "reads are caught up." });
+            hideInlineRetroLoader(button, { keepTargetHidden: true });
+            return;
+          }
+          button.textContent = defaultLabel;
+          if (result.cursorAdvanced) {
+            if (loader) {
+              setRetroLoaderProgress(loader, {
+                percent: 66,
+                statusMessage: "advancing to the next cursor...",
+              });
+            }
+            scheduleLoadMoreRetry(feed, button, loadMore);
+          } else {
+            hideInlineRetroLoader(button);
+          }
+          return;
+        }
+        if (!hasMore) {
+          reachedEnd = true;
+          setNoMore();
+          await settleRetroLoader(loader, { completionMessage: "reads are caught up." });
+          hideInlineRetroLoader(button, { keepTargetHidden: true });
+          return;
+        }
+        if (loader) {
+          setRetroLoaderProgress(loader, {
+            percent: 86,
+            statusMessage: "rendering reads...",
+          });
+        }
+        await settleRetroLoader(loader);
+        hideInlineRetroLoader(button);
+        button.textContent = defaultLabel;
+        return;
+      }
+
+      if (!serverFragmentRoute && isSearch) {
+        if (loader) {
+          setRetroLoaderProgress(loader, {
+            percent: 18,
+            statusMessage: "requesting search results...",
+          });
+        }
+        const result = await appendClientSearchPage(root);
+        if (!loadMoreContextIsLive(feed, button)) return;
+        const hasMore = result.hasMore;
+        button.dataset.hasMore = hasMore ? "1" : "0";
+        if (!result.appended) {
+          if (!hasMore) {
+            reachedEnd = true;
+            setNoMore();
+            await settleRetroLoader(loader, { completionMessage: "search results are caught up." });
+            hideInlineRetroLoader(button, { keepTargetHidden: true });
+            return;
+          }
+          button.textContent = defaultLabel;
+          if (result.cursorAdvanced) {
+            if (loader) {
+              setRetroLoaderProgress(loader, {
+                percent: 66,
+                statusMessage: "advancing to the next cursor...",
+              });
+            }
+            scheduleLoadMoreRetry(feed, button, loadMore);
+          } else {
+            hideInlineRetroLoader(button);
+          }
+          return;
+        }
+        if (!hasMore) {
+          reachedEnd = true;
+          setNoMore();
+          await settleRetroLoader(loader, { completionMessage: "search results are caught up." });
+          hideInlineRetroLoader(button, { keepTargetHidden: true });
+          return;
+        }
+        if (loader) {
+          setRetroLoaderProgress(loader, {
+            percent: 86,
+            statusMessage: "rendering results...",
+          });
+        }
+        await settleRetroLoader(loader);
+        hideInlineRetroLoader(button);
+        button.textContent = defaultLabel;
+        return;
+      }
+
+      if (loader) {
+        setRetroLoaderProgress(loader, {
+          percent: 18,
+          statusMessage: "requesting next page...",
+        });
+      }
       const url = feedPath;
       const previousCursor = button.dataset.cursor || "";
       const previousCursorID = button.dataset.cursorId || "";
       const params = new URLSearchParams({
-        fragment: button.dataset.fragment || "1",
         cursor: previousCursor,
         cursor_id: previousCursorID,
       });
+      const fragment = button.dataset.fragment || "1";
+      if (fragment) params.set("fragment", fragment);
       // sort / tf / reads_tf / wot / wot_depth / relays now travel as
       // X-Ptxt-* request headers (see fetchWithSession in session.js), so
       // they no longer need to be threaded through the URL. We only keep
@@ -142,6 +515,8 @@ export function initFeedLoadMore(root = document) {
         if (searchQuery) params.set("q", searchQuery);
         const searchScope = button.dataset.searchScope || "network";
         params.set("scope", searchScope);
+        const searchMode = button.dataset.searchMode || "";
+        if (searchMode) params.set("mode", searchMode);
       } else if (isTag) {
         const tagScope = button.dataset.tagScope || "network";
         params.set("scope", tagScope);
@@ -149,10 +524,23 @@ export function initFeedLoadMore(root = document) {
       addAsciiWidthHint(params, feedPathname);
       const response = await fetchWithTimeout(`${url}?${params.toString()}`, loadMoreRequestTimeoutMs);
       if (!response.ok) throw new Error(`Load more failed: ${response.status}`);
+      if (loader) {
+        setRetroLoaderProgress(loader, {
+          percent: 54,
+          statusMessage: "response received...",
+        });
+      }
       const hasMoreHeader = response.headers.get("X-Ptxt-Has-More") || "";
       const cursorHeader = response.headers.get("X-Ptxt-Cursor") || "";
       const cursorIDHeader = response.headers.get("X-Ptxt-Cursor-Id") || "";
       const html = await response.text();
+      if (!loadMoreContextIsLive(feed, button)) return;
+      if (loader) {
+        setRetroLoaderProgress(loader, {
+          percent: 72,
+          statusMessage: "processing notes...",
+        });
+      }
       button.dataset.hasMore = hasMoreHeader;
       const hasMore = responseHasMore(html, button);
       if (!hasMore && !html.trim()) {
@@ -163,7 +551,12 @@ export function initFeedLoadMore(root = document) {
       const appended = isReads ? appendReadArticles(feed, html) : appendNewNotes(feed, html);
       if (appended > 0 && !isReads) {
         void refreshVisibleFeedNoteMetadata(document, new URL(window.location.href));
-        notifyFeedNotesChanged(feed);
+      }
+      if (loader) {
+        setRetroLoaderProgress(loader, {
+          percent: 88,
+          statusMessage: "updating feed...",
+        });
       }
       const sortMode = feedSortForSession(normalizedPubkey(), getFeedSortPref()) || "recent";
       const last = cursorFromHeaders ? null : feed.querySelector(".note:last-of-type");
@@ -182,24 +575,43 @@ export function initFeedLoadMore(root = document) {
         if (!hasMore) {
           reachedEnd = true;
           setNoMore();
+          await settleRetroLoader(loader, {
+            completionMessage: isReads ? "reads are caught up." : "feed is caught up.",
+          });
+          hideInlineRetroLoader(button, { keepTargetHidden: true });
           return;
         }
         // Keep paging available even when a page overlaps existing notes.
         button.textContent = defaultLabel;
         if (cursorAdvanced) {
-          queueMicrotask(() => {
-            void loadMore();
-          });
+          if (loader) {
+            setRetroLoaderProgress(loader, {
+              percent: 66,
+              statusMessage: "advancing to the next cursor...",
+            });
+          }
+          scheduleLoadMoreRetry(feed, button, loadMore);
+        } else {
+          hideInlineRetroLoader(button);
         }
         return;
       }
       if (!hasMore) {
         reachedEnd = true;
         setNoMore();
+        await settleRetroLoader(loader, {
+          completionMessage: isReads ? "reads are caught up." : "feed is caught up.",
+        });
+        hideInlineRetroLoader(button, { keepTargetHidden: true });
         return;
       }
+      await settleRetroLoader(loader, {
+        completionMessage: isReads ? "reads loaded." : "notes loaded.",
+      });
+      hideInlineRetroLoader(button);
       button.textContent = defaultLabel;
     } catch (error) {
+      hideInlineRetroLoader(button);
       button.textContent = error?.message || "Load failed";
       return;
     } finally {
@@ -285,7 +697,6 @@ export function prependNewNotes(feed, html) {
     void syncBookmarkState(document);
     wireAvatarImageFallbacks(feed);
     void refreshVisibleNoteProfiles(insertedNotes);
-    notifyFeedNotesChanged(feed);
   }
   return prepended;
 }
@@ -308,4 +719,8 @@ function appendNewNotes(feed, html) {
     void refreshVisibleNoteProfiles(insertedNotes);
   }
   return appended;
+}
+
+function directRelayNativeNotifications(feed) {
+  return feed?.dataset?.relayNativeNotifications === "1";
 }

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -74,6 +76,8 @@ type Profile struct {
 	Picture string
 	Website string
 	NIP05   string
+	Lud16   string
+	Lud06   string
 	Event   *Event
 }
 
@@ -112,6 +116,31 @@ func NormalizePubKey(value string) (string, error) {
 		return value, nil
 	}
 	return "", errors.New("expected 64-character hex public key")
+}
+
+func IsValidPubKeyHex(value string) bool {
+	_, err := NormalizePubKey(value)
+	return err == nil
+}
+
+const hashtagMaxRunes = 64
+
+// NormalizeHashtag validates a NIP-12 topic / hashtag token (letters, numbers, underscore).
+func NormalizeHashtag(value string) (string, bool) {
+	decoded := strings.TrimSpace(strings.TrimPrefix(value, "#"))
+	if decoded == "" || decoded == "." || decoded == ".." {
+		return "", false
+	}
+	if utf8.RuneCountInString(decoded) > hashtagMaxRunes {
+		return "", false
+	}
+	for _, r := range decoded {
+		if r == '_' || unicode.IsLetter(r) || unicode.IsNumber(r) {
+			continue
+		}
+		return "", false
+	}
+	return decoded, true
 }
 
 func NormalizeRelayURL(value string) (string, error) {
@@ -202,6 +231,26 @@ func FollowPubkeys(event *Event) []string {
 		pubkeys = append(pubkeys, normalized)
 	}
 	return pubkeys
+}
+
+func FollowHashtags(event *Event) []string {
+	if event == nil || event.Kind != KindFollowList {
+		return nil
+	}
+	seen := make(map[string]bool)
+	var hashtags []string
+	for _, tag := range event.Tags {
+		if len(tag) < 2 || tag[0] != "t" {
+			continue
+		}
+		topic, ok := NormalizeHashtag(tag[1])
+		if !ok || seen[topic] {
+			continue
+		}
+		seen[topic] = true
+		hashtags = append(hashtags, topic)
+	}
+	return hashtags
 }
 
 type BookmarkEntry struct {
@@ -354,6 +403,8 @@ func ParseProfile(pubkey string, event *Event) Profile {
 		Picture     string `json:"picture"`
 		Website     string `json:"website"`
 		NIP05       string `json:"nip05"`
+		Lud16       string `json:"lud16"`
+		Lud06       string `json:"lud06"`
 	}
 	if err := json.Unmarshal([]byte(event.Content), &raw); err != nil {
 		return profile
@@ -364,6 +415,8 @@ func ParseProfile(pubkey string, event *Event) Profile {
 	profile.Picture = raw.Picture
 	profile.Website = raw.Website
 	profile.NIP05 = raw.NIP05
+	profile.Lud16 = raw.Lud16
+	profile.Lud06 = raw.Lud06
 	return profile
 }
 

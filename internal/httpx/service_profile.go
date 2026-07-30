@@ -16,21 +16,44 @@ func summaryToProfile(summary store.ProfileSummary) nostrx.Profile {
 		Name:    summary.Name,
 		About:   summary.About,
 		Picture: summary.Picture,
+		Website: summary.Website,
 		NIP05:   summary.NIP05,
+		Lud16:   summary.Lud16,
+		Lud06:   summary.Lud06,
 	}
+}
+
+func profileNeedsEventMerge(profile nostrx.Profile) bool {
+	return strings.TrimSpace(profile.Picture) == "" ||
+		strings.TrimSpace(profile.Website) == "" ||
+		strings.TrimSpace(profile.Lud16) == "" ||
+		strings.TrimSpace(profile.Lud06) == ""
+}
+
+func mergeProfileFromEvent(out, parsed nostrx.Profile) nostrx.Profile {
+	if strings.TrimSpace(out.Picture) == "" {
+		out.Picture = strings.TrimSpace(parsed.Picture)
+	}
+	if strings.TrimSpace(out.Website) == "" {
+		out.Website = strings.TrimSpace(parsed.Website)
+	}
+	if strings.TrimSpace(out.Lud16) == "" {
+		out.Lud16 = strings.TrimSpace(parsed.Lud16)
+	}
+	if strings.TrimSpace(out.Lud06) == "" {
+		out.Lud06 = strings.TrimSpace(parsed.Lud06)
+	}
+	return out
 }
 
 func (s *Server) profile(ctx context.Context, pubkey string) nostrx.Profile {
 	if summaries, err := s.store.ProfileSummariesByPubkeys(ctx, []string{pubkey}); err == nil {
 		if summary, ok := summaries[pubkey]; ok {
 			out := summaryToProfile(summary)
-			// Profile LRU can lag SQLite: empty picture in cache while kind-0 has picture.
-			if strings.TrimSpace(out.Picture) == "" {
+			// Profile cache can lag kind-0 metadata (e.g. lud16 added after initial projection).
+			if profileNeedsEventMerge(out) {
 				event, _ := s.store.LatestReplaceable(ctx, pubkey, nostrx.KindProfileMetadata)
-				parsed := nostrx.ParseProfile(pubkey, event)
-				if pic := strings.TrimSpace(parsed.Picture); pic != "" {
-					out.Picture = pic
-				}
+				out = mergeProfileFromEvent(out, nostrx.ParseProfile(pubkey, event))
 			}
 			return out
 		}
@@ -87,7 +110,86 @@ func (s *Server) profilesFor(ctx context.Context, events []nostrx.Event) map[str
 	return profiles
 }
 
-func (s *Server) contactProfiles(ctx context.Context, pubkeys []string) map[string]nostrx.Profile {
+func (s *Server) profilesForPubkeys(ctx context.Context, pubkeys []string) map[string]nostrx.Profile {
+	defer s.observe("store.profiles_for_pubkeys", time.Now())
+	if len(pubkeys) == 0 {
+		return map[string]nostrx.Profile{}
+	}
+	unique := make([]string, 0, len(pubkeys))
+	seen := make(map[string]bool, len(pubkeys))
+	for _, pubkey := range pubkeys {
+		if pubkey == "" || seen[pubkey] {
+			continue
+		}
+		seen[pubkey] = true
+		unique = append(unique, pubkey)
+	}
+	profiles := make(map[string]nostrx.Profile, len(unique))
+	summaries, err := s.store.ProfileSummariesByPubkeys(ctx, unique)
+	if err == nil {
+		for pubkey, summary := range summaries {
+			profiles[pubkey] = summaryToProfile(summary)
+		}
+	}
+	latest, latestErr := s.store.LatestReplaceableByPubkeys(ctx, unique, nostrx.KindProfileMetadata)
+	if latestErr != nil {
+		latest = map[string]*nostrx.Event{}
+	}
+	for _, pubkey := range unique {
+		if _, ok := profiles[pubkey]; ok {
+			continue
+		}
+		profiles[pubkey] = nostrx.ParseProfile(pubkey, latest[pubkey])
+	}
+	return profiles
+}
+
+func contactProfileNeedsHydration(profile nostrx.Profile) bool {
+	return strings.TrimSpace(profile.Display) == "" &&
+		strings.TrimSpace(profile.Name) == "" &&
+		strings.TrimSpace(profile.Picture) == "" &&
+		strings.TrimSpace(profile.NIP05) == ""
+}
+
+func (s *Server) hydrateContactProfiles(ctx context.Context, pubkeys []string, relays []string) {
+	if s == nil || s.nostr == nil || s.store == nil {
+		return
+	}
+	keys := limitedStrings(uniqueNonEmptyStrings(pubkeys), followMetadataHydrationLimit)
+	if len(keys) == 0 {
+		return
+	}
+	relayList := nostrx.NormalizeRelayList(append(
+		append(append([]string(nil), relays...), s.cfg.DefaultRelays...),
+		s.cfg.MetadataRelays...,
+	), nostrx.MaxRelays)
+	if len(relayList) == 0 {
+		return
+	}
+	events := make([]nostrx.Event, 0, len(keys))
+	for start := 0; start < len(keys); start += followMetadataBatchSize {
+		end := start + followMetadataBatchSize
+		if end > len(keys) {
+			end = len(keys)
+		}
+		batch := keys[start:end]
+		fetched, err := s.nostr.FetchFrom(ctx, relayList, nostrx.Query{
+			Authors: batch,
+			Kinds:   []int{nostrx.KindProfileMetadata},
+			Limit:   max(len(batch)*2, len(batch)),
+		})
+		if err != nil || len(fetched) == 0 {
+			continue
+		}
+		events = append(events, fetched...)
+	}
+	if len(events) == 0 {
+		return
+	}
+	_, _ = s.store.SaveEvents(ctx, events)
+}
+
+func (s *Server) contactProfiles(ctx context.Context, pubkeys []string, relays []string) map[string]nostrx.Profile {
 	profiles := make(map[string]nostrx.Profile, len(pubkeys))
 	seen := make(map[string]bool, len(pubkeys))
 	keys := make([]string, 0, len(pubkeys))
@@ -128,7 +230,49 @@ func (s *Server) contactProfiles(ctx context.Context, pubkeys []string) map[stri
 		}
 		profiles[pubkey] = nostrx.Profile{PubKey: pubkey}
 	}
+	missingMetadata := make([]string, 0, len(keys))
+	for _, pubkey := range keys {
+		if contactProfileNeedsHydration(profiles[pubkey]) {
+			missingMetadata = append(missingMetadata, pubkey)
+		}
+	}
+	if len(missingMetadata) > 0 {
+		s.hydrateContactProfilesAsync(missingMetadata, relays)
+	}
 	return profiles
+}
+
+func (s *Server) hydrateContactProfilesAsync(pubkeys []string, relays []string) {
+	if s == nil || s.nostr == nil || s.store == nil {
+		return
+	}
+	keys := limitedStrings(uniqueNonEmptyStrings(pubkeys), followMetadataHydrationLimit)
+	if len(keys) == 0 {
+		return
+	}
+	relayList := nostrx.NormalizeRelayList(append(
+		append(append([]string(nil), relays...), s.cfg.DefaultRelays...),
+		s.cfg.MetadataRelays...,
+	), nostrx.MaxRelays)
+	if len(relayList) == 0 {
+		return
+	}
+	refreshKey := "contactProfiles:" + strings.Join(keys, ",")
+	if !s.beginRefresh(refreshKey) {
+		return
+	}
+	if !s.runBackgroundUserAsync(func() {
+		defer s.endRefresh(refreshKey)
+		timeout := requestTimeout(s.cfg.RequestTimeout)
+		if timeout <= 0 {
+			timeout = 20 * time.Second
+		}
+		refreshCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		defer cancel()
+		s.hydrateContactProfiles(refreshCtx, keys, relayList)
+	}) {
+		s.endRefresh(refreshKey)
+	}
 }
 
 func (s *Server) following(ctx context.Context, pubkey string, limit int) []string {
@@ -137,7 +281,7 @@ func (s *Server) following(ctx context.Context, pubkey string, limit int) []stri
 		limit = maxFeedAuthors
 	}
 	if follows, err := s.store.FollowingPubkeys(ctx, pubkey, limit); err == nil && len(follows) > 0 {
-		return follows
+		return filterValidFollowPubkeys(follows)
 	}
 	event, _ := s.store.LatestReplaceable(ctx, pubkey, nostrx.KindFollowList)
 	pubkeys := nostrx.FollowPubkeys(event)
@@ -147,10 +291,24 @@ func (s *Server) following(ctx context.Context, pubkey string, limit int) []stri
 	return pubkeys
 }
 
+func filterValidFollowPubkeys(pubkeys []string) []string {
+	if len(pubkeys) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(pubkeys))
+	for _, pubkey := range pubkeys {
+		if !nostrx.IsValidPubKeyHex(pubkey) {
+			continue
+		}
+		out = append(out, pubkey)
+	}
+	return out
+}
+
 func (s *Server) followers(ctx context.Context, pubkey string, limit int) []string {
 	defer s.observe("store.followers", time.Now())
 	if follows, err := s.store.FollowerPubkeys(ctx, pubkey, limit); err == nil && len(follows) > 0 {
-		return follows
+		return filterValidFollowPubkeys(follows)
 	}
 	events, _ := s.store.FollowersOf(ctx, pubkey, limit)
 	seen := make(map[string]bool)
@@ -159,16 +317,29 @@ func (s *Server) followers(ctx context.Context, pubkey string, limit int) []stri
 		if event.PubKey == "" || seen[event.PubKey] {
 			continue
 		}
+		if !nostrx.IsValidPubKeyHex(event.PubKey) {
+			continue
+		}
 		seen[event.PubKey] = true
 		followers = append(followers, event.PubKey)
 	}
 	return followers
 }
 
-const followListPageSize = 100
+const (
+	followListPageSize           = 100
+	followMetadataBatchSize      = 50
+	followMetadataHydrationLimit = 2000
+)
 
 func (s *Server) followingList(ctx context.Context, pubkey string, query string, page int) FollowListView {
-	return s.followList(ctx, pubkey, query, page, true)
+	if view, ok := s.followingListFromLatestEvent(ctx, pubkey, query, page); ok {
+		view.Hashtags = s.followingHashtags(ctx, pubkey, query)
+		return view
+	}
+	view := s.followList(ctx, pubkey, query, page, true)
+	view.Hashtags = s.followingHashtags(ctx, pubkey, query)
+	return view
 }
 
 func (s *Server) followersList(ctx context.Context, pubkey string, query string, page int) FollowListView {
@@ -191,6 +362,7 @@ func (s *Server) followList(ctx context.Context, pubkey string, query string, pa
 		result, err = s.store.FollowerPubkeysPage(ctx, pubkey, cleanQuery, followListPageSize, offset)
 	}
 	if err == nil && result.CachedTotal > 0 {
+		result.Pubkeys = filterValidFollowPubkeys(result.Pubkeys)
 		return buildFollowListView(result.Pubkeys, cleanQuery, page, result.FilteredTotal, result.CachedTotal, true)
 	}
 	fallback := s.followListFallback(ctx, pubkey, cleanQuery, page, following)
@@ -200,6 +372,43 @@ func (s *Server) followList(ctx context.Context, pubkey string, query string, pa
 		fallback.CachedExact = true
 	}
 	return fallback
+}
+
+func (s *Server) enrichedFollowList(ctx context.Context, pubkey string, query string, page int, following bool, relays []string) (FollowListView, map[string]nostrx.Profile, bool) {
+	if page < 1 {
+		page = 1
+	}
+	var view FollowListView
+	if following {
+		view = s.followingList(ctx, pubkey, query, page)
+	} else {
+		view = s.followersList(ctx, pubkey, query, page)
+	}
+	if len(view.Items) == 0 {
+		return FollowListView{}, nil, false
+	}
+	profiles := s.contactProfiles(ctx, view.Items, relays)
+	return view, profiles, true
+}
+
+func (s *Server) followingListFromLatestEvent(ctx context.Context, pubkey string, query string, page int) (FollowListView, bool) {
+	event, _ := s.store.LatestReplaceable(ctx, pubkey, nostrx.KindFollowList)
+	if event == nil {
+		return FollowListView{}, false
+	}
+	cleanQuery := strings.TrimSpace(query)
+	all := filterValidFollowPubkeys(nostrx.FollowPubkeys(event))
+	filtered := all
+	if cleanQuery != "" {
+		summaries, _ := s.store.ProfileSummariesByPubkeys(ctx, all)
+		filtered = make([]string, 0, len(all))
+		for _, followedPubkey := range all {
+			if followMatchesQuery(cleanQuery, followedPubkey, summaries[followedPubkey]) {
+				filtered = append(filtered, followedPubkey)
+			}
+		}
+	}
+	return buildFollowListPage(filtered, cleanQuery, page, len(all), true), true
 }
 
 func (s *Server) followListFallback(ctx context.Context, pubkey string, query string, page int, following bool) FollowListView {
@@ -214,6 +423,9 @@ func (s *Server) followListFallback(ctx context.Context, pubkey string, query st
 		summaries, _ := s.store.ProfileSummariesByPubkeys(ctx, all)
 		filtered = filtered[:0]
 		for _, pubkey := range all {
+			if !nostrx.IsValidPubKeyHex(pubkey) {
+				continue
+			}
 			if followMatchesQuery(query, pubkey, summaries[pubkey]) {
 				filtered = append(filtered, pubkey)
 			}
@@ -229,12 +441,31 @@ func (s *Server) followListFallback(ctx context.Context, pubkey string, query st
 		end = total
 	}
 	items := append([]string(nil), filtered[start:end]...)
+	items = filterValidFollowPubkeys(items)
 	return buildFollowListView(items, query, page, total, total, false)
+}
+
+func buildFollowListPage(filtered []string, query string, page int, cachedTotal int, cachedExact bool) FollowListView {
+	if page < 1 {
+		page = 1
+	}
+	total := len(filtered)
+	start := (page - 1) * followListPageSize
+	if start > total {
+		start = total
+	}
+	end := start + followListPageSize
+	if end > total {
+		end = total
+	}
+	items := append([]string(nil), filtered[start:end]...)
+	return buildFollowListView(items, query, page, total, cachedTotal, cachedExact)
 }
 
 func buildFollowListView(items []string, query string, page int, filteredTotal int, cachedTotal int, cachedExact bool) FollowListView {
 	view := FollowListView{
 		Items:         items,
+		Hashtags:      nil,
 		Query:         query,
 		Page:          page,
 		PageSize:      followListPageSize,
@@ -253,6 +484,25 @@ func buildFollowListView(items []string, query string, page int, filteredTotal i
 		view.NextPage = page + 1
 	}
 	return view
+}
+
+func (s *Server) followingHashtags(ctx context.Context, pubkey string, query string) []string {
+	event, _ := s.store.LatestReplaceable(ctx, pubkey, nostrx.KindFollowList)
+	return filterFollowHashtags(nostrx.FollowHashtags(event), query)
+}
+
+func filterFollowHashtags(hashtags []string, query string) []string {
+	needle := strings.ToLower(strings.TrimSpace(query))
+	if needle == "" {
+		return append([]string(nil), hashtags...)
+	}
+	filtered := make([]string, 0, len(hashtags))
+	for _, tag := range hashtags {
+		if strings.Contains(strings.ToLower(tag), needle) {
+			filtered = append(filtered, tag)
+		}
+	}
+	return filtered
 }
 
 func followMatchesQuery(query string, pubkey string, summary store.ProfileSummary) bool {

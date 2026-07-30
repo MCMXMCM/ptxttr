@@ -54,7 +54,7 @@ func TestPublishToBacksOffRateLimitedRelay(t *testing.T) {
 	if !client.relayPolicyBlocked(relayURL, time.Now().Add(time.Minute)) {
 		t.Fatal("expected rate-limited relay to be blocked during backoff window")
 	}
-	if client.relayPolicyBlocked(relayURL, time.Now().Add(6*time.Minute)) {
+	if client.relayPolicyBlocked(relayURL, time.Now().Add(16*time.Minute)) {
 		t.Fatal("expected rate-limited relay to unblock after backoff window")
 	}
 }

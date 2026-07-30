@@ -2,15 +2,27 @@ package httpx
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"runtime"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"ptxt-nstr/internal/nostrx"
 	"ptxt-nstr/internal/store"
 	"ptxt-nstr/internal/thread"
 )
+
+var debugSeedSequence atomic.Uint64
+
+func debugSeedEventID(parts ...string) string {
+	parts = append(parts, strconv.FormatUint(debugSeedSequence.Add(1), 10))
+	sum := sha256.Sum256([]byte(strings.Join(parts, "|")))
+	return hex.EncodeToString(sum[:])
+}
 
 func (s *Server) handleDebugCache(w http.ResponseWriter, r *http.Request) {
 	stats, err := s.store.Stats(r.Context())
@@ -34,12 +46,12 @@ func (s *Server) handleDebugMetrics(w http.ResponseWriter, r *http.Request) {
 		"app":           s.metrics.Snapshot(),
 		"health":        s.healthSnapshot(),
 		"gauges": map[string]any{
-			"warm.queue_depth":                    warmDepth,
-			"warm.pending_jobs":                   warmPending,
-			"hydration_state.stale.noteReplies":   staleNoteReplies,
-			"hydration_state.stale.seedContact":   staleSeedContact,
-			"hydration_state.stale.knownViewer":   staleKnownViewer,
-			"active_viewers.len":                  s.activeViewers.Len(),
+			"warm.queue_depth":                  warmDepth,
+			"warm.pending_jobs":                 warmPending,
+			"hydration_state.stale.noteReplies": staleNoteReplies,
+			"hydration_state.stale.seedContact": staleSeedContact,
+			"hydration_state.stale.knownViewer": staleKnownViewer,
+			"active_viewers.len":                s.activeViewers.Len(),
 		},
 	}, nil)
 }
@@ -199,11 +211,96 @@ func (s *Server) handleDebugSeedNote(w http.ResponseWriter, r *http.Request) {
 		Kind:      nostrx.KindTextNote,
 		Content:   "e2e seeded note",
 	}
+	if content := strings.TrimSpace(r.URL.Query().Get("content")); content != "" {
+		event.Content = content
+	}
 	if err := s.store.SaveEvent(r.Context(), event); err != nil {
 		writeJSON(w, nil, err)
 		return
 	}
+	// Tests can deliberately leave the author outside the guest WoT to verify
+	// that an explicitly opened cached thread still renders its root context.
+	if r.URL.Query().Get("anonymous_scope") != "outside" {
+		s.debugAnonymousAuthors.Store(pubkey, struct{}{})
+	}
+	// Debug seed endpoints are used repeatedly by browser tests against one
+	// long-lived server. Never let an earlier anonymous document snapshot hide
+	// the newly seeded fixture.
+	s.anonymousHTMLCache.reset()
 	writeJSON(w, map[string]any{"id": id, "pubkey": pubkey}, nil)
+}
+
+// handleDebugSeedThreadWoT inserts a root note plus trusted and untrusted direct
+// replies for thread WoT e2e tests. The viewer pubkey owns the root; a stranger
+// reply should be filtered when WoT depth is 1.
+func (s *Server) handleDebugSeedThreadWoT(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s == nil || s.store == nil {
+		writeJSON(w, nil, httpError("store unavailable", http.StatusServiceUnavailable))
+		return
+	}
+	viewerPub := strings.Repeat("a", 64)
+	strangerPub := strings.Repeat("b", 64)
+	rootID := strings.TrimSpace(r.URL.Query().Get("id"))
+	if rootID == "" {
+		rootID = debugSeedEventID("thread-wot", "root")
+	} else {
+		rootID = thread.NormalizeHexEventID(rootID)
+	}
+	trustedReplyID := debugSeedEventID("thread-wot", rootID, "trusted")
+	filteredReplyID := debugSeedEventID("thread-wot", rootID, "filtered")
+
+	root := nostrx.Event{
+		ID:        rootID,
+		PubKey:    viewerPub,
+		CreatedAt: time.Now().Unix() - 120,
+		Kind:      nostrx.KindTextNote,
+		Content:   "e2e WoT root",
+	}
+	trustedReply := nostrx.Event{
+		ID:        trustedReplyID,
+		PubKey:    viewerPub,
+		CreatedAt: time.Now().Unix() - 90,
+		Kind:      nostrx.KindTextNote,
+		Content:   "trusted reply",
+		Tags: [][]string{
+			{"e", rootID, "", "root"},
+			{"e", rootID, "", "reply"},
+			{"p", viewerPub},
+		},
+	}
+	filteredReply := nostrx.Event{
+		ID:        filteredReplyID,
+		PubKey:    strangerPub,
+		CreatedAt: time.Now().Unix() - 60,
+		Kind:      nostrx.KindTextNote,
+		Content:   "stranger reply",
+		Tags: [][]string{
+			{"e", rootID, "", "root"},
+			{"e", rootID, "", "reply"},
+			{"p", viewerPub},
+		},
+	}
+	ctx := r.Context()
+	for _, event := range []nostrx.Event{root, trustedReply, filteredReply} {
+		if err := s.store.SaveEvent(ctx, event); err != nil {
+			writeJSON(w, nil, err)
+			return
+		}
+	}
+	s.debugAnonymousAuthors.Store(viewerPub, struct{}{})
+	s.anonymousHTMLCache.reset()
+	writeJSON(w, map[string]any{
+		"root_id":           rootID,
+		"trusted_reply_id":  trustedReplyID,
+		"filtered_reply_id": filteredReplyID,
+		"viewer_pubkey":     viewerPub,
+		"viewer_npub":       nostrx.EncodeNPub(viewerPub),
+		"stranger_pubkey":   strangerPub,
+	}, nil)
 }
 
 func (s *Server) handleDebugEvent(w http.ResponseWriter, r *http.Request) {

@@ -12,7 +12,7 @@ func TestHashtagNoteSummaries_ByTTag(t *testing.T) {
 	st := openTestStore(t, ctx)
 	kinds := []int{nostrx.KindTextNote, nostrx.KindRepost}
 
-	withTag := event("ht-a", "alice", 100, nostrx.KindTextNote, [][]string{{"t", "bitcoin"}})
+	withTag := event("ht-a", "alice", 100, nostrx.KindTextNote, [][]string{{"t", "BitCoin"}})
 	noTag := event("ht-b", "alice", 99, nostrx.KindTextNote, nil)
 	wrongTag := event("ht-c", "alice", 98, nostrx.KindTextNote, [][]string{{"t", "ethereum"}})
 	for _, ev := range []nostrx.Event{withTag, noTag, wrongTag} {
@@ -22,12 +22,12 @@ func TestHashtagNoteSummaries_ByTTag(t *testing.T) {
 	}
 
 	res, err := st.HashtagNoteSummaries(ctx, HashtagNotesQuery{
-		Tag:     "bitcoin",
-		Authors: nil,
-		Kinds:   kinds,
-		Before:  200,
+		Tag:      "bitcoin",
+		Authors:  nil,
+		Kinds:    kinds,
+		Before:   200,
 		BeforeID: "",
-		Limit:   20,
+		Limit:    20,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -37,6 +37,21 @@ func TestHashtagNoteSummaries_ByTTag(t *testing.T) {
 	}
 	if res.HasMore {
 		t.Fatalf("HasMore = true, want false")
+	}
+
+	resUpper, err := st.HashtagNoteSummaries(ctx, HashtagNotesQuery{
+		Tag:      "BITCOIN",
+		Authors:  nil,
+		Kinds:    kinds,
+		Before:   200,
+		BeforeID: "",
+		Limit:    20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resUpper.Events) != 1 || resUpper.Events[0].ID != "ht-a" {
+		t.Fatalf("upper-case query events = %#v", resUpper.Events)
 	}
 
 	res2, err := st.HashtagNoteSummaries(ctx, HashtagNotesQuery{
@@ -59,11 +74,11 @@ func TestHashtagNoteSummaries_EmptyTag(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t, ctx)
 	res, err := st.HashtagNoteSummaries(ctx, HashtagNotesQuery{
-		Tag:     "",
-		Kinds:   []int{nostrx.KindTextNote},
-		Before:  100,
+		Tag:      "",
+		Kinds:    []int{nostrx.KindTextNote},
+		Before:   100,
 		BeforeID: "",
-		Limit:   10,
+		Limit:    10,
 	})
 	if err != nil {
 		t.Fatal(err)

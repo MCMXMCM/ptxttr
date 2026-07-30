@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"html/template"
 	"net/url"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -43,6 +44,17 @@ func bioLinkHTML(about string) template.HTML {
 	}
 	buf.WriteString(template.HTMLEscapeString(about[last:]))
 	return template.HTML(buf.String())
+}
+
+func briefBio(about string, maxWords int) string {
+	words := strings.Fields(strings.TrimSpace(about))
+	if len(words) == 0 {
+		return ""
+	}
+	if maxWords <= 0 || len(words) <= maxWords {
+		return strings.Join(words, " ")
+	}
+	return strings.Join(words[:maxWords], " ") + "..."
 }
 
 // keyCheckerboardGridHTML lays out a string as rows of four-character groups
@@ -93,6 +105,17 @@ func npubGridHTML(pubkey string) template.HTML {
 	return keyCheckerboardGridHTML(nostrx.EncodeNPub(pubkey))
 }
 
+func profileHref(pubkey string, relays ...string) string {
+	if normalized, err := nostrx.NormalizePubKey(pubkey); err == nil {
+		return "/u/" + normalized
+	}
+	encoded := nostrx.EncodeNProfileOrNPub(pubkey, relays)
+	if encoded == "" {
+		return "/u/"
+	}
+	return "/u/" + url.PathEscape(encoded)
+}
+
 // hexGridHTML renders the normalized hex public key the same way. Returns
 // empty HTML when the pubkey is not valid hex.
 func hexGridHTML(pubkey string) template.HTML {
@@ -105,60 +128,176 @@ func hexGridHTML(pubkey string) template.HTML {
 
 func templateFuncs() template.FuncMap {
 	return template.FuncMap{
-		"relTime":                  relTime,
-		"short":                    short,
-		"displayName":              displayName,
-		"authorLabel":              authorLabel,
-		"avatarURL":                avatarURL,
-		"avatarSrc":                avatarSrc,
-		"avatarSrcURL":             avatarSrcFor,
-		"npub":                     nostrx.EncodeNPub,
-		"npubGridHTML":             npubGridHTML,
-		"hexGridHTML":              hexGridHTML,
-		"nevent":                   nostrx.EncodeNEvent,
-		"contentLines":             contentLines,
-		"dict":                     dict,
-		"asciiBorder":              asciiBorder,
-		"asciiFill":                asciiFill,
-		"asciiNoteFooterFill":      asciiNoteFooterFill,
-		"reactionBracketBlock":     reactionBracketBlock,
-		"asciiAuthor":              asciiAuthor,
-		"asciiBoxLine":             asciiBoxLine,
-		"asciiBoxLines":            asciiBoxLines,
-		"asciiTextLines":           asciiTextLines,
-		"asciiMentionContent":      asciiMentionContent,
-		"asciiMentionsJSON":        asciiMentionsJSON,
-		"asciiMentionsJSONFor":     asciiMentionsJSONFor,
-		"inlineReferenceEvents":    inlineReferenceEvents,
-		"replyTextWidth":           replyTextWidth,
-		"asciiReplyPadLine":        asciiReplyPadLine,
-		"isLastIndex":              isLastIndex,
-		"renderMarkdown":           renderMarkdown,
-		"formatDate":               formatDate,
-		"replyCountText":           replyCountText,
-		"replyBadgeText":           replyBadgeText,
-		"referencedEventID":        referencedEventID,
-		"referencedEventIDs":       referencedEventIDs,
-		"referenceEvent":           referenceEvent,
-		"replyCountFor":            replyCountFor,
-		"reactionTotalFor":         reactionTotalFor,
-		"reactionViewerFor":        reactionViewerFor,
-		"isSimpleRepost":           isSimpleRepost,
-		"isQuotePost":              isQuotePost,
-		"noteMainBodySourceText":   noteMainBodySourceText,
-		"threadTreeMainBodyText":   threadTreeMainBodyText,
-		"treeMediaFields":          treeMediaFields,
-		"imetaMediaItemsJSON":      imetaMediaItemsJSON,
-		"threadContinueThreadHref": threadContinueThreadHref,
-		"hnPathIndentPx":           hnPathIndentPx,
-		"sub":                      func(a, b int) int { return a - b },
-		"threadMaxDepth":           func() int { return thread.MaxDepth },
-		"readsLoadMoreURL":         readsLoadMoreURL,
-		"replyContextVisible":      replyContextVisible,
-		"replyContextHTML":         replyContextHTML,
-		"repostContextHTML":        repostContextHTML,
-		"bioLinkHTML":              bioLinkHTML,
+		"assetPath":                      assetPath,
+		"relTime":                        relTime,
+		"short":                          short,
+		"displayName":                    displayName,
+		"profileSecondary":               profileSecondary,
+		"authorLabel":                    authorLabel,
+		"avatarURL":                      avatarURL,
+		"avatarSrc":                      avatarSrc,
+		"avatarSrcURL":                   avatarSrcFor,
+		"npub":                           nostrx.EncodeNPub,
+		"nip05Display":                   nostrx.NIP05DisplayText,
+		"profileHref":                    profileHref,
+		"npubGridHTML":                   npubGridHTML,
+		"hexGridHTML":                    hexGridHTML,
+		"nevent":                         nostrx.EncodeNEvent,
+		"contentLines":                   contentLines,
+		"dict":                           dict,
+		"asciiBorder":                    asciiBorder,
+		"asciiFill":                      asciiFill,
+		"asciiFeedAuthor":                asciiFeedAuthor,
+		"asciiFeedHeaderFill":            asciiFeedHeaderFill,
+		"asciiReplyHeaderAuthor":         asciiReplyHeaderAuthor,
+		"asciiReplyHeaderFill":           asciiReplyHeaderFill,
+		"asciiSelectedHeaderAuthor":      asciiSelectedHeaderAuthor,
+		"asciiSelectedHeaderFill":        asciiSelectedHeaderFill,
+		"asciiReplyFooterFill":           asciiReplyFooterFill,
+		"asciiPaddedTextLine":            asciiPaddedTextLine,
+		"asciiNoteFooterFill":            asciiNoteFooterFill,
+		"reactionBracketBlock":           reactionBracketBlock,
+		"asciiAuthor":                    asciiAuthor,
+		"asciiBoxLine":                   asciiBoxLine,
+		"asciiBoxLines":                  asciiBoxLines,
+		"asciiFeedNotePreview":           asciiFeedNotePreviewFor,
+		"asciiFeedViewMorePad":           asciiFeedViewMorePad,
+		"asciiNoteCollapsedFooterFill":   asciiNoteCollapsedFooterFill,
+		"asciiReferencePlaceholderLines": asciiReferencePlaceholderLines,
+		"asciiTextLines":                 asciiTextLines,
+		"asciiMentionContent":            asciiMentionContent,
+		"asciiMentionsJSON":              asciiMentionsJSON,
+		"asciiMentionsJSONFor":           asciiMentionsJSONFor,
+		"inlineReferenceEvents":          inlineReferenceEvents,
+		"replyTextWidth":                 replyTextWidth,
+		"selectedReplyTextWidth":         selectedReplyTextWidth,
+		"threadTreeTextWidth":            threadTreeTextWidth,
+		"asciiReplyPadLine":              asciiReplyPadLine,
+		"asciiSelectedReplyPadLine":      asciiSelectedReplyPadLine,
+		"isLastIndex":                    isLastIndex,
+		"renderMarkdown":                 renderMarkdown,
+		"formatDate":                     formatDate,
+		"formatProfileMetadataDate":      formatProfileMetadataDate,
+		"formatProfileMetadataDateISO":   formatProfileMetadataDateISO,
+		"replyCountText":                 replyCountText,
+		"replyBadgeText":                 replyBadgeText,
+		"referencedEventID":              referencedEventID,
+		"referencedEventIDs":             referencedEventIDs,
+		"referenceEvent":                 referenceEvent,
+		"replyCountFor":                  replyCountFor,
+		"reactionTotalFor":               reactionTotalFor,
+		"reactionViewerFor":              reactionViewerFor,
+		"isSimpleRepost":                 isSimpleRepost,
+		"isQuotePost":                    isQuotePost,
+		"noteMainBodySourceText":         noteMainBodySourceText,
+		"threadTreeMainBodyText":         threadTreeMainBodyText,
+		"treeMediaFields":                treeMediaFields,
+		"imetaMediaItemsJSON":            imetaMediaItemsJSON,
+		"mediaGridClass":                 mediaGridClass,
+		"mediaGridSignature":             mediaGridSignature,
+		"mediaGridVisibleItems":          mediaGridVisibleItems,
+		"mediaGridAspectRatio":           mediaGridAspectRatio,
+		"mediaGridAspectStyle":           mediaGridAspectStyle,
+		"threadContinueThreadHref":       threadContinueThreadHref,
+		"hnPathIndentPx":                 hnPathIndentPx,
+		"add":                            func(a, b int) int { return a + b },
+		"sub":                            func(a, b int) int { return a - b },
+		"threadMaxDepth":                 func() int { return thread.MaxDepth },
+		"readsLoadMoreURL":               readsLoadMoreURL,
+		"replyContextVisible":            replyContextVisible,
+		"replyContextHTML":               replyContextHTML,
+		"threadRootID":                   probableThreadRootID,
+		"threadSelectHref":               threadSelectHref,
+		"threadSelectHrefForRoot":        threadSelectHrefForRoot,
+		"repostContextHTML":              repostContextHTML,
+		"bioLinkHTML":                    bioLinkHTML,
+		"webOfTrustDepth":                webOfTrustDepthForTemplate,
+		"webOfTrustEnabled":              webOfTrustEnabledForTemplate,
+		"briefBio":                       briefBio,
+		"profileWebsiteURL":              profileWebsiteURL,
+		"profileWebsiteDisplay":          profileWebsiteDisplay,
+		"profilePaymentRaw":              profilePaymentRaw,
+		"profileHasMetadataLinks":        profileHasMetadataLinks,
+		"profileSearchText":              profileSearchText,
+		"filteredRepliesToggleLabel":     filteredRepliesToggleLabel,
+		"notificationActionText":         notificationActionText,
+		"joinCSV":                        func(items []string) string { return strings.Join(items, ",") },
 	}
+}
+
+func profileSearchText(pubkey string, profile nostrx.Profile) string {
+	parts := []string{
+		displayName(map[string]nostrx.Profile{pubkey: profile}, pubkey),
+		profile.Name,
+		profile.Display,
+		profile.NIP05,
+		nostrx.EncodeNPub(pubkey),
+		pubkey,
+	}
+	return strings.ToLower(strings.Join(parts, " "))
+}
+
+func webOfTrustDepthForTemplate(data any) int {
+	if data == nil {
+		return defaultLoggedOutWOTDepth
+	}
+	v := reflect.ValueOf(data)
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return defaultLoggedOutWOTDepth
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return defaultLoggedOutWOTDepth
+	}
+	field := v.FieldByName("WebOfTrustDepth")
+	if !field.IsValid() || field.Kind() != reflect.Int {
+		return defaultLoggedOutWOTDepth
+	}
+	depth := int(field.Int())
+	if depth < 1 || depth > 3 {
+		return defaultLoggedOutWOTDepth
+	}
+	return depth
+}
+
+func webOfTrustEnabledForTemplate(data any) bool {
+	if data == nil {
+		return true
+	}
+	v := reflect.ValueOf(data)
+	if v.Kind() == reflect.Pointer {
+		if v.IsNil() {
+			return true
+		}
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return true
+	}
+	field := v.FieldByName("WebOfTrustEnabled")
+	if !field.IsValid() || field.Kind() != reflect.Bool {
+		return true
+	}
+	return field.Bool()
+}
+
+func assetPath(base, ref string) string {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return ""
+	}
+	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
+		return ref
+	}
+	base = strings.TrimRight(strings.TrimSpace(base), "/")
+	ref = strings.TrimLeft(ref, "/")
+	ref = strings.TrimPrefix(ref, "static/")
+	if base == "" {
+		return "/" + ref
+	}
+	return base + "/" + ref
 }
 
 // readsLoadMoreURL builds the "Load more reads" link with proper URL encoding,
@@ -182,11 +321,30 @@ func isSimpleRepost(event nostrx.Event) bool {
 	return event.Kind == nostrx.KindRepost
 }
 
+func threadSelectHref(event nostrx.Event) string {
+	return threadSelectHrefForRoot(probableThreadRootID(event), event.ID)
+}
+
+func threadSelectHrefForRoot(rootID, eventID string) string {
+	rootID = thread.NormalizeHexEventID(strings.TrimSpace(rootID))
+	eventID = thread.NormalizeHexEventID(strings.TrimSpace(eventID))
+	if eventID == "" {
+		return "/thread/"
+	}
+	if rootID == "" || rootID == eventID {
+		return "/thread/" + eventID
+	}
+	return "/thread/" + rootID + "?selected=" + eventID + "#note-" + eventID
+}
+
 func isQuotePost(event nostrx.Event) bool {
 	return event.Kind == nostrx.KindTextNote && event.FirstTagValue("q") != ""
 }
 
 func noteMainBodySourceText(event nostrx.Event) string {
+	if isSimpleRepost(event) {
+		return ""
+	}
 	return stripNIP27EventReferences(event.Content, referencedEventIDs(event))
 }
 
@@ -346,11 +504,37 @@ func formatDate(ts int64) string {
 	return time.Unix(ts, 0).UTC().Format("2006-01-02")
 }
 
+func formatProfileMetadataDate(ts int64) string {
+	if ts <= 0 {
+		return ""
+	}
+	return time.Unix(ts, 0).UTC().Format("January 2006")
+}
+
+func formatProfileMetadataDateISO(ts int64) string {
+	if ts <= 0 {
+		return ""
+	}
+	return time.Unix(ts, 0).UTC().Format("2006-01")
+}
+
 func short(value string) string {
 	if len(value) <= 12 {
 		return value
 	}
 	return value[:8] + "…" + value[len(value)-4:]
+}
+
+func profileSecondary(profiles map[string]nostrx.Profile, pubkey string) string {
+	if profile, ok := profiles[pubkey]; ok {
+		if nip05 := strings.TrimSpace(profile.NIP05); nip05 != "" {
+			return nostrx.NIP05DisplayText(nip05)
+		}
+	}
+	if nostrx.IsValidPubKeyHex(pubkey) {
+		return pubkey
+	}
+	return short(pubkey)
 }
 
 func displayName(profiles map[string]nostrx.Profile, pubkey string) string {
@@ -423,7 +607,7 @@ func referenceLabelAndHref(ref nostrx.NIP27Reference) (label string, href string
 		if ref.PubKey == "" {
 			return "", ""
 		}
-		return "@" + short(ref.PubKey), "/u/" + ref.PubKey
+		return "@" + short(ref.PubKey), profileHref(ref.PubKey, ref.Relays...)
 	case nostrx.NIP27KindNEvent, nostrx.NIP27KindNote:
 		if ref.Event == "" {
 			return "", ""
@@ -459,4 +643,67 @@ func avatarURL(profiles map[string]nostrx.Profile, pubkey string) string {
 
 func avatarSrc(profiles map[string]nostrx.Profile, pubkey string) string {
 	return avatarSrcFor(pubkey, avatarURL(profiles, pubkey))
+}
+
+func profileWebsiteURL(website string) string {
+	trimmed := strings.TrimSpace(website)
+	if trimmed == "" {
+		return ""
+	}
+	if u, err := url.Parse(trimmed); err == nil && u.Scheme != "" {
+		return trimmed
+	}
+	return "https://" + trimmed
+}
+
+func profileWebsiteDisplay(website string) string {
+	trimmed := strings.TrimSpace(website)
+	if trimmed == "" {
+		return ""
+	}
+	parsed, err := url.Parse(profileWebsiteURL(trimmed))
+	if err != nil || parsed.Host == "" {
+		return trimmed
+	}
+	display := parsed.Host
+	if path := strings.TrimSpace(parsed.Path); path != "" && path != "/" {
+		display += path
+	}
+	return display
+}
+
+func profilePaymentRaw(profile nostrx.Profile) string {
+	if lud16 := strings.TrimSpace(profile.Lud16); lud16 != "" {
+		return lud16
+	}
+	return strings.TrimSpace(profile.Lud06)
+}
+
+func profileHasMetadataLinks(profile nostrx.Profile) bool {
+	return profilePaymentRaw(profile) != ""
+}
+
+func filteredRepliesToggleLabel(count int) string {
+	if count == 1 {
+		return "show 1 more"
+	}
+	if count <= 0 {
+		return "show more"
+	}
+	return "show " + strconv.Itoa(count) + " more"
+}
+
+func notificationActionText(category string) string {
+	switch strings.TrimSpace(category) {
+	case "reply":
+		return "replied to your note"
+	case "like":
+		return "liked your note"
+	case "repost":
+		return "reposted your note"
+	case "mention":
+		return "mentioned you"
+	default:
+		return "notified you"
+	}
 }

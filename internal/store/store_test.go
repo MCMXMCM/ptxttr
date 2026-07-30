@@ -10,6 +10,8 @@ import (
 
 	"ptxt-nstr/internal/nostrx"
 	"ptxt-nstr/internal/thread"
+
+	fnostr "fiatjaf.com/nostr"
 )
 
 func TestDefaultSQLitePoolSmallHost(t *testing.T) {
@@ -86,6 +88,35 @@ func TestStoreEventsAndDerivedQueries(t *testing.T) {
 	}
 }
 
+func TestGetEventsSkipsAccessTouchWhileWriterBusy(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, ctx)
+	ev := event("busy-touch-note", "alice", 1, nostrx.KindTextNote, nil)
+	if err := st.SaveEvent(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE events SET last_accessed_at = 1 WHERE id = ?`, ev.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	st.writeMu.Lock()
+	got, err := st.GetEvents(ctx, []string{ev.ID})
+	st.writeMu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[ev.ID] == nil {
+		t.Fatalf("missing event %q", ev.ID)
+	}
+	var accessedAt int64
+	if err := st.db.QueryRowContext(ctx, `SELECT last_accessed_at FROM events WHERE id = ?`, ev.ID).Scan(&accessedAt); err != nil {
+		t.Fatal(err)
+	}
+	if accessedAt != 1 {
+		t.Fatalf("last_accessed_at = %d, want unchanged best-effort value", accessedAt)
+	}
+}
+
 func TestPruneEventsKeepsNewestFIFO(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t, ctx)
@@ -123,6 +154,76 @@ func TestPruneEventsKeepsNewestFIFO(t *testing.T) {
 	}
 	if statsCount != 4 {
 		t.Fatalf("remaining note_stats = %d, want 4", statsCount)
+	}
+}
+
+func TestPruneEventsRemovesOrphanRelayEvents(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, ctx)
+
+	for i := 0; i < 6; i++ {
+		ev := event(fmt.Sprintf("relay-prune-%d", i), "alice", int64(i), nostrx.KindTextNote, nil)
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var relayRows int
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM relay_events`).Scan(&relayRows); err != nil {
+		t.Fatal(err)
+	}
+	if relayRows != 6 {
+		t.Fatalf("relay_events = %d, want 6", relayRows)
+	}
+	deleted, err := st.PruneEvents(ctx, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 4 {
+		t.Fatalf("deleted = %d, want 4", deleted)
+	}
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM relay_events`).Scan(&relayRows); err != nil {
+		t.Fatal(err)
+	}
+	if relayRows != 2 {
+		t.Fatalf("relay_events after prune = %d, want 2", relayRows)
+	}
+}
+
+func TestPruneEventsEvictsByLastAccessedWhenLRU(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, ctx)
+	st.SetRetentionPolicy(true)
+
+	keep := event("keep-note", "alice", 100, nostrx.KindTextNote, nil)
+	stale := event("stale-note", "alice", 1, nostrx.KindTextNote, nil)
+	for _, ev := range []nostrx.Event{stale, keep} {
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.GetEvent(ctx, "keep-note"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE events SET last_accessed_at = 1 WHERE id = ?`, "stale-note"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE events SET last_accessed_at = 200 WHERE id = ?`, "keep-note"); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, err := st.PruneEvents(ctx, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+	var remaining string
+	if err := st.db.QueryRowContext(ctx, `SELECT id FROM events`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != "keep-note" {
+		t.Fatalf("remaining id = %q, want keep-note (LRU should drop stale-note)", remaining)
 	}
 }
 
@@ -499,7 +600,7 @@ func TestTrendingCacheRoundTripAndOverwrite(t *testing.T) {
 	st := openTestStore(t, ctx)
 
 	if err := st.WriteTrendingCache(ctx, "24h", "", []TrendingItem{
-		{NoteID: "note-a", ReplyCount: 3},
+		{NoteID: "note-a", ReplyCount: 3, ReactionCount: 2, NoteCreatedAt: 90},
 		{NoteID: "note-b", ReplyCount: 2},
 	}, 100); err != nil {
 		t.Fatal(err)
@@ -522,18 +623,18 @@ func TestTrendingCacheRoundTripAndOverwrite(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("expected 2 items, got %d", len(items))
 	}
-	if items[0].NoteID != "note-a" || items[0].ReplyCount != 3 {
+	if items[0].NoteID != "note-a" || items[0].ReplyCount != 3 || items[0].ReactionCount != 2 || items[0].NoteCreatedAt != 90 {
 		t.Fatalf("unexpected first cached item: %#v", items[0])
 	}
-	if items[0].Score != 3 {
-		t.Fatalf("expected score fallback to reply count, got %#v", items[0])
+	if items[0].Score != 5 || items[0].HotScore != 5 {
+		t.Fatalf("expected score fallback to engagement, got %#v", items[0])
 	}
 	if items[1].NoteID != "note-b" || items[1].ReplyCount != 2 {
 		t.Fatalf("unexpected second cached item: %#v", items[1])
 	}
 
 	if err := st.WriteTrendingCache(ctx, "24h", "", []TrendingItem{
-		{NoteID: "note-c", ReplyCount: 8, Score: 11},
+		{NoteID: "note-c", ReplyCount: 8, ReactionCount: 3, Score: 11, HotScore: 4.25, NoteCreatedAt: 1234},
 	}, 200); err != nil {
 		t.Fatal(err)
 	}
@@ -548,11 +649,51 @@ func TestTrendingCacheRoundTripAndOverwrite(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("expected 1 item after overwrite, got %d", len(items))
 	}
-	if items[0].NoteID != "note-c" || items[0].ReplyCount != 8 {
+	if items[0].NoteID != "note-c" || items[0].ReplyCount != 8 || items[0].ReactionCount != 3 {
 		t.Fatalf("unexpected overwritten cached item: %#v", items[0])
 	}
-	if items[0].Score != 11 {
-		t.Fatalf("expected persisted score 11, got %#v", items[0])
+	if items[0].Score != 11 || items[0].HotScore != 4.25 || items[0].NoteCreatedAt != 1234 {
+		t.Fatalf("expected persisted ranking metrics, got %#v", items[0])
+	}
+}
+
+func TestTrendingCandidatesByKindsReturnsRootNotesWithAggregates(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, ctx)
+
+	root := event("root", "alice", 100, nostrx.KindTextNote, nil)
+	cold := event("cold", "bob", 110, nostrx.KindTextNote, nil)
+	reply := event("reply", "carol", 120, nostrx.KindTextNote, [][]string{{"e", root.ID, "", "reply"}})
+	reaction := signTestNostrEvent(t, fnostr.Generate(), 130, nostrx.KindReaction, "+", [][]string{
+		{"e", root.ID},
+		{"p", root.PubKey},
+	})
+	for _, ev := range []nostrx.Event{root, cold, reply, reaction} {
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	items, err := st.TrendingCandidatesByKinds(ctx, []int{nostrx.KindTextNote}, 90, nil, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := make(map[string]TrendingItem, len(items))
+	for _, item := range items {
+		byID[item.NoteID] = item
+	}
+	if _, ok := byID[reply.ID]; ok {
+		t.Fatalf("reply was returned as a root candidate: %#v", items)
+	}
+	if _, ok := byID[cold.ID]; !ok {
+		t.Fatalf("cold root candidate missing: %#v", items)
+	}
+	got := byID[root.ID]
+	if got.NoteID == "" {
+		t.Fatalf("root candidate missing: %#v", items)
+	}
+	if got.ReplyCount != 1 || got.ReactionCount != 1 || got.Score != 2 || got.NoteCreatedAt != root.CreatedAt {
+		t.Fatalf("unexpected root aggregates: %#v", got)
 	}
 }
 
@@ -669,6 +810,96 @@ func TestSearchNoteSummariesSupportsAuthorScope(t *testing.T) {
 	}
 }
 
+func TestSearchProfilesMatchesAndRanksCachedProfiles(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, ctx)
+	exactPubkey := strings.Repeat("a", 64)
+	prefixPubkey := strings.Repeat("b", 64)
+	containsPubkey := strings.Repeat("c", 64)
+	nip05Pubkey := strings.Repeat("d", 64)
+	for _, profile := range []nostrx.Event{
+		{
+			ID:        "profile-exact",
+			PubKey:    exactPubkey,
+			CreatedAt: 400,
+			Kind:      nostrx.KindProfileMetadata,
+			Content:   `{"display_name":"Exact Match","name":"alice-exact","nip05":"exact@example.com"}`,
+		},
+		{
+			ID:        "profile-prefix",
+			PubKey:    prefixPubkey,
+			CreatedAt: 450,
+			Kind:      nostrx.KindProfileMetadata,
+			Content:   `{"display_name":"Prefix Alpha","name":"prefixer","nip05":"prefix@example.com"}`,
+		},
+		{
+			ID:        "profile-contains",
+			PubKey:    containsPubkey,
+			CreatedAt: 500,
+			Kind:      nostrx.KindProfileMetadata,
+			Content:   `{"display_name":"The Middle Prefixer","name":"contains-prefix","nip05":"contains@example.com"}`,
+		},
+		{
+			ID:        "profile-nip05",
+			PubKey:    nip05Pubkey,
+			CreatedAt: 550,
+			Kind:      nostrx.KindProfileMetadata,
+			Content:   `{"display_name":"Delta","name":"delta","nip05":"alice@delta.example"}`,
+		},
+	} {
+		if err := st.SaveEvent(ctx, profile); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := st.SearchProfiles(ctx, SearchProfilesQuery{Text: "prefix", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) < 2 {
+		t.Fatalf("len(got) = %d, want at least 2 (%v)", len(got), got)
+	}
+	if got[0] != prefixPubkey {
+		t.Fatalf("first profile = %q, want prefix match first", got[0])
+	}
+	if got[1] != containsPubkey {
+		t.Fatalf("second profile = %q, want contains match after prefix", got[1])
+	}
+
+	exactGot, err := st.SearchProfiles(ctx, SearchProfilesQuery{Text: exactPubkey, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exactGot) == 0 || exactGot[0] != exactPubkey {
+		t.Fatalf("exact hex search = %v, want exact pubkey first", exactGot)
+	}
+
+	npub := nostrx.EncodeNPub(exactPubkey)
+	npubGot, err := st.SearchProfiles(ctx, SearchProfilesQuery{Text: npub, Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(npubGot) == 0 || npubGot[0] != exactPubkey {
+		t.Fatalf("npub search = %v, want exact pubkey first", npubGot)
+	}
+
+	nip05Got, err := st.SearchProfiles(ctx, SearchProfilesQuery{Text: "delta.example", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(nip05Got) != 1 || nip05Got[0] != nip05Pubkey {
+		t.Fatalf("nip05 search = %v, want %q", nip05Got, nip05Pubkey)
+	}
+
+	empty, err := st.SearchProfiles(ctx, SearchProfilesQuery{Text: "   ", Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("blank query = %v, want no results", empty)
+	}
+}
+
 func TestMigrateAddsCacheEventsScopeEventSeenIndex(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t, ctx)
@@ -697,6 +928,37 @@ func TestMigrateAddsCacheEventsScopeEventSeenIndex(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected idx_cache_events_scope_event_seen to exist")
+	}
+}
+
+func TestMigrateAddsTagsEventNameIndex(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, ctx)
+
+	rows, err := st.db.QueryContext(ctx, `PRAGMA index_list('tags')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = rows.Close() }()
+	found := false
+	for rows.Next() {
+		var seq int
+		var name string
+		var unique int
+		var origin string
+		var partial int
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			t.Fatal(err)
+		}
+		if name == "idx_tags_event_name" {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected idx_tags_event_name to exist")
 	}
 }
 
@@ -879,6 +1141,60 @@ func TestSaveEventCanonicalizesReplyRootFromParentProjection(t *testing.T) {
 	}
 	if parentID != reply.ID {
 		t.Fatalf("nested parent_id = %q, want %q", parentID, reply.ID)
+	}
+}
+
+func TestThreadGraphCacheBuildAndFreshness(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, ctx)
+
+	root := event("root", "alice", 20, nostrx.KindTextNote, nil)
+	reply := event("reply", "bob", 21, nostrx.KindTextNote, [][]string{{"e", "root", "", "root"}})
+	nested := event("nested", "carol", 22, nostrx.KindTextNote, [][]string{
+		{"e", "root", "", "root"},
+		{"e", "reply", "", "reply"},
+	})
+	for _, ev := range []nostrx.Event{root, reply, nested} {
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cache, err := st.BuildThreadGraphCache(ctx, root.ID, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cache == nil {
+		t.Fatal("expected thread graph cache")
+	}
+	if got, want := strings.Join(cache.EventIDs, ","), "reply,nested"; got != want {
+		t.Fatalf("event ids = %q, want %q", got, want)
+	}
+	if got := cache.ParentByID[nested.ID]; got != reply.ID {
+		t.Fatalf("nested parent = %q, want %q", got, reply.ID)
+	}
+
+	loaded, fresh, err := st.ThreadGraphCache(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded == nil || !fresh {
+		t.Fatalf("loaded cache = %#v fresh=%v, want fresh cache", loaded, fresh)
+	}
+
+	newer := event("newer", "dave", 23, nostrx.KindTextNote, [][]string{
+		{"e", "root", "", "root"},
+		{"e", "nested", "", "reply"},
+	})
+	if err := st.SaveEvent(ctx, newer); err != nil {
+		t.Fatal(err)
+	}
+	_, fresh, err = st.ThreadGraphCache(ctx, root.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh {
+		t.Fatal("expected graph cache to become stale after a newer nested reply")
 	}
 }
 
@@ -1340,7 +1656,7 @@ func TestSeedContactTemporaryGiveUpAndReTouch(t *testing.T) {
 	}
 }
 
-func TestSeedContactSuccessLeavesDurableDedupeUntilReTouched(t *testing.T) {
+func TestSeedContactSuccessBecomesEligibleAfterRetryAt(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t, ctx)
 	pk := strings.Repeat("ef", 32)
@@ -1350,22 +1666,19 @@ func TestSeedContactSuccessLeavesDurableDedupeUntilReTouched(t *testing.T) {
 	if err := st.MarkHydrationAttempt(ctx, EntityTypeSeedContact, pk, true, time.Hour); err != nil {
 		t.Fatal(err)
 	}
-	batch, err := st.StaleSeedContactBatch(ctx, time.Now().Add(24*time.Hour).Unix(), 10, 12)
+	batch, err := st.StaleSeedContactBatch(ctx, time.Now().Unix(), 10, 12)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(batch) != 0 {
-		t.Fatalf("expected successful contact to stay deduped, got %#v", batch)
+		t.Fatalf("expected successful contact to remain quiet before retry_at, got %#v", batch)
 	}
-	if err := st.TouchSeedContactFrontier(ctx, []string{pk}, 4); err != nil {
-		t.Fatal(err)
-	}
-	batch2, err := st.StaleSeedContactBatch(ctx, time.Now().Unix(), 10, 12)
+	batch2, err := st.StaleSeedContactBatch(ctx, time.Now().Add(24*time.Hour).Unix(), 10, 12)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(batch2) != 1 || batch2[0].EntityID != pk {
-		t.Fatalf("expected re-touch to reactivate successful contact, got %#v", batch2)
+		t.Fatalf("expected successful contact to recur after retry_at, got %#v", batch2)
 	}
 }
 

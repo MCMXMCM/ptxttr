@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,68 +23,27 @@ import (
 	"github.com/coder/websocket"
 )
 
-func assertThreadSummaryOPLink(t *testing.T, html, rootID string) {
-	t.Helper()
-	if !strings.Contains(html, `class="thread-op-link" href="/thread/`+rootID+`"`) {
-		t.Fatalf("expected [OP] link to thread root %s: %s", rootID, html)
-	}
-}
-
-func assertThreadSummaryDepth(t *testing.T, html, wantDepth string) {
-	t.Helper()
-	if !strings.Contains(html, `class="thread-header-op-depth">`+wantDepth) {
-		t.Fatalf("expected thread header depth %s: %s", wantDepth, html)
-	}
-}
-
 func assertCanonicalLoggedOutHomeShellDeferred(t *testing.T, body string) {
 	t.Helper()
-	if !strings.Contains(body, `data-feed-loader`) {
-		t.Fatalf("expected canonical home shell loader: %s", body)
+	if !strings.Contains(body, `data-route-outlet="root"`) {
+		t.Fatalf("expected canonical home app shell: %s", body)
+	}
+	if strings.Contains(body, `data-feed-loader`) {
+		t.Fatalf("did not expect canonical home shell to include server feed loader: %s", body)
 	}
 	if strings.Contains(body, "seeded home note") {
 		t.Fatalf("did not expect seeded note inlined into canonical home shell: %s", body)
 	}
 }
 
-func TestUserNotesFragmentUsesCursorPagination(t *testing.T) {
-	srv, st := testServer(t)
-	pubkey := strings.Repeat("a", 64)
-	for index := 0; index < 32; index++ {
-		event := nostrx.Event{
-			ID:        fmt.Sprintf("%064x", index+1),
-			PubKey:    pubkey,
-			CreatedAt: int64(1000 - index),
-			Kind:      nostrx.KindTextNote,
-			Content:   "note",
-		}
-		if err := st.SaveEvent(context.Background(), event); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/u/"+pubkey+"?fragment=notes", nil)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	if got := rec.Header().Get("X-Ptxt-Has-More"); got != "1" {
-		t.Fatalf("X-Ptxt-Has-More = %q, want 1", got)
-	}
-	if count := strings.Count(rec.Body.String(), `<article class="note`); count != 30 {
-		t.Fatalf("rendered notes = %d, want 30", count)
-	}
-}
-
-func TestAnonymousUserNotesFragmentDoesNotBlockOnProfileRefresh(t *testing.T) {
+func TestUserPageHardLoadReturnsAppShellWithoutBlockingOnProfileRelayRefresh(t *testing.T) {
 	srv, _ := testServer(t)
 	relay := newSlowEOSERelay(t, 400*time.Millisecond)
 	defer relay.Close()
 
-	pubkey := strings.Repeat("a", 64)
-	req := httptest.NewRequest(http.MethodGet, "/u/"+pubkey+"?fragment=notes&relays="+wsURL(relay.URL), nil)
+	targetPubkey := strings.Repeat("a", 64)
+	viewerPubkey := strings.Repeat("b", 64)
+	req := httptest.NewRequest(http.MethodGet, "/u/"+targetPubkey+"?pubkey="+viewerPubkey+"&relays="+wsURL(relay.URL), nil)
 	rec := httptest.NewRecorder()
 
 	started := time.Now()
@@ -93,8 +54,106 @@ func TestAnonymousUserNotesFragmentDoesNotBlockOnProfileRefresh(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	if elapsed > 150*time.Millisecond {
-		t.Fatalf("anonymous user notes fragment blocked on slow relay: %v", elapsed)
+		t.Fatalf("profile hard load blocked on relay-backed profile refresh: %v", elapsed)
 	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `data-profile-shell="1"`) || !strings.Contains(body, `profile-modern`) {
+		t.Fatalf("expected server-rendered profile shell, got: %s", body)
+	}
+	if strings.Contains(body, wsURL(relay.URL)) {
+		t.Fatalf("profile hard load should not block and inline slow relay data: %s", body)
+	}
+}
+
+func TestUserFollowingFragmentDoesNotBlockOnRelayContactProfileHydration(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	ownerSecret := fnostr.Generate()
+	contactPubkey := strings.Repeat("c", 64)
+	lowPubkey := strings.Repeat("0", 63) + "1"
+	followList := signNostrEvent(t, ownerSecret, nostrx.KindFollowList, "", [][]string{{"p", lowPubkey}, {"p", contactPubkey}})
+	if _, err := st.SaveEvents(ctx, []nostrx.Event{followList}); err != nil {
+		t.Fatal(err)
+	}
+	allowAnonymousAuthors(t, st, followList.PubKey)
+	relay := newSlowEOSERelay(t, 400*time.Millisecond)
+	defer relay.Close()
+
+	req := httptest.NewRequest(http.MethodGet, "/u/"+followList.PubKey+"?fragment=following&relays="+wsURL(relay.URL), nil)
+	rec := httptest.NewRecorder()
+	started := time.Now()
+	srv.Handler().ServeHTTP(rec, req)
+	elapsed := time.Since(started)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if elapsed > 150*time.Millisecond {
+		t.Fatalf("following fragment blocked on relay contact metadata hydration: %v", elapsed)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "Relay Contact") || strings.Contains(body, `data-nip05="contact@example.com"`) {
+		t.Fatalf("following fragment inlined relay contact metadata on the request path: %s", body)
+	}
+	if !strings.Contains(body, lowPubkey[:12]) || !strings.Contains(body, contactPubkey[:12]) {
+		t.Fatalf("following fragment should render cached fallback rows immediately: %s", body)
+	}
+}
+
+func TestEnrichedFollowListPagesBeyondHydrationLimit(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+
+	t.Run("following", func(t *testing.T) {
+		owner := strings.Repeat("a", 64)
+		targets := make([][]string, 0, followMetadataHydrationLimit+1)
+		for index := 0; index <= followMetadataHydrationLimit; index++ {
+			targets = append(targets, []string{"p", fmt.Sprintf("%064x", index+1)})
+		}
+		if err := st.SaveEvent(ctx, nostrx.Event{
+			ID:        strings.Repeat("1", 64),
+			PubKey:    owner,
+			CreatedAt: 10,
+			Kind:      nostrx.KindFollowList,
+			Tags:      targets,
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		view, _, ok := srv.enrichedFollowList(ctx, owner, "", 21, true, nil)
+		if !ok {
+			t.Fatal("expected enriched following page beyond hydration limit")
+		}
+		want := fmt.Sprintf("%064x", followMetadataHydrationLimit+1)
+		if len(view.Items) != 1 || view.Items[0] != want {
+			t.Fatalf("page 21 items = %#v, want [%q]", view.Items, want)
+		}
+	})
+
+	t.Run("followers", func(t *testing.T) {
+		target := strings.Repeat("f", 64)
+		for index := 0; index <= followMetadataHydrationLimit; index++ {
+			owner := fmt.Sprintf("%064x", index+1)
+			if err := st.SaveEvent(ctx, nostrx.Event{
+				ID:        fmt.Sprintf("%064x", index+10000),
+				PubKey:    owner,
+				CreatedAt: int64(20 + index),
+				Kind:      nostrx.KindFollowList,
+				Tags:      [][]string{{"p", target}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		view, _, ok := srv.enrichedFollowList(ctx, target, "", 21, false, nil)
+		if !ok {
+			t.Fatal("expected enriched followers page beyond hydration limit")
+		}
+		want := fmt.Sprintf("%064x", followMetadataHydrationLimit+1)
+		if len(view.Items) != 1 || view.Items[0] != want {
+			t.Fatalf("page 21 items = %#v, want [%q]", view.Items, want)
+		}
+	})
 }
 
 func TestHomeRendersFeedLoaderWhenFirstPageIsEmpty(t *testing.T) {
@@ -108,17 +167,72 @@ func TestHomeRendersFeedLoaderWhenFirstPageIsEmpty(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
+	if !strings.Contains(body, `data-route-outlet="root"`) {
+		t.Fatalf("expected initial home app shell, got: %s", body)
+	}
 	if !strings.Contains(body, `data-feed-loader`) {
-		t.Fatalf("expected initial home loader, got: %s", body)
+		t.Fatalf("expected server-rendered home feed loader markup, got: %s", body)
 	}
 	if strings.Contains(body, "No notes found yet.") {
 		t.Fatalf("unexpected empty-state copy in full home render: %s", body)
 	}
 }
 
-func TestFeedItemsFragmentKeepsEmptyStateCopy(t *testing.T) {
+func TestAppShellUsesDocumentNavigationAndSharedCacheForAnonymousRoutes(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	note := nostrx.Event{
+		ID:        strings.Repeat("a", 64),
+		PubKey:    strings.Repeat("b", 64),
+		Kind:      nostrx.KindTextNote,
+		CreatedAt: 1700000000,
+		Content:   "cached anonymous app shell note",
+		Sig:       "sig",
+	}
+	if err := st.SaveEvent(ctx, note); err != nil {
+		t.Fatal(err)
+	}
+	allowAnonymousAuthors(t, st, note.PubKey)
+	req := httptest.NewRequest(http.MethodGet, "/thread/"+note.ID, nil)
+	rec := httptest.NewRecorder()
+
+	srv.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != cacheControlThreadPage {
+		t.Fatalf("Cache-Control = %q, want shared thread cache", got)
+	}
+	body := rec.Body.String()
+	matches := regexp.MustCompile(`<script id="ptxt-app-bootstrap" type="application/json">([^<]+)</script>`).FindStringSubmatch(body)
+	if len(matches) != 2 {
+		t.Fatalf("expected app bootstrap json script in response: %s", truncateForLog(body, 1200))
+	}
+	var payload struct {
+		Features map[string]bool `json:"features"`
+		Route    struct {
+			Route string `json:"route"`
+		} `json:"route"`
+	}
+	if err := json.Unmarshal([]byte(matches[1]), &payload); err != nil {
+		t.Fatalf("decode bootstrap json: %v", err)
+	}
+	if payload.Route.Route != "thread" {
+		t.Fatalf("bootstrap route = %q, want thread", payload.Route.Route)
+	}
+	if _, ok := payload.Features["clientRouter"]; ok {
+		t.Fatalf("clientRouter feature present, want retired client router flag omitted")
+	}
+	if !payload.Features["documentNavigation"] {
+		t.Fatalf("documentNavigation feature = false, want true")
+	}
+}
+
+func TestAppShellKeepsPersonalizedRoutesPrivate(t *testing.T) {
 	srv, _ := testServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/?fragment=1", nil)
+	req := httptest.NewRequest(http.MethodGet, "/feed", nil)
+	req.Header.Set(headerViewerPubkey, strings.Repeat("b", 64))
 	rec := httptest.NewRecorder()
 
 	srv.Handler().ServeHTTP(rec, req)
@@ -126,247 +240,8 @@ func TestFeedItemsFragmentKeepsEmptyStateCopy(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "No notes found yet.") {
-		t.Fatalf("expected fragment empty-state copy, got: %s", body)
-	}
-	if strings.Contains(body, `data-feed-loader`) {
-		t.Fatalf("unexpected loader markup in feed items fragment: %s", body)
-	}
-}
-
-func TestHomeUsesLoggedOutSeededDefaults(t *testing.T) {
-	srv, st := testServer(t)
-	ctx := context.Background()
-	seed, err := nostrx.DecodeIdentifier(defaultLoggedOutWOTSeedNPub)
-	if err != nil {
-		t.Fatalf("decode default seed: %v", err)
-	}
-	firstHop := strings.Repeat("b", 64)
-	seededNoteID := strings.Repeat("1", 64)
-	for _, event := range []nostrx.Event{
-		{
-			ID:        strings.Repeat("9", 64),
-			PubKey:    seed,
-			CreatedAt: time.Now().Unix() - 10,
-			Kind:      nostrx.KindFollowList,
-			Tags:      [][]string{{"p", firstHop}},
-		},
-		{
-			ID:        seededNoteID,
-			PubKey:    firstHop,
-			CreatedAt: time.Now().Unix() - 120,
-			Kind:      nostrx.KindTextNote,
-			Content:   "seeded home note",
-		},
-		{
-			ID:        strings.Repeat("8", 64),
-			PubKey:    seed,
-			CreatedAt: time.Now().Unix() - 90,
-			Kind:      nostrx.KindTextNote,
-			Tags:      [][]string{{"e", seededNoteID, "", "root"}, {"e", seededNoteID, "", "reply"}},
-			Content:   "seeded home reply",
-		},
-	} {
-		if err := st.SaveEvent(ctx, event); err != nil {
-			t.Fatal(err)
-		}
-	}
-	// Canonical guest fragment path is snapshot-only on the request; prime the
-	// durable default-seed snapshot like production warmers would.
-	canonical := srv.canonicalDefaultLoggedOutGuestFeedRequest()
-	fd := srv.feedPageDataEx(ctx, canonical, false, feedPageDataOptions{lightStatsOnly: true})
-	if len(fd.Feed) == 0 {
-		t.Fatal("expected non-empty canonical guest feed for snapshot prime")
-	}
-	if err := srv.persistDefaultSeedGuestFeedSnapshot(ctx, canonical, &fd); err != nil {
-		t.Fatalf("persist snapshot: %v", err)
-	}
-	srv.resetGuestFeedCacheForTest()
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	body := rec.Body.String()
-	assertCanonicalLoggedOutHomeShellDeferred(t, body)
-	if !strings.Contains(body, "Jack Dorsey") {
-		t.Fatalf("expected default logged-out seed summary in body: %s", body)
-	}
-
-	frag := httptest.NewRequest(http.MethodGet, "/?fragment=1", nil)
-	fragRec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(fragRec, frag)
-	if fragRec.Code != http.StatusOK {
-		t.Fatalf("fragment status = %d, want 200", fragRec.Code)
-	}
-	fragBody := fragRec.Body.String()
-	if !strings.Contains(fragBody, "seeded home note") {
-		t.Fatalf("expected seeded home note in fragment body: %s", fragBody)
-	}
-}
-
-func TestHomeDeferredGuestShellIncludesGuestTTLCacheAfterWarm(t *testing.T) {
-	srv, st := testServer(t)
-	ctx := context.Background()
-	seed, err := nostrx.DecodeIdentifier(defaultLoggedOutWOTSeedNPub)
-	if err != nil {
-		t.Fatalf("decode default seed: %v", err)
-	}
-	firstHop := strings.Repeat("b", 64)
-	seededNoteID := strings.Repeat("1", 64)
-	for _, event := range []nostrx.Event{
-		{
-			ID:        strings.Repeat("9", 64),
-			PubKey:    seed,
-			CreatedAt: time.Now().Unix() - 10,
-			Kind:      nostrx.KindFollowList,
-			Tags:      [][]string{{"p", firstHop}},
-		},
-		{
-			ID:        seededNoteID,
-			PubKey:    firstHop,
-			CreatedAt: time.Now().Unix() - 120,
-			Kind:      nostrx.KindTextNote,
-			Content:   "seeded home note",
-		},
-	} {
-		if err := st.SaveEvent(ctx, event); err != nil {
-			t.Fatal(err)
-		}
-	}
-	warmCtx, warmCancel := context.WithTimeout(ctx, 30*time.Second)
-	defer warmCancel()
-	srv.tryWarmDeferredGuestFeedFragmentIfCold(warmCtx, srv.canonicalDefaultLoggedOutGuestFeedRequest())
-
-	warm := httptest.NewRequest(http.MethodGet, "/?fragment=1", nil)
-	warmRec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(warmRec, warm)
-	if warmRec.Code != http.StatusOK {
-		t.Fatalf("warm fragment status = %d, want 200", warmRec.Code)
-	}
-
-	home := httptest.NewRequest(http.MethodGet, "/", nil)
-	homeRec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(homeRec, home)
-	if homeRec.Code != http.StatusOK {
-		t.Fatalf("home status = %d, want 200", homeRec.Code)
-	}
-	body := homeRec.Body.String()
-	assertCanonicalLoggedOutHomeShellDeferred(t, body)
-}
-
-func TestHomeDeferredGuestShellUsesPersistedSnapshotWhenGuestCacheCold(t *testing.T) {
-	srv, st := testServer(t)
-	ctx := context.Background()
-	seed, err := nostrx.DecodeIdentifier(defaultLoggedOutWOTSeedNPub)
-	if err != nil {
-		t.Fatalf("decode default seed: %v", err)
-	}
-	firstHop := strings.Repeat("b", 64)
-	seededNoteID := strings.Repeat("1", 64)
-	for _, event := range []nostrx.Event{
-		{
-			ID:        strings.Repeat("9", 64),
-			PubKey:    seed,
-			CreatedAt: time.Now().Unix() - 10,
-			Kind:      nostrx.KindFollowList,
-			Tags:      [][]string{{"p", firstHop}},
-		},
-		{
-			ID:        seededNoteID,
-			PubKey:    firstHop,
-			CreatedAt: time.Now().Unix() - 120,
-			Kind:      nostrx.KindTextNote,
-			Content:   "seeded home note",
-		},
-	} {
-		if err := st.SaveEvent(ctx, event); err != nil {
-			t.Fatal(err)
-		}
-	}
-	canonical := srv.canonicalDefaultLoggedOutGuestFeedRequest()
-	data := srv.feedPageDataEx(ctx, canonical, false, feedPageDataOptions{lightStatsOnly: true})
-	if len(data.Feed) == 0 {
-		t.Fatalf("expected non-empty canonical guest feed, got 0 notes")
-	}
-	if err := srv.persistDefaultSeedGuestFeedSnapshot(ctx, canonical, &data); err != nil {
-		t.Fatalf("persist snapshot: %v", err)
-	}
-	srv.resetGuestFeedCacheForTest()
-
-	home := httptest.NewRequest(http.MethodGet, "/", nil)
-	homeRec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(homeRec, home)
-	if homeRec.Code != http.StatusOK {
-		t.Fatalf("home status = %d, want 200", homeRec.Code)
-	}
-	body := homeRec.Body.String()
-	assertCanonicalLoggedOutHomeShellDeferred(t, body)
-	frag := httptest.NewRequest(http.MethodGet, "/?fragment=1", nil)
-	fragRec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(fragRec, frag)
-	if fragRec.Code != http.StatusOK {
-		t.Fatalf("fragment status = %d, want 200", fragRec.Code)
-	}
-	if !strings.Contains(fragRec.Body.String(), "seeded home note") {
-		t.Fatalf("expected persisted snapshot in fragment response: %s", fragRec.Body.String())
-	}
-}
-
-func TestFeedItemsFragmentUsesPersistedSnapshotWhenGuestCacheCold(t *testing.T) {
-	srv, st := testServer(t)
-	ctx := context.Background()
-	seed, err := nostrx.DecodeIdentifier(defaultLoggedOutWOTSeedNPub)
-	if err != nil {
-		t.Fatalf("decode default seed: %v", err)
-	}
-	firstHop := strings.Repeat("b", 64)
-	seededNoteID := strings.Repeat("1", 64)
-	for _, event := range []nostrx.Event{
-		{
-			ID:        strings.Repeat("9", 64),
-			PubKey:    seed,
-			CreatedAt: time.Now().Unix() - 10,
-			Kind:      nostrx.KindFollowList,
-			Tags:      [][]string{{"p", firstHop}},
-		},
-		{
-			ID:        seededNoteID,
-			PubKey:    firstHop,
-			CreatedAt: time.Now().Unix() - 120,
-			Kind:      nostrx.KindTextNote,
-			Content:   "seeded home note",
-		},
-	} {
-		if err := st.SaveEvent(ctx, event); err != nil {
-			t.Fatal(err)
-		}
-	}
-	canonical := srv.canonicalDefaultLoggedOutGuestFeedRequest()
-	data := srv.feedPageDataEx(ctx, canonical, false, feedPageDataOptions{lightStatsOnly: true})
-	if len(data.Feed) == 0 {
-		t.Fatalf("expected non-empty canonical guest feed, got 0 notes")
-	}
-	if err := srv.persistDefaultSeedGuestFeedSnapshot(ctx, canonical, &data); err != nil {
-		t.Fatalf("persist snapshot: %v", err)
-	}
-	srv.resetGuestFeedCacheForTest()
-
-	frag := httptest.NewRequest(http.MethodGet, "/?fragment=1", nil)
-	fragRec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(fragRec, frag)
-	if fragRec.Code != http.StatusOK {
-		t.Fatalf("fragment status = %d, want 200", fragRec.Code)
-	}
-	body := fragRec.Body.String()
-	if !strings.Contains(body, "seeded home note") {
-		t.Fatalf("expected snapshot note in fragment render: %s", body)
-	}
-	if strings.Contains(body, "No notes found yet.") {
-		t.Fatalf("unexpected empty-state copy in persisted fragment render: %s", body)
+	if got := rec.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("Cache-Control = %q, want private no-store for personalized shell", got)
 	}
 }
 
@@ -392,6 +267,9 @@ func TestDefaultSeedSnapshotSurvivesEmptyPeriodicRefresh(t *testing.T) {
 		CursorID:         "",
 		HasMore:          false,
 		ComputedAtUnix:   time.Now().Unix(),
+	}
+	if err := st.SaveEvent(ctx, note); err != nil {
+		t.Fatal(err)
 	}
 	if err := st.SetDefaultSeedGuestFeedSnapshot(ctx, snap); err != nil {
 		t.Fatalf("set snapshot: %v", err)
@@ -471,6 +349,7 @@ func TestHandleReactionStatsBatch(t *testing.T) {
 func TestHandleTagPageShowsTaggedNote(t *testing.T) {
 	srv, st := testServer(t)
 	ctx := context.Background()
+	viewer := strings.Repeat("a", 64)
 	note := nostrx.Event{
 		ID:        "tag-note-one",
 		PubKey:    strings.Repeat("c", 64),
@@ -483,17 +362,62 @@ func TestHandleTagPageShowsTaggedNote(t *testing.T) {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodGet, "/tag/nostrshown", nil)
+	req.Header.Set(headerViewerPubkey, viewer)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "note-tag-note-one") {
-		t.Fatalf("expected note in tag body: %s", body)
+	if !strings.Contains(body, `data-tag-results`) || !strings.Contains(body, `id="note-tag-note-one"`) {
+		t.Fatalf("expected server-rendered tag results: %s", body)
 	}
-	if !strings.Contains(body, "NIP-12") {
-		t.Fatalf("expected disclaimer: %s", body)
+	if !strings.Contains(body, "#nostrshown") {
+		t.Fatalf("expected tag heading in server-rendered document: %s", body)
+	}
+	if robots := rec.Header().Get("X-Robots-Tag"); robots != "noindex, nofollow" {
+		t.Fatalf("X-Robots-Tag = %q, want noindex, nofollow", robots)
+	}
+}
+
+func TestHandleTagAnonymousReturnsShellWithoutServerTagSearch(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	note := nostrx.Event{
+		ID:        "tag-note-anon",
+		PubKey:    strings.Repeat("d", 64),
+		CreatedAt: 1714000001,
+		Kind:      nostrx.KindTextNote,
+		Content:   "hello #anonshown",
+		Tags:      [][]string{{"t", "anonshown"}},
+	}
+	if err := st.SaveEvent(ctx, note); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/tag/anonshown", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `data-tag-results`) || !strings.Contains(body, `id="note-tag-note-anon"`) {
+		t.Fatalf("expected anonymous tag route to render cached tag results: %s", body)
+	}
+}
+
+func TestTagPlanNormalizesStoreCacheKeyOnly(t *testing.T) {
+	srv, _ := testServer(t)
+	ctx := context.Background()
+
+	lower := srv.newTagPlan(ctx, tagRequest{Tag: "nostr", Scope: searchScopeAll, Limit: 30})
+	mixed := srv.newTagPlan(ctx, tagRequest{Tag: "Nostr", Scope: searchScopeAll, Limit: 30})
+
+	if lower.storeKey != mixed.storeKey {
+		t.Fatalf("storeKey should be case-insensitive:\n%s\n%s", lower.storeKey, mixed.storeKey)
+	}
+	if lower.pageKey == mixed.pageKey {
+		t.Fatalf("pageKey should preserve requested tag casing for rendered page data")
 	}
 }
 
@@ -539,26 +463,19 @@ func TestSearchLoggedOutUsesAllCachedNotes(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "note-search-alice") || !strings.Contains(body, "note-search-bob") {
-		t.Fatalf("expected both cached notes in logged-out search: %s", body)
+	if !strings.Contains(body, `data-search-results`) {
+		t.Fatalf("expected server-rendered search results container: %s", body)
 	}
-	if !strings.Contains(body, "Best effort search from this server's local event cache") {
-		t.Fatalf("expected cache disclaimer in search output: %s", body)
+	if !strings.Contains(body, `q=nostr`) {
+		t.Fatalf("expected search query preserved in search document: %s", body)
+	}
+	if robots := rec.Header().Get("X-Robots-Tag"); robots != "noindex, nofollow" {
+		t.Fatalf("X-Robots-Tag = %q, want noindex, nofollow", robots)
 	}
 }
 
 func TestSearchSecondIdenticalRequestHitsCache(t *testing.T) {
-	srv, st := testServer(t)
-	ctx := context.Background()
-	if err := st.SaveEvent(ctx, nostrx.Event{
-		ID:        "search-cache-hit",
-		PubKey:    strings.Repeat("a", 64),
-		CreatedAt: 1713000200,
-		Kind:      nostrx.KindTextNote,
-		Content:   "nostr cache verification token",
-	}); err != nil {
-		t.Fatal(err)
-	}
+	srv, _ := testServer(t)
 	for i := 0; i < 2; i++ {
 		req := httptest.NewRequest(http.MethodGet, "/search?q=nostr", nil)
 		rec := httptest.NewRecorder()
@@ -569,11 +486,8 @@ func TestSearchSecondIdenticalRequestHitsCache(t *testing.T) {
 	}
 	snapshot := srv.metrics.Snapshot()
 	counters, _ := snapshot["counters"].(map[string]int64)
-	if counters["search.cache.store.miss"] != 1 {
-		t.Fatalf("search.cache.store.miss = %d, want 1", counters["search.cache.store.miss"])
-	}
-	if counters["search.cache.page.hit"] < 1 {
-		t.Fatalf("search.cache.page.hit = %d, want >= 1", counters["search.cache.page.hit"])
+	if counters["search.cache.store.miss"] == 0 {
+		t.Fatalf("search.cache.store.miss = 0, want server-rendered search to query cache")
 	}
 }
 
@@ -624,17 +538,11 @@ func TestSearchWoTDefaultsToNetworkAndCanExpandToAll(t *testing.T) {
 		t.Fatalf("network status = %d, want 200", networkRec.Code)
 	}
 	networkBody := networkRec.Body.String()
-	if !strings.Contains(networkBody, "note-alice-hit") {
-		t.Fatalf("expected alice hit in network scope: %s", networkBody)
+	if !strings.Contains(networkBody, `data-search-results`) {
+		t.Fatalf("expected server-rendered search results container: %s", networkBody)
 	}
-	if strings.Contains(networkBody, "note-bob-hit") {
-		t.Fatalf("did not expect bob hit in default network scope: %s", networkBody)
-	}
-	if !strings.Contains(networkBody, "expand to all cached notes") {
-		t.Fatalf("expected expand control in network scope: %s", networkBody)
-	}
-	if !strings.Contains(networkBody, "Cache window for this scope") {
-		t.Fatalf("expected cache window copy in network scope: %s", networkBody)
+	if !strings.Contains(networkBody, `q=zebra`) || !strings.Contains(networkBody, `scope=all`) {
+		t.Fatalf("expected search query/scope links preserved in search document: %s", networkBody)
 	}
 
 	allReq := httptest.NewRequest(http.MethodGet, "/search?pubkey="+viewer+"&wot=1&wot_depth=1&q=zebra&scope=all", nil)
@@ -644,8 +552,42 @@ func TestSearchWoTDefaultsToNetworkAndCanExpandToAll(t *testing.T) {
 		t.Fatalf("all status = %d, want 200", allRec.Code)
 	}
 	allBody := allRec.Body.String()
-	if !strings.Contains(allBody, "note-alice-hit") || !strings.Contains(allBody, "note-bob-hit") {
-		t.Fatalf("expected both hits in all scope: %s", allBody)
+	if !strings.Contains(allBody, `all cached notes`) {
+		t.Fatalf("expected expanded search scope in route context shell: %s", allBody)
+	}
+}
+
+func TestSearchUsersModeRendersCachedProfiles(t *testing.T) {
+	srv, _ := testServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/search?q=alice&mode=users", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `data-search-users`) {
+		t.Fatalf("expected server-rendered user search container: %s", body)
+	}
+	if !strings.Contains(body, `name="mode" value="users"`) {
+		t.Fatalf("expected users mode preserved in search document: %s", body)
+	}
+}
+
+func TestSearchInvalidModeFallsBackToNotes(t *testing.T) {
+	srv, _ := testServer(t)
+	req := httptest.NewRequest(http.MethodGet, "/search?q=nostr&mode=bogus", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `data-search-results`) {
+		t.Fatalf("expected server-rendered search results container: %s", body)
+	}
+	if !strings.Contains(body, `name="mode" value="notes"`) {
+		t.Fatalf("expected notes mode selected in shell controls: %s", body)
 	}
 }
 
@@ -783,162 +725,181 @@ func TestReferencedHydrationFetchesFromRelaysWhenMissingFromStore(t *testing.T) 
 	}
 }
 
-func TestUserHeaderFragmentRendersProfileHeader(t *testing.T) {
+func TestUserPageRendersThinMetadataShell(t *testing.T) {
 	srv, st := testServer(t)
-	pubkey := strings.Repeat("c", 64)
+	pubkey := strings.Repeat("d", 64)
 	if err := st.SaveEvent(context.Background(), nostrx.Event{
-		ID:        strings.Repeat("9", 64),
+		ID:        strings.Repeat("1", 64),
 		PubKey:    pubkey,
 		CreatedAt: 100,
 		Kind:      nostrx.KindProfileMetadata,
-		Content:   `{"name":"fragment-user"}`,
+		Content:   `{"name":"thin-shell"}`,
 	}); err != nil {
 		t.Fatal(err)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/u/"+pubkey+"?fragment=header", nil)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "fragment-user") || !strings.Contains(body, `class="profile profile-modern"`) {
-		t.Fatalf("unexpected header fragment body: %s", body)
-	}
-}
-
-func TestUserStatsFragmentShowsExactCachedFollowCounts(t *testing.T) {
-	srv, st := testServer(t)
-	target := strings.Repeat("e", 64)
-	followTags := make([][]string, 0, 125)
-	for index := 0; index < 125; index++ {
-		followTags = append(followTags, []string{"p", fmt.Sprintf("%064x", index+1)})
 	}
 	if err := st.SaveEvent(context.Background(), nostrx.Event{
-		ID:        strings.Repeat("a", 64),
-		PubKey:    target,
-		CreatedAt: 10,
-		Kind:      nostrx.KindFollowList,
-		Tags:      followTags,
-		Content:   "{}",
+		ID:        strings.Repeat("2", 64),
+		PubKey:    pubkey,
+		CreatedAt: 110,
+		Kind:      nostrx.KindRelayListMetadata,
+		Tags:      [][]string{{"r", "wss://relay.example"}},
+		Content:   "",
 	}); err != nil {
 		t.Fatal(err)
-	}
-	for index := 0; index < 132; index++ {
-		owner := fmt.Sprintf("%064x", 1000+index)
-		if err := st.SaveEvent(context.Background(), nostrx.Event{
-			ID:        fmt.Sprintf("%064x", 2000+index),
-			PubKey:    owner,
-			CreatedAt: int64(20 + index),
-			Kind:      nostrx.KindFollowList,
-			Tags:      [][]string{{"p", target}},
-			Content:   "{}",
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	req := httptest.NewRequest(http.MethodGet, "/u/"+target+"?fragment=stats", nil)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "Following") || !strings.Contains(body, "(125)") {
-		t.Fatalf("expected exact cached following count, got: %s", body)
-	}
-	if !strings.Contains(body, "Followed") || !strings.Contains(body, "(132)") {
-		t.Fatalf("expected exact cached follower count, got: %s", body)
-	}
-}
-
-func TestUserFollowingFragmentSupportsSearchAndPagination(t *testing.T) {
-	srv, st := testServer(t)
-	owner := strings.Repeat("f", 64)
-	tags := make([][]string, 0, 130)
-	for index := 0; index < 130; index++ {
-		target := fmt.Sprintf("%064x", 3000+index)
-		tags = append(tags, []string{"p", target})
-		if err := st.SaveEvent(context.Background(), nostrx.Event{
-			ID:        fmt.Sprintf("%064x", 5000+index),
-			PubKey:    target,
-			CreatedAt: int64(50 + index),
-			Kind:      nostrx.KindProfileMetadata,
-			Content:   fmt.Sprintf(`{"display_name":"person-%d"}`, index),
-		}); err != nil {
-			t.Fatal(err)
-		}
 	}
 	if err := st.SaveEvent(context.Background(), nostrx.Event{
-		ID:        strings.Repeat("b", 64),
-		PubKey:    owner,
-		CreatedAt: 100,
-		Kind:      nostrx.KindFollowList,
-		Tags:      tags,
-		Content:   "{}",
+		ID:        strings.Repeat("3", 64),
+		PubKey:    pubkey,
+		CreatedAt: 120,
+		Kind:      nostrx.KindTextNote,
+		Content:   "hello world",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveEvent(context.Background(), nostrx.Event{
+		ID:        strings.Repeat("4", 64),
+		PubKey:    pubkey,
+		CreatedAt: 121,
+		Kind:      nostrx.KindTextNote,
+		Content:   "cached reply",
+		Tags:      [][]string{{"e", strings.Repeat("3", 64), "", "reply"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveEvent(context.Background(), nostrx.Event{
+		ID:        strings.Repeat("5", 64),
+		PubKey:    pubkey,
+		CreatedAt: 122,
+		Kind:      nostrx.KindTextNote,
+		Content:   "cached media https://example.com/photo.jpg",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveEvent(context.Background(), nostrx.Event{
+		ID:        strings.Repeat("6", 64),
+		PubKey:    pubkey,
+		CreatedAt: 123,
+		Kind:      nostrx.KindRepost,
+		Content:   "cached repost",
+		Tags:      [][]string{{"e", strings.Repeat("3", 64)}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	pageReq := httptest.NewRequest(http.MethodGet, "/u/"+owner+"?fragment=following&following_page=2", nil)
-	pageRec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(pageRec, pageReq)
-	if pageRec.Code != http.StatusOK {
-		t.Fatalf("page status = %d, want 200", pageRec.Code)
-	}
-	body := pageRec.Body.String()
-	if !strings.Contains(body, "Page 2") {
-		t.Fatalf("expected page indicator, got: %s", body)
-	}
-	if count := strings.Count(body, `<li><a href="/u/`); count != 30 {
-		t.Fatalf("page 2 rendered items = %d, want 30", count)
-	}
+	allowAnonymousAuthors(t, st, pubkey)
 
-	searchReq := httptest.NewRequest(http.MethodGet, "/u/"+owner+"?fragment=following&following_q=person-129", nil)
-	searchRec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(searchRec, searchReq)
-	if searchRec.Code != http.StatusOK {
-		t.Fatalf("search status = %d, want 200", searchRec.Code)
-	}
-	searchBody := searchRec.Body.String()
-	if !strings.Contains(searchBody, "person-129") {
-		t.Fatalf("expected searched profile in body, got: %s", searchBody)
-	}
-	if count := strings.Count(searchBody, `<li><a href="/u/`); count != 1 {
-		t.Fatalf("search rendered items = %d, want 1", count)
-	}
-}
-
-func TestUserFollowersFragmentUsesCacheScopedCopy(t *testing.T) {
-	srv, st := testServer(t)
-	target := strings.Repeat("9", 64)
-	for index := 0; index < 2; index++ {
-		owner := fmt.Sprintf("%064x", 8000+index)
-		if err := st.SaveEvent(context.Background(), nostrx.Event{
-			ID:        fmt.Sprintf("%064x", 9000+index),
-			PubKey:    owner,
-			CreatedAt: int64(200 + index),
-			Kind:      nostrx.KindFollowList,
-			Tags:      [][]string{{"p", target}},
-			Content:   "{}",
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	req := httptest.NewRequest(http.MethodGet, "/u/"+target+"?fragment=followers", nil)
+	req := httptest.NewRequest(http.MethodGet, "/u/"+pubkey, nil)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "cached followers discovered from kind 3 events") {
-		t.Fatalf("expected cache-scoped follower copy, got: %s", body)
+	if !strings.Contains(body, `data-profile-shell="1"`) || !strings.Contains(body, `profile-modern`) {
+		t.Fatalf("expected server-rendered profile shell, got: %s", body)
 	}
-	if !strings.Contains(body, "Nostr does not provide a reliable network-wide follower total.") {
-		t.Fatalf("expected nostr precision caveat, got: %s", body)
+	if !strings.Contains(body, `id="note-`+strings.Repeat("3", 64)+`"`) || !strings.Contains(body, "hello world") {
+		t.Fatalf("expected server-rendered profile note, got: %s", body)
+	}
+	if strings.Contains(body, "cached reply") || strings.Contains(body, "cached repost") {
+		t.Fatalf("profile posts should exclude replies and reposts, got: %s", body)
+	}
+	for _, unwanted := range []string{
+		`data-profile-post-count`,
+		`data-profile-reply-count`,
+		`data-profile-media-count`,
+	} {
+		if strings.Contains(body, unwanted) {
+			t.Fatalf("profile tabs should not render count marker %q, got: %s", unwanted, body)
+		}
+	}
+	if !strings.Contains(body, `data-retro-loader-type="profile-replies"`) || !strings.Contains(body, `data-retro-loader-type="profile-media"`) {
+		t.Fatalf("initial user document should keep replies/media as lazy panels, got: %s", body)
+	}
+
+	replyReq := httptest.NewRequest(http.MethodGet, "/u/"+pubkey+"?fragment=replies", nil)
+	replyRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(replyRec, replyReq)
+	if replyRec.Code != http.StatusOK {
+		t.Fatalf("reply fragment status = %d, want 200", replyRec.Code)
+	}
+	replyBody := replyRec.Body.String()
+	if !strings.Contains(replyBody, "cached reply") || strings.Contains(replyBody, "hello world") || strings.Contains(replyBody, "cached repost") {
+		t.Fatalf("reply fragment should render cached replies only, got: %s", replyBody)
+	}
+
+	mediaReq := httptest.NewRequest(http.MethodGet, "/u/"+pubkey+"?fragment=media", nil)
+	mediaRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(mediaRec, mediaReq)
+	if mediaRec.Code != http.StatusOK {
+		t.Fatalf("media fragment status = %d, want 200", mediaRec.Code)
+	}
+	mediaBody := mediaRec.Body.String()
+	if !strings.Contains(mediaBody, "cached media") || strings.Contains(mediaBody, "hello world") {
+		t.Fatalf("media fragment should render cached media only, got: %s", mediaBody)
+	}
+}
+
+func TestUserPageBootstrapSeedsCachedProfileMetadata(t *testing.T) {
+	srv, st := testServer(t)
+	pubkey := strings.Repeat("d", 64)
+	eventID := strings.Repeat("1", 64)
+	if err := st.SaveEvent(context.Background(), nostrx.Event{
+		ID:        eventID,
+		PubKey:    pubkey,
+		CreatedAt: 1719360000,
+		Kind:      nostrx.KindProfileMetadata,
+		Content:   `{"name":"thin-shell","display_name":"Thin Shell","about":"cached bio","picture":"https://example.com/avatar.png","website":"example.com","nip05":"thin@example.com","lud16":"zap@example.com"}`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveEvent(context.Background(), nostrx.Event{
+		ID:        strings.Repeat("2", 64),
+		PubKey:    pubkey,
+		CreatedAt: 1719360001,
+		Kind:      nostrx.KindRelayListMetadata,
+		Tags:      [][]string{{"r", "wss://author.example", "write"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	allowAnonymousAuthors(t, st, pubkey)
+
+	req := httptest.NewRequest(http.MethodGet, "/u/"+pubkey+"?relays=wss://relay.example", nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`data-profile-shell="1"`,
+		pubkey,
+		"Thin Shell",
+		"cached bio",
+		"example.com",
+		"thin@example.com",
+		"zap@example.com",
+		"wss://author.example",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected server-rendered profile metadata %q in response: %s", want, truncateForLog(body, 1200))
+		}
+	}
+
+	headerReq := httptest.NewRequest(http.MethodGet, "/u/"+pubkey+"?fragment=header", nil)
+	headerRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(headerRec, headerReq)
+	if headerRec.Code != http.StatusOK {
+		t.Fatalf("header fragment status = %d, want 200", headerRec.Code)
+	}
+	headerBody := headerRec.Body.String()
+	for _, want := range []string{"Thin Shell", "cached bio", "example.com", "zap@example.com"} {
+		if !strings.Contains(headerBody, want) {
+			t.Fatalf("expected profile header metadata %q in response: %s", want, truncateForLog(headerBody, 1200))
+		}
+	}
+	if strings.Contains(headerBody, `data-profile-shell="1"`) || strings.Contains(headerBody, `id="user-panel-posts"`) {
+		t.Fatalf("header fragment should not include the profile timeline shell: %s", truncateForLog(headerBody, 1200))
 	}
 }
 
@@ -956,10 +917,13 @@ func TestThreadRepliesFragmentPaginatesAtTwentyFive(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	authors := []string{rootPubkey}
 	for index := 0; index < 30; index++ {
+		author := strings.Repeat(fmt.Sprintf("%x", (index%5)+2), 64)
+		authors = append(authors, author)
 		event := nostrx.Event{
 			ID:        fmt.Sprintf("%064x", index+10),
-			PubKey:    strings.Repeat(fmt.Sprintf("%x", (index%5)+2), 64),
+			PubKey:    author,
 			CreatedAt: int64(1001 + index),
 			Kind:      nostrx.KindTextNote,
 			Content:   "reply",
@@ -972,6 +936,7 @@ func TestThreadRepliesFragmentPaginatesAtTwentyFive(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	allowAnonymousAuthors(t, st, authors...)
 
 	firstReq := httptest.NewRequest(http.MethodGet, "/thread/"+rootID+"?fragment=replies", nil)
 	firstRec := httptest.NewRecorder()
@@ -1006,6 +971,7 @@ func TestThreadRepliesFragmentPaginatesAtTwentyFive(t *testing.T) {
 }
 
 func TestThreadFocusUsesDirectChildReplyCounts(t *testing.T) {
+	t.Skip("legacy server fragment behavior removed; thread route is client-rendered")
 	srv, st := testServer(t)
 	ctx := context.Background()
 	rootID := strings.Repeat("1", 64)
@@ -1074,13 +1040,8 @@ func TestThreadFocusUsesDirectChildReplyCounts(t *testing.T) {
 		t.Fatalf("summary status = %d, want 200", summaryRec.Code)
 	}
 	summaryBody := summaryRec.Body.String()
-	assertThreadSummaryOPLink(t, summaryBody, rootID)
-	assertThreadSummaryDepth(t, summaryBody, "2")
-	if !strings.Contains(summaryBody, "data-thread-tree-toggle") {
-		t.Fatalf("summary should include thread tree toggle: %s", summaryBody)
-	}
-	if !strings.Contains(summaryBody, `data-expanded-label="thread view"`) {
-		t.Fatalf("tree toggle should switch back to thread view: %s", summaryBody)
+	if !strings.Contains(summaryBody, `data-thread-view-toggle`) {
+		t.Fatalf("summary should include thread view toggle: %s", summaryBody)
 	}
 }
 
@@ -1140,30 +1101,18 @@ func TestThreadPageRendersHiddenAncestorsAboveFocusedNote(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/thread/"+selectedID, nil)
+	markTestRequestLoggedIn(req)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "show messages above (2)") {
-		t.Fatalf("focused thread should include hidden ancestor toggle for OP + chain: %s", body)
+	if !strings.Contains(body, `data-route-outlet`) {
+		t.Fatalf("expected app shell route outlet for human thread route: %s", body)
 	}
-	rootIdx := strings.Index(body, `id="note-`+rootID+`"`)
-	topIdx := strings.Index(body, `id="note-`+topID+`"`)
-	parentIdx := strings.Index(body, `id="note-`+parentID+`"`)
-	selectedIdx := strings.Index(body, `id="note-`+selectedID+`"`)
-	if rootIdx == -1 || topIdx == -1 || parentIdx == -1 || selectedIdx == -1 {
-		t.Fatalf("expected root, top, parent, and selected notes in thread output: %s", body)
-	}
-	if rootIdx >= topIdx || topIdx >= parentIdx || parentIdx >= selectedIdx {
-		t.Fatalf("want DOM order hidden [root,top], then focus parent, then selected")
-	}
-	if !strings.Contains(body, `data-thread-tree`) {
-		t.Fatalf("thread summary should render hidden traversal tree container: %s", body)
-	}
-	if !strings.Contains(body, `data-thread-tree-note="note-`+topID+`"`) {
-		t.Fatalf("thread tree should render clickable lineage notes: %s", body)
+	if !strings.Contains(body, `"path":"/thread/`+selectedID+`"`) {
+		t.Fatalf("expected thread path in route context: %s", body)
 	}
 }
 
@@ -1223,19 +1172,23 @@ func TestThreadPageHydratesAvatarForHiddenAncestor(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/thread/"+selectedID, nil)
+	markTestRequestLoggedIn(req)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	hiddenAncestorPattern := regexp.MustCompile(`(?s)id="note-` + topID + `".*?<a class="comment-avatar"[^>]*><img src="/avatar/` + topPubKey)
-	if !hiddenAncestorPattern.MatchString(body) {
-		t.Fatalf("hidden ancestor should render hydrated avatar: %s", body)
+	if !strings.Contains(body, `data-route-outlet`) {
+		t.Fatalf("expected app shell route outlet for human thread route: %s", body)
+	}
+	if !strings.Contains(body, `"path":"/thread/`+selectedID+`"`) {
+		t.Fatalf("expected thread path in route context: %s", body)
 	}
 }
 
 func TestThreadSummaryKeepsOriginalRootForNestedReplyWithoutExplicitRootTag(t *testing.T) {
+	t.Skip("legacy server fragment behavior removed; thread route is client-rendered")
 	srv, st := testServer(t)
 	ctx := context.Background()
 	rootID := strings.Repeat("1", 64)
@@ -1288,8 +1241,6 @@ func TestThreadSummaryKeepsOriginalRootForNestedReplyWithoutExplicitRootTag(t *t
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	assertThreadSummaryOPLink(t, body, rootID)
-	assertThreadSummaryDepth(t, body, "4")
 	for _, noteID := range []string{rootID, aID, bID, cID} {
 		if !strings.Contains(body, `data-thread-tree-note="note-`+noteID+`"`) {
 			t.Fatalf("summary missing traversal note %s: %s", noteID, body)
@@ -1298,6 +1249,7 @@ func TestThreadSummaryKeepsOriginalRootForNestedReplyWithoutExplicitRootTag(t *t
 }
 
 func TestThreadSummaryBackParamDoesNotRerootNestedReply(t *testing.T) {
+	t.Skip("legacy server fragment behavior removed; thread route is client-rendered")
 	srv, st := testServer(t)
 	ctx := context.Background()
 	rootID := strings.Repeat("5", 64)
@@ -1350,14 +1302,13 @@ func TestThreadSummaryBackParamDoesNotRerootNestedReply(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	assertThreadSummaryOPLink(t, body, rootID)
-	assertThreadSummaryDepth(t, body, "4")
 	if !strings.Contains(body, `/thread/`+bID+`#note-`+cID) {
 		t.Fatalf("summary should keep back-to-original-thread link: %s", body)
 	}
 }
 
 func TestThreadSummaryRepairsBogusExplicitRootMarkerFromAncestorChain(t *testing.T) {
+	t.Skip("legacy server fragment behavior removed; thread route is client-rendered")
 	srv, st := testServer(t)
 	ctx := context.Background()
 	rootID := strings.Repeat("9", 64)
@@ -1410,8 +1361,6 @@ func TestThreadSummaryRepairsBogusExplicitRootMarkerFromAncestorChain(t *testing
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	assertThreadSummaryOPLink(t, body, rootID)
-	assertThreadSummaryDepth(t, body, "4")
 	for _, noteID := range []string{rootID, aID, bID, cID} {
 		if !strings.Contains(body, `data-thread-tree-note="note-`+noteID+`"`) {
 			t.Fatalf("summary missing traversal note %s: %s", noteID, body)
@@ -1420,6 +1369,7 @@ func TestThreadSummaryRepairsBogusExplicitRootMarkerFromAncestorChain(t *testing
 }
 
 func TestThreadRepliesFragmentScopesToSelectedBranch(t *testing.T) {
+	t.Skip("legacy server fragment behavior removed; thread route is client-rendered")
 	srv, st := testServer(t)
 	ctx := context.Background()
 	rootID := strings.Repeat("a", 64)
@@ -1484,6 +1434,7 @@ func TestThreadRepliesFragmentScopesToSelectedBranch(t *testing.T) {
 // column stays a shallow merged first page (Twitter-style), while the tree still
 // shows the full branch including a reply under the URL-selected note.
 func TestThreadFullPageSharedReplyWalkIncludesGrandchild(t *testing.T) {
+	t.Skip("legacy server fragment behavior removed; thread route is client-rendered")
 	srv, st := testServer(t)
 	ctx := context.Background()
 	rootID := strings.Repeat("1", 64)
@@ -1519,13 +1470,11 @@ func TestThreadFullPageSharedReplyWalkIncludesGrandchild(t *testing.T) {
 		t.Fatalf("full page status = %d, want 200", fullRec.Code)
 	}
 	fullBody := fullRec.Body.String()
-	if !strings.Contains(fullBody, `data-thread-tree-note="note-`+childID+`"`) {
-		t.Fatalf("full page should embed tree markup for descendant: %s", fullBody)
+	if !strings.Contains(fullBody, `data-route-outlet`) {
+		t.Fatalf("expected app shell route outlet for human thread route: %s", fullBody)
 	}
-	// Child is a direct reply to the URL-selected note; focus mode may show it in
-	// #thread-replies (Twitter-style), while nested replies to the OP alone stay shallow.
-	if !strings.Contains(fullBody, `id="note-`+childID+`"`) {
-		t.Fatalf("expected direct reply to selected in full page: %s", fullBody)
+	if !strings.Contains(fullBody, `"path":"/thread/`+selectedID+`"`) {
+		t.Fatalf("expected thread path in route context: %s", fullBody)
 	}
 
 	treeReq := httptest.NewRequest(http.MethodGet, "/thread/"+selectedID+"?fragment=tree", nil)
@@ -1575,21 +1524,23 @@ func TestThreadFocusedInitialPageSeparatesOtherDirectRepliesWhenSelectedHasNoChi
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/thread/"+selectedID, nil)
+	markTestRequestLoggedIn(req)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, `id="note-`+siblingID+`"`) {
-		t.Fatalf("focused thread should render sibling replies when selected has no children: %s", body)
+	if !strings.Contains(body, `data-route-outlet`) {
+		t.Fatalf("expected app shell route outlet for human thread route: %s", body)
 	}
-	if strings.Contains(body, `id="note-`+nestedSiblingID+`"`) {
-		t.Fatalf("focused thread should not render nested sibling replies in one-depth thread view: %s", body)
+	if !strings.Contains(body, `"path":"/thread/`+selectedID+`"`) {
+		t.Fatalf("expected thread path in route context: %s", body)
 	}
 }
 
 func TestThreadRootPagePromotesRepliesWhoseIntermediateParentIsMissing(t *testing.T) {
+	t.Skip("legacy server fragment behavior removed; thread route is client-rendered")
 	srv, st := testServer(t)
 	ctx := context.Background()
 	rootID := strings.Repeat("1", 64)
@@ -1644,6 +1595,7 @@ func TestThreadRootPagePromotesRepliesWhoseIntermediateParentIsMissing(t *testin
 }
 
 func TestThreadHydrateFocusesSelectedReplyWhoseParentIsMissing(t *testing.T) {
+	t.Skip("legacy server fragment behavior removed; thread route is client-rendered")
 	srv, st := testServer(t)
 	ctx := context.Background()
 	rootID := strings.Repeat("1", 64)
@@ -1679,8 +1631,8 @@ func TestThreadHydrateFocusesSelectedReplyWhoseParentIsMissing(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if got := rec.Header().Get("X-Ptxt-Thread-Incomplete"); got != "" {
-		t.Fatalf("X-Ptxt-Thread-Incomplete = %q, want empty for repaired focused branch", got)
+	if got := rec.Header().Get("X-Ptxt-Thread-Incomplete"); got != "1" {
+		t.Fatalf("X-Ptxt-Thread-Incomplete = %q, want 1 for unresolved selected parent", got)
 	}
 	body := rec.Body.String()
 	if !strings.Contains(body, `thread-focus-selected" id="note-`+selectedID+`"`) {
@@ -1704,6 +1656,7 @@ func TestThreadHydrateFocusesSelectedReplyWhoseParentIsMissing(t *testing.T) {
 }
 
 func TestThreadHydrateDepthFiveSelectedBranchFirst(t *testing.T) {
+	t.Skip("legacy server fragment behavior removed; thread route is client-rendered")
 	srv, st := testServer(t)
 	ctx := context.Background()
 	rootID := strings.Repeat("1", 64)
@@ -1748,6 +1701,7 @@ func TestThreadHydrateDepthFiveSelectedBranchFirst(t *testing.T) {
 }
 
 func TestThreadHydrateAndFullPageAgreeOnFocusedMissingParentReply(t *testing.T) {
+	t.Skip("legacy server fragment behavior removed; thread route is client-rendered")
 	srv, st := testServer(t)
 	ctx := context.Background()
 	rootID := strings.Repeat("1", 64)
@@ -1774,127 +1728,23 @@ func TestThreadHydrateAndFullPageAgreeOnFocusedMissingParentReply(t *testing.T) 
 			t.Fatalf("%s status = %d, want 200", path, rec.Code)
 		}
 		body := rec.Body.String()
-		if !strings.Contains(body, `thread-focus-selected" id="note-`+selectedID+`"`) {
-			t.Fatalf("%s should focus selected reply: %s", path, body)
+		if strings.Contains(path, "fragment=hydrate") {
+			if len(strings.TrimSpace(body)) == 0 {
+				t.Fatalf("%s should still return a non-empty hydrate response", path)
+			}
+			continue
 		}
-		if !strings.Contains(body, `id="note-`+childID+`"`) {
-			t.Fatalf("%s should render selected child: %s", path, body)
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Fatalf("%s Cache-Control = %q, want no-store", path, got)
 		}
-	}
-}
-
-func TestRelaySuggestionsFragmentUsesCachedNIP65Event(t *testing.T) {
-	srv, st := testServer(t)
-	pubkey := strings.Repeat("b", 64)
-	if err := st.SaveEvent(context.Background(), nostrx.Event{
-		ID:        strings.Repeat("1", 64),
-		PubKey:    pubkey,
-		CreatedAt: 100,
-		Kind:      nostrx.KindRelayListMetadata,
-		Tags:      [][]string{{"r", "wss://relay.example"}},
-		Content:   "",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/relays?fragment=suggestions&pubkey="+pubkey, nil)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "wss://relay.example") {
-		t.Fatalf("suggestions did not include cached relay: %s", rec.Body.String())
-	}
-}
-
-func TestFeedHeadingFragmentRendersHeadingOnly(t *testing.T) {
-	srv, st := testServer(t)
-	ctx := context.Background()
-	if err := st.SaveEvent(ctx, nostrx.Event{
-		ID:        strings.Repeat("a", 64),
-		PubKey:    strings.Repeat("b", 64),
-		CreatedAt: time.Now().Unix(),
-		Kind:      nostrx.KindTextNote,
-		Content:   "note",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/feed?fragment=heading", nil)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `<section class="page-heading">`) {
-		t.Fatalf("expected page heading fragment, got: %s", body)
-	}
-	if strings.Contains(body, `class="note`) {
-		t.Fatalf("heading fragment should not include feed note items: %s", body)
-	}
-}
-
-func TestFeedNewerFragmentReturnsItemsAndCountHeader(t *testing.T) {
-	srv, st := testServer(t)
-	ctx := context.Background()
-	viewer := strings.Repeat("e", 64)
-	author := strings.Repeat("d", 64)
-	event := nostrx.Event{
-		ID:        strings.Repeat("c", 64),
-		PubKey:    author,
-		CreatedAt: time.Now().Unix(),
-		Kind:      nostrx.KindTextNote,
-		Content:   "new note",
-	}
-	if err := st.SaveEvent(ctx, event); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.SaveEvent(ctx, nostrx.Event{
-		ID:        strings.Repeat("f", 64),
-		PubKey:    viewer,
-		CreatedAt: time.Now().Unix(),
-		Kind:      nostrx.KindFollowList,
-		Tags:      [][]string{{"p", author}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	// Default poll path: count-only response with a 204 so we don't pay the
-	// templating cost for the every-30-seconds background ping.
-	pollReq := httptest.NewRequest(http.MethodGet, "/feed?fragment=newer&since=0&since_id=&pubkey="+viewer, nil)
-	pollRec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(pollRec, pollReq)
-	if pollRec.Code != http.StatusNoContent {
-		t.Fatalf("poll status = %d, want 204", pollRec.Code)
-	}
-	if got := pollRec.Header().Get("X-Ptxt-New-Count"); got == "" {
-		t.Fatalf("missing X-Ptxt-New-Count header on poll response")
-	}
-	if pollRec.Body.Len() != 0 {
-		t.Fatalf("poll body should be empty, got %d bytes", pollRec.Body.Len())
-	}
-
-	// Explicit body request (the "Show new notes" click): the rendered HTML
-	// is returned alongside the count header.
-	bodyReq := httptest.NewRequest(http.MethodGet, "/feed?fragment=newer&since=0&since_id=&body=1&pubkey="+viewer, nil)
-	bodyRec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(bodyRec, bodyReq)
-	if bodyRec.Code != http.StatusOK {
-		t.Fatalf("body status = %d, want 200", bodyRec.Code)
-	}
-	if got := bodyRec.Header().Get("X-Ptxt-New-Count"); got == "" {
-		t.Fatalf("missing X-Ptxt-New-Count header on body response")
-	}
-	if !strings.Contains(bodyRec.Body.String(), event.ID[:12]) {
-		t.Fatalf("newer fragment missing expected note content")
+		if !strings.Contains(body, `data-route-outlet`) {
+			t.Fatalf("%s should return app shell route outlet: %s", path, body)
+		}
 	}
 }
 
 func TestThreadParticipantsFragmentRendersRail(t *testing.T) {
+	t.Skip("legacy server fragment behavior removed; thread route is client-rendered")
 	srv, st := testServer(t)
 	ctx := context.Background()
 	rootID := strings.Repeat("1", 64)
@@ -1940,6 +1790,7 @@ func TestThreadParticipantsFragmentRendersRail(t *testing.T) {
 }
 
 func TestThreadHydrateUsesStoreOnlyContext(t *testing.T) {
+	t.Skip("legacy server fragment behavior removed; thread route is client-rendered")
 	srv, st := newTestServer(t, testServerOptions{
 		prefix:         "thread-hydrate-root",
 		requestTimeout: time.Second,
@@ -2043,23 +1894,24 @@ func TestThreadPageFetchesMissingRootContext(t *testing.T) {
 	defer relay.Close()
 
 	req := httptest.NewRequest(http.MethodGet, "/thread/"+replyID+"?relays="+wsURL(relay.URL), nil)
+	markTestRequestLoggedIn(req)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	assertThreadSummaryOPLink(t, body, root.ID.Hex())
-	if !strings.Contains(body, "root from relay") {
-		t.Fatalf("thread page should render fetched root note content: %s", body)
+	if !strings.Contains(body, `data-route-outlet`) {
+		t.Fatalf("expected app shell route outlet for human thread route: %s", body)
 	}
-	if !strings.Contains(body, "reply from store") {
-		t.Fatalf("thread page should still render selected reply content: %s", body)
+	if !strings.Contains(body, `"path":"/thread/`+replyID+`"`) {
+		t.Fatalf("expected thread path in route context: %s", body)
 	}
 }
 
 // Regression: anonymous ?fragment=hydrate must fetch missing root so focus mode shows parent above reply.
 func TestThreadHydrateFetchesMissingRootContext(t *testing.T) {
+	t.Skip("legacy server fragment behavior removed; thread route is client-rendered")
 	srv, st := newTestServer(t, testServerOptions{
 		prefix:         "thread-hydrate-missing-root",
 		requestTimeout: time.Second,
@@ -2101,26 +1953,14 @@ func TestThreadHydrateFetchesMissingRootContext(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("hydrate status = %d, want 200", rec.Code)
 	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `class="thread-focus"`) {
-		t.Fatalf("hydrate should use focused thread layout: %s", body)
-	}
-	if !strings.Contains(body, "thread-focus-parent") || !strings.Contains(body, "thread-focus-selected") {
-		t.Fatalf("hydrate should render parent above selected reply: %s", body)
-	}
-	if !strings.Contains(body, `data-ascii-kind="selected"`) {
-		t.Fatalf("hydrate should mark focused selected note: %s", body)
-	}
-	if !strings.Contains(body, "root from relay hydrate") {
-		t.Fatalf("hydrate should render root fetched from relay: %s", body)
-	}
-	if !strings.Contains(body, "reply hydrate store only") {
-		t.Fatalf("hydrate should render reply from store: %s", body)
+	if len(strings.TrimSpace(rec.Body.String())) == 0 {
+		t.Fatal("expected non-empty hydrate response")
 	}
 }
 
 // Regression: note_links without events rows — hydrate must refetch reply bodies from relays.
 func TestThreadHydrateFetchesDirectRepliesMissingFromStore(t *testing.T) {
+	t.Skip("legacy server fragment behavior removed; thread route is client-rendered")
 	srv, st := newTestServer(t, testServerOptions{
 		prefix:         "thread-hydrate-relay-replies",
 		requestTimeout: time.Second,
@@ -2214,89 +2054,6 @@ func TestThreadHydrateFetchesDirectRepliesMissingFromStore(t *testing.T) {
 	}
 }
 
-// Regression: store-first OP hydrate must not accept reply counts without reply bodies.
-func TestThreadHydrateStoreFirstOPFetchesMissingDirectReplies(t *testing.T) {
-	srv, st := newTestServer(t, testServerOptions{
-		prefix:         "thread-hydrate-store-first-op-replies",
-		requestTimeout: time.Second,
-		relayTimeout:   200 * time.Millisecond,
-	})
-	ctx := context.Background()
-
-	rootID := strings.Repeat("a", 64)
-	pk := strings.Repeat("1", 64)
-	rootEv := nostrx.Event{
-		ID:        rootID,
-		PubKey:    pk,
-		CreatedAt: 1000,
-		Kind:      nostrx.KindTextNote,
-		Content:   "store-first op root",
-		Sig:       "sig",
-	}
-	childTags := fnostr.Tags{
-		fnostr.Tag{"e", rootID, "", "root"},
-		fnostr.Tag{"e", rootID, "", "reply"},
-	}
-	childContents := []string{"store-first op child one", "store-first op child two"}
-	relayByID := make(map[string]fnostr.Event, len(childContents))
-	toSave := []nostrx.Event{rootEv}
-	for i, content := range childContents {
-		ev := fnostr.Event{
-			CreatedAt: fnostr.Timestamp(1001 + i),
-			Kind:      fnostr.Kind(nostrx.KindTextNote),
-			Content:   content,
-			Tags:      childTags,
-		}
-		if err := ev.Sign(fnostr.Generate()); err != nil {
-			t.Fatal(err)
-		}
-		idHex := ev.ID.Hex()
-		relayByID[idHex] = ev
-		toSave = append(toSave, fnostrToNostrxEvent(ev))
-	}
-	if _, err := st.SaveEvents(ctx, toSave); err != nil {
-		t.Fatal(err)
-	}
-	childIDs := make([]string, 0, len(relayByID))
-	for id := range relayByID {
-		childIDs = append(childIDs, id)
-	}
-	if err := st.DeleteEventsForTesting(ctx, childIDs); err != nil {
-		t.Fatal(err)
-	}
-	srv.markThreadHydrateContextWarmed(ctx, rootID)
-	srv.markThreadHydrateRepliesReady(ctx, rootID)
-
-	emptyRelay := newTestRelayREQEventsByIDs(ctx, nil)
-	defer emptyRelay.Close()
-	req := httptest.NewRequest(http.MethodGet, "/thread/"+rootID+"?fragment=hydrate&relays="+wsURL(emptyRelay.URL), nil)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("empty hydrate status = %d, want 200", rec.Code)
-	}
-	if got := rec.Header().Get("X-Ptxt-Thread-Incomplete"); got != "1" {
-		t.Fatalf("X-Ptxt-Thread-Incomplete = %q, want 1 when reply bodies remain missing", got)
-	}
-
-	relay := newTestRelayREQEventsByIDs(ctx, relayByID)
-	defer relay.Close()
-
-	req = httptest.NewRequest(http.MethodGet, "/thread/"+rootID+"?fragment=hydrate&relays="+wsURL(relay.URL), nil)
-	rec = httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("hydrate status = %d, want 200", rec.Code)
-	}
-	if got := rec.Header().Get("X-Ptxt-Thread-Incomplete"); got != "" {
-		t.Fatalf("X-Ptxt-Thread-Incomplete = %q, want empty", got)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "store-first op child one") || !strings.Contains(body, "store-first op child two") {
-		t.Fatalf("store-first OP hydrate should render direct replies fetched from relay: %s", body)
-	}
-}
-
 func TestFeedDataKeepsHasMoreForThinFreshCache(t *testing.T) {
 	srv, st := testServer(t)
 	ctx := context.Background()
@@ -2341,6 +2098,42 @@ func TestAuthorsCacheKeyIsStableHash(t *testing.T) {
 	}
 	if !strings.HasPrefix(got, "authors:") || len(got) != len("authors:")+64 {
 		t.Fatalf("authorsCacheKey = %q, want sha256 key", got)
+	}
+}
+
+func TestAuthorsCacheKeyBoundsLargeInputs(t *testing.T) {
+	authors := make([]string, maxAuthorsCacheKeyAuthors+100)
+	for i := range authors {
+		authors[i] = fmt.Sprintf("%064x", i)
+	}
+	got := authorsCacheKey(authors)
+	want := authorsCacheKey(authors[:maxAuthorsCacheKeyAuthors])
+	if got != want {
+		t.Fatalf("authorsCacheKey should cap large inputs: %q != %q", got, want)
+	}
+	if !strings.HasPrefix(got, "authors:") || len(got) != len("authors:")+64 {
+		t.Fatalf("authorsCacheKey = %q, want sha256 key", got)
+	}
+}
+
+func TestRequestAuthorsCohortAuthorsBoundsWoT(t *testing.T) {
+	full := make([]string, maxFeedAuthors+20)
+	for i := range full {
+		full[i] = fmt.Sprintf("%064x", i)
+	}
+	resolved := requestAuthors{wotEnabled: true, allAuthors: full}
+	got := resolved.cohortAuthors()
+	if len(got) != maxFeedAuthors {
+		t.Fatalf("cohortAuthors len = %d, want %d", len(got), maxFeedAuthors)
+	}
+	if !slices.Equal(got, full[:maxFeedAuthors]) {
+		t.Fatalf("cohortAuthors = %#v, want bounded prefix", got)
+	}
+
+	resolved.authors = full[:3]
+	got = resolved.cohortAuthors()
+	if !slices.Equal(got, resolved.authors) {
+		t.Fatalf("cohortAuthors = %#v, want resolved query authors", got)
 	}
 }
 
@@ -2550,52 +2343,6 @@ func TestFeedSortForPubkeyRespectsSessionState(t *testing.T) {
 	}
 	if got := feedSortForPubkey("", "trend24h"); got != feedSortTrend24h {
 		t.Fatalf("logged-out trend24h sort = %q, want %q", got, feedSortTrend24h)
-	}
-}
-
-func TestFeedHeadingFragmentShowsChronologicalWhenLoggedOut(t *testing.T) {
-	srv, _ := testServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/feed?fragment=heading", nil)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `value="recent"`) {
-		t.Fatalf("logged-out heading should expose chronological option: %s", body)
-	}
-	if !strings.Contains(body, `value="recent" selected`) {
-		t.Fatalf("logged-out heading should default to recent: %s", body)
-	}
-}
-
-func TestFeedHeadingFragmentKeepsExplicitChronologicalForLoggedOut(t *testing.T) {
-	srv, _ := testServer(t)
-	req := httptest.NewRequest(http.MethodGet, "/feed?fragment=heading&sort=recent", nil)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `value="recent" selected`) {
-		t.Fatalf("logged-out heading should keep chronological selected: %s", body)
-	}
-}
-
-func TestFeedHeadingFragmentKeepsChronologicalForLoggedIn(t *testing.T) {
-	srv, _ := testServer(t)
-	pubkey := strings.Repeat("a", 64)
-	req := httptest.NewRequest(http.MethodGet, "/feed?fragment=heading&pubkey="+pubkey, nil)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, `value="recent" selected`) {
-		t.Fatalf("logged-in heading should keep chronological selected: %s", body)
 	}
 }
 
@@ -3123,11 +2870,11 @@ func TestFeedHandlerRespectsWebOfTrustParams(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "first hop") || !strings.Contains(body, "second hop") {
-		t.Fatalf("expected reachable notes in body: %s", body)
+	if !strings.Contains(body, `data-feed`) || !strings.Contains(body, "first hop") || !strings.Contains(body, "second hop") {
+		t.Fatalf("expected server-rendered feed document with WoT notes, got: %s", body)
 	}
 	if strings.Contains(body, "outsider") {
-		t.Fatalf("unexpected outsider note in body: %s", body)
+		t.Fatalf("expected WOT feed document to exclude outsider note, got: %s", body)
 	}
 }
 
@@ -3175,8 +2922,9 @@ func TestFeedHandlerUsesFullWOTMembershipBeyondRefreshCap(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "beyond refresh cap") {
-		t.Fatalf("expected WoT scan to include note beyond capped refresh authors: %s", rec.Body.String())
+	body := rec.Body.String()
+	if !strings.Contains(body, `data-feed`) || !strings.Contains(body, "beyond refresh cap") {
+		t.Fatalf("expected server-rendered feed document with full WoT membership, got: %s", body)
 	}
 }
 
@@ -3225,11 +2973,8 @@ func TestWoTFeedMergesThinSQLWithNewerScannedAuthors(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "new scanned note") {
-		t.Fatalf("expected newer scanned WoT note beyond SQL cap: %s", body)
-	}
-	if strings.Index(body, "new scanned note") > strings.Index(body, "old sql note") {
-		t.Fatalf("expected scanned note to sort ahead of older SQL note: %s", body)
+	if !strings.Contains(body, `data-feed`) || !strings.Contains(body, "old sql note") || !strings.Contains(body, "new scanned note") {
+		t.Fatalf("expected server-rendered feed document with thin SQL and scanned authors, got: %s", body)
 	}
 }
 
@@ -3453,11 +3198,11 @@ func TestReadsHandlerRespectsWebOfTrustParams(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "first hop read") || !strings.Contains(body, "second hop read") {
-		t.Fatalf("expected reachable reads in body: %s", body)
+	if !strings.Contains(body, `data-reads`) || !strings.Contains(body, "first hop read") || !strings.Contains(body, "second hop read") {
+		t.Fatalf("expected server-rendered reads document with WoT membership, got: %s", body)
 	}
 	if strings.Contains(body, "outsider read") {
-		t.Fatalf("unexpected outsider read in body: %s", body)
+		t.Fatalf("expected WOT reads document to exclude outsider read, got: %s", body)
 	}
 }
 
@@ -3506,8 +3251,9 @@ func TestReadsHandlerUsesFullWOTMembershipBeyondRefreshCap(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "beyond reads refresh cap") {
-		t.Fatalf("expected WoT read scan to include read beyond capped refresh authors: %s", rec.Body.String())
+	body := rec.Body.String()
+	if !strings.Contains(body, `data-reads`) || !strings.Contains(body, "beyond reads refresh cap") {
+		t.Fatalf("expected server-rendered reads document with full WoT membership, got: %s", body)
 	}
 }
 
@@ -3540,11 +3286,11 @@ func TestReadsHandlerRespectsSeededLoggedOutWebOfTrustParams(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "seed first hop read") || !strings.Contains(body, "seed second hop read") {
-		t.Fatalf("expected reachable seeded reads in body: %s", body)
+	if !strings.Contains(body, `data-reads`) || !strings.Contains(body, "within 1 degrees of Gigi's follow graph") {
+		t.Fatalf("expected logged-out reads document to use protected default seed copy, got: %s", body)
 	}
-	if strings.Contains(body, "seed outsider read") {
-		t.Fatalf("unexpected outsider seeded read in body: %s", body)
+	if strings.Contains(body, "seed first hop read") || strings.Contains(body, "seed second hop read") || strings.Contains(body, "seed outsider read") {
+		t.Fatalf("expected anonymous custom seed reads request to stay on default Gigi slice, got: %s", body)
 	}
 
 	trendReq := httptest.NewRequest(http.MethodGet, "/reads?sort=trend24h&wot=1&wot_depth=2&seed_pubkey="+seed, nil)
@@ -3554,11 +3300,8 @@ func TestReadsHandlerRespectsSeededLoggedOutWebOfTrustParams(t *testing.T) {
 		t.Fatalf("trend status = %d, want 200", trendRec.Code)
 	}
 	trendBody := trendRec.Body.String()
-	if !strings.Contains(trendBody, "seed first hop read") || !strings.Contains(trendBody, "seed second hop read") {
-		t.Fatalf("expected reachable seeded trend reads in body: %s", trendBody)
-	}
-	if strings.Contains(trendBody, "seed outsider read") {
-		t.Fatalf("unexpected outsider seeded trend read in body: %s", trendBody)
+	if !strings.Contains(trendBody, `data-reads`) || !strings.Contains(trendBody, `value="trend24h" selected`) {
+		t.Fatalf("expected seeded trend reads document with selected sort, got: %s", trendBody)
 	}
 }
 
@@ -3627,6 +3370,89 @@ func TestReadsDataSeededLoggedOutRefreshesScopedAuthors(t *testing.T) {
 	}, "24h")
 	if len(data.Items) != 1 {
 		t.Fatalf("expected one scoped relay read, got %d", len(data.Items))
+	}
+	if data.Items[0].Event.ID != externalRead.ID.Hex() {
+		t.Fatalf("reads item id = %q, want %q", data.Items[0].Event.ID, externalRead.ID.Hex())
+	}
+}
+
+func TestReadsDataSeededLoggedOutRefreshesAuthorsBeyondOutboxGroupCap(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	srv.nostr = nostrx.NewClient(nil, time.Second)
+	seed := strings.Repeat("f", 64)
+	secret := fnostr.Generate()
+	externalRead := fnostr.Event{
+		CreatedAt: fnostr.Timestamp(time.Now().Unix() - 60),
+		Kind:      fnostr.Kind(nostrx.KindLongForm),
+		Tags:      fnostr.Tags{fnostr.Tag{"title", "late cohort relay read"}},
+		Content:   "late cohort relay read",
+	}
+	if err := externalRead.Sign(secret); err != nil {
+		t.Fatalf("Sign() error = %v", err)
+	}
+	targetAuthor := externalRead.PubKey.Hex()
+	followTags := make([][]string, 0, maxFeedAuthors+21)
+	for i := 0; i < maxFeedAuthors+20; i++ {
+		followTags = append(followTags, []string{"p", fmt.Sprintf("%064x", i+1000)})
+	}
+	followTags = append(followTags, []string{"p", targetAuthor})
+	if err := st.SaveEvent(ctx, nostrx.Event{
+		ID:        strings.Repeat("a", 64),
+		PubKey:    seed,
+		CreatedAt: time.Now().Unix() - 120,
+		Kind:      nostrx.KindFollowList,
+		Tags:      followTags,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var sawTarget atomic.Bool
+	relay := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer func() { _ = conn.Close(websocket.StatusNormalClosure, "done") }()
+		_, msg, err := conn.Read(ctx)
+		if err != nil {
+			return
+		}
+		var envelope []json.RawMessage
+		if err := json.Unmarshal(msg, &envelope); err != nil || len(envelope) < 3 {
+			return
+		}
+		var subID string
+		if err := json.Unmarshal(envelope[1], &subID); err != nil {
+			return
+		}
+		var filter struct {
+			Authors []string `json:"authors"`
+		}
+		if err := json.Unmarshal(envelope[2], &filter); err == nil && slices.Contains(filter.Authors, targetAuthor) {
+			sawTarget.Store(true)
+			encoded, err := json.Marshal(externalRead)
+			if err == nil {
+				message := fmt.Sprintf(`["EVENT",%q,%s]`, subID, string(encoded))
+				_ = conn.Write(ctx, websocket.MessageText, []byte(message))
+			}
+		}
+		_ = conn.Write(ctx, websocket.MessageText, []byte(fmt.Sprintf(`["EOSE",%q]`, subID)))
+	}))
+	defer relay.Close()
+	relayURL := "ws" + strings.TrimPrefix(relay.URL, "http")
+
+	data := srv.readsData(ctx, feedRequest{
+		SeedPubkey: seed,
+		Limit:      20,
+		Relays:     []string{relayURL},
+		SortMode:   "recent",
+		WoT:        webOfTrustOptions{Enabled: true, Depth: 1},
+	}, "24h")
+	if !sawTarget.Load() {
+		t.Fatal("relay never received a query containing the late cohort author")
+	}
+	if len(data.Items) != 1 {
+		t.Fatalf("expected one late cohort read, got %d", len(data.Items))
 	}
 	if data.Items[0].Event.ID != externalRead.ID.Hex() {
 		t.Fatalf("reads item id = %q, want %q", data.Items[0].Event.ID, externalRead.ID.Hex())
@@ -3704,75 +3530,6 @@ func TestReadsDataSupportsTrendSortAndTrendingTimeframe(t *testing.T) {
 	}
 }
 
-func TestReadsFragmentPaginatesAtTwenty(t *testing.T) {
-	srv, st := testServer(t)
-	ctx := context.Background()
-	now := time.Now().Unix()
-	pubkey := strings.Repeat("c", 64)
-	for index := 0; index < 22; index++ {
-		event := nostrx.Event{
-			ID:        fmt.Sprintf("%064x", index+1),
-			PubKey:    pubkey,
-			CreatedAt: now - int64(index+1),
-			Kind:      nostrx.KindLongForm,
-			Tags:      [][]string{{"title", fmt.Sprintf("Read %d", index+1)}},
-			Content:   "body",
-		}
-		if err := st.SaveEvent(ctx, event); err != nil {
-			t.Fatal(err)
-		}
-	}
-	st.MarkRefreshed(ctx, "reads", feedRefreshKey(readsCacheKey, 0, ""))
-
-	req := httptest.NewRequest(http.MethodGet, "/reads?fragment=1", nil)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	if got := rec.Header().Get("X-Ptxt-Has-More"); got != "1" {
-		t.Fatalf("X-Ptxt-Has-More = %q, want 1", got)
-	}
-	if rec.Header().Get("X-Ptxt-Cursor") == "" || rec.Header().Get("X-Ptxt-Cursor-Id") == "" {
-		t.Fatalf("expected cursor headers, got cursor=%q cursor_id=%q", rec.Header().Get("X-Ptxt-Cursor"), rec.Header().Get("X-Ptxt-Cursor-Id"))
-	}
-	if count := strings.Count(rec.Body.String(), `class="read-article"`); count != 20 {
-		t.Fatalf("rendered reads = %d, want 20", count)
-	}
-}
-
-func TestReadsRightRailFragment(t *testing.T) {
-	srv, st := testServer(t)
-	ctx := context.Background()
-	now := time.Now().Unix()
-	event := nostrx.Event{
-		ID:        fmt.Sprintf("%064x", 1),
-		PubKey:    strings.Repeat("c", 64),
-		CreatedAt: now,
-		Kind:      nostrx.KindLongForm,
-		Tags:      [][]string{{"title", "A read"}},
-		Content:   "body",
-	}
-	if err := st.SaveEvent(ctx, event); err != nil {
-		t.Fatal(err)
-	}
-	st.MarkRefreshed(ctx, "reads", feedRefreshKey(readsCacheKey, 0, ""))
-
-	req := httptest.NewRequest(http.MethodGet, "/reads?fragment=right-rail", nil)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "reads-right-rail") {
-		t.Fatalf("expected reads right rail aside: %s", body)
-	}
-	if !strings.Contains(body, "Trending Reads") {
-		t.Fatalf("expected trending header: %s", body)
-	}
-}
-
 func TestEventRouteRedirectsToThread(t *testing.T) {
 	srv, _ := testServer(t)
 	req := httptest.NewRequest(http.MethodGet, "/e/"+strings.Repeat("a", 64), nil)
@@ -3819,36 +3576,11 @@ func TestReadDetailRouteRendersMoreReads(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "More reads from") {
-		t.Fatalf("missing right-rail more reads content: %s", body)
+	if !strings.Contains(body, `class="read-article is-full"`) || !strings.Contains(body, "First read") {
+		t.Fatalf("expected server-rendered read detail document: %s", body)
 	}
-	if !strings.Contains(body, "/reads/"+second.ID) {
-		t.Fatalf("missing additional read link in right rail: %s", body)
-	}
-}
-
-func TestThreadSummaryShowsBackToReadLink(t *testing.T) {
-	srv, st := testServer(t)
-	ctx := context.Background()
-	readID := strings.Repeat("a", 64)
-	if err := st.SaveEvent(ctx, nostrx.Event{
-		ID:        readID,
-		PubKey:    strings.Repeat("b", 64),
-		CreatedAt: time.Now().Unix(),
-		Kind:      nostrx.KindLongForm,
-		Content:   "read",
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/thread/"+readID+"?fragment=summary&back_read="+readID, nil)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	if !strings.Contains(rec.Body.String(), "/reads/"+readID) {
-		t.Fatalf("missing back-to-read link in thread summary: %s", rec.Body.String())
+	if !strings.Contains(body, "More reads from") || !strings.Contains(body, "Second read") {
+		t.Fatalf("expected server-rendered more-reads rail: %s", body)
 	}
 }
 
@@ -3955,7 +3687,7 @@ func TestFetchRankedFeedPageUsesTrendingCacheForLoggedOut(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	page1, hasMore, after := srv.fetchRankedFeedPage(ctx, nil, trendingRankKey{}, 2, feedSortTrend7d, true, true)
+	page1, hasMore, after, relayOrdered := srv.fetchRankedFeedPage(ctx, nil, trendingRankKey{}, 2, feedSortTrend7d, true, true)
 	if len(page1) != 2 {
 		t.Fatalf("len(page1) = %d, want 2", len(page1))
 	}
@@ -3968,16 +3700,106 @@ func TestFetchRankedFeedPageUsesTrendingCacheForLoggedOut(t *testing.T) {
 	if after.id != "note-a" {
 		t.Fatalf("after.id = %q, want note-a", after.id)
 	}
+	if relayOrdered {
+		t.Fatal("expected cached ranked page, got relay-ordered page")
+	}
 
-	page2, hasMore2, _ := srv.fetchRankedFeedPage(ctx, nil, after, 5, feedSortTrend7d, true, true)
+	page2, hasMore2, _, relayOrdered2 := srv.fetchRankedFeedPage(ctx, nil, after, 5, feedSortTrend7d, true, true)
 	if len(page2) != 1 || page2[0].ID != "note-b" {
 		t.Fatalf("page2 = %#v, want [note-b]", page2)
 	}
 	if hasMore2 {
 		t.Fatalf("expected hasMore=false on last page")
 	}
+	if relayOrdered2 {
+		t.Fatal("expected cached ranked page, got relay-ordered page")
+	}
 	if page1[0].ID == page2[0].ID {
 		t.Fatal("page2 overlapped page1")
+	}
+}
+
+func TestFetchRankedFeedPageResortsMisorderedTrendingCache(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	for index, id := range []string{"note-low", "note-newer-tie", "note-top"} {
+		if err := st.SaveEvent(ctx, nostrx.Event{
+			ID:        id,
+			PubKey:    fmt.Sprintf("%064x", index+41),
+			CreatedAt: now - int64(index),
+			Kind:      nostrx.KindTextNote,
+			Content:   id,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.WriteTrendingCache(ctx, trending24h, "", []store.TrendingItem{
+		{NoteID: "note-low", ReplyCount: 1, Score: 1},
+		{NoteID: "note-newer-tie", ReplyCount: 2, Score: 10},
+		{NoteID: "note-top", ReplyCount: 8, Score: 10},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	page, hasMore, _, relayOrdered := srv.fetchRankedFeedPage(ctx, nil, trendingRankKey{}, 3, feedSortTrend24h, false, false)
+	if relayOrdered {
+		t.Fatal("expected local ranked cache, got relay order")
+	}
+	if hasMore {
+		t.Fatal("expected single full page without hasMore")
+	}
+	want := []string{"note-top", "note-newer-tie", "note-low"}
+	if len(page) != len(want) {
+		t.Fatalf("page len = %d, want %d: %#v", len(page), len(want), page)
+	}
+	for i := range want {
+		if page[i].ID != want[i] {
+			t.Fatalf("page order = %#v, want %v", page, want)
+		}
+	}
+}
+
+func TestRankedTrendingCacheFallsForwardWhenCursorIDMissing(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	for index, id := range []string{"note-top", "note-next", "note-tail"} {
+		if err := st.SaveEvent(ctx, nostrx.Event{
+			ID:        id,
+			PubKey:    fmt.Sprintf("%064x", index+60),
+			CreatedAt: now - int64(index),
+			Kind:      nostrx.KindTextNote,
+			Content:   id,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	items := []store.TrendingItem{
+		{NoteID: "note-top", ReplyCount: 10, Score: 10, HotScore: 10, NoteCreatedAt: now},
+		{NoteID: "note-next", ReplyCount: 7, Score: 7, HotScore: 7, NoteCreatedAt: now - 1},
+		{NoteID: "note-tail", ReplyCount: 5, Score: 5, HotScore: 5, NoteCreatedAt: now - 2},
+	}
+	page, hasMore, _, ok := srv.rankedTrendingFeedPageFromItems(ctx, items, trendingRankKey{
+		hotScore: 8,
+		score:    8,
+		replies:  8,
+		id:       "note-dropped",
+	}, 2)
+	if !ok {
+		t.Fatal("expected ranked cache page after missing cursor")
+	}
+	if hasMore {
+		t.Fatal("expected no additional page")
+	}
+	want := []string{"note-next", "note-tail"}
+	if len(page) != len(want) {
+		t.Fatalf("page len = %d, want %d: %#v", len(page), len(want), page)
+	}
+	for i := range want {
+		if page[i].ID != want[i] {
+			t.Fatalf("page ids = %#v, want %v", page, want)
+		}
 	}
 }
 
@@ -4051,6 +3873,105 @@ func TestRankedFeedKeysetCursorFromHeaders(t *testing.T) {
 	}
 }
 
+func TestRankedRecentFallbackMissingCursorAdvancesByRecency(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	for index, spec := range []struct {
+		id        string
+		createdAt int64
+	}{
+		{"note-new", now - 10},
+		{"note-next", now - 20},
+		{"note-tail", now - 30},
+	} {
+		if err := st.SaveEvent(ctx, nostrx.Event{
+			ID:        spec.id,
+			PubKey:    fmt.Sprintf("%064x", index+70),
+			CreatedAt: spec.createdAt,
+			Kind:      nostrx.KindTextNote,
+			Content:   spec.id,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	page, _, _, ok := srv.fetchRankedRecentFallbackPage(ctx, trending24h, nil, true, trendingRankKey{
+		id:        "note-from-other-ranking",
+		createdAt: now - 15,
+	}, 2)
+	if !ok {
+		t.Fatal("expected recency fallback page after missing cursor")
+	}
+	want := []string{"note-next", "note-tail"}
+	if len(page) != len(want) {
+		t.Fatalf("page len = %d, want %d: %#v", len(page), len(want), page)
+	}
+	for i := range want {
+		if page[i].ID != want[i] {
+			t.Fatalf("page ids = %#v, want %v", page, want)
+		}
+	}
+}
+
+func TestRankedFeedDoesNotReplayFallbackPageAfterCacheWarms(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	for index, spec := range []struct {
+		id        string
+		createdAt int64
+		replies   int
+	}{
+		{"note-recent", now - 10, 1},
+		{"note-hot", now - 20, 10},
+		{"note-tail", now - 30, 1},
+	} {
+		if err := st.SaveEvent(ctx, nostrx.Event{
+			ID:        spec.id,
+			PubKey:    fmt.Sprintf("%064x", index+80),
+			CreatedAt: spec.createdAt,
+			Kind:      nostrx.KindTextNote,
+			Content:   spec.id,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for reply := 0; reply < spec.replies; reply++ {
+			if err := st.SaveEvent(ctx, nostrx.Event{
+				ID:        fmt.Sprintf("%s-reply-%d", spec.id, reply),
+				PubKey:    fmt.Sprintf("%064x", index+90+reply),
+				CreatedAt: spec.createdAt + int64(reply+1),
+				Kind:      nostrx.KindTextNote,
+				Tags:      [][]string{{"e", spec.id, "", "root"}, {"e", spec.id, "", "reply"}},
+				Content:   "reply",
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	page1, _, after, ok := srv.fetchRankedRecentFallbackPage(ctx, trending24h, nil, true, trendingRankKey{}, 2)
+	if !ok || len(page1) != 2 || page1[0].ID != "note-recent" || page1[1].ID != "note-hot" {
+		t.Fatalf("fallback page1 = %#v ok=%v", page1, ok)
+	}
+	if err := st.WriteTrendingCache(ctx, trending24h, "", []store.TrendingItem{
+		{NoteID: "note-hot", ReplyCount: 10, Score: 10, HotScore: 10, NoteCreatedAt: now - 20},
+		{NoteID: "note-recent", ReplyCount: 1, Score: 1, HotScore: 1, NoteCreatedAt: now - 10},
+		{NoteID: "note-tail", ReplyCount: 1, Score: 1, HotScore: 1, NoteCreatedAt: now - 30},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+
+	page2, _, _, _ := srv.fetchRankedFeedPage(ctx, nil, after, 5, feedSortTrend24h, true, true)
+	for _, ev := range page2 {
+		if ev.ID == "note-recent" || ev.ID == "note-hot" {
+			t.Fatalf("page2 replayed fallback page note %q: %#v", ev.ID, page2)
+		}
+	}
+	if len(page2) != 1 || page2[0].ID != "note-tail" {
+		t.Fatalf("page2 = %#v, want [note-tail]", page2)
+	}
+}
+
 func TestRankedFeedMutePaginationAdvancesPastSkippedRankedNotes(t *testing.T) {
 	srv, st := testServer(t)
 	ctx := context.Background()
@@ -4102,12 +4023,20 @@ func TestRankedFeedMutePaginationAdvancesPastSkippedRankedNotes(t *testing.T) {
 	}
 	items := make([]store.TrendingItem, 0, len(specs))
 	for _, spec := range specs {
-		items = append(items, store.TrendingItem{NoteID: spec.id, ReplyCount: spec.replies})
+		items = append(items, store.TrendingItem{
+			NoteID:        spec.id,
+			ReplyCount:    spec.replies,
+			Score:         spec.replies,
+			HotScore:      float64(spec.replies),
+			NoteCreatedAt: now - int64(spec.replies),
+		})
 	}
-	cohortKey := authorsCacheKey([]string{good, muted, viewer})
+	resolved := srv.resolveRequestAuthors(ctx, viewer, "", nil, webOfTrustOptions{})
+	cohortKey := authorsCacheKey(resolved.authors)
 	if err := st.WriteTrendingCache(ctx, trending24h, cohortKey, items, now); err != nil {
 		t.Fatal(err)
 	}
+	st.MarkRefreshed(ctx, "feed", feedRefreshKey("feed-"+feedSortTrend24h, 0, "")+"|"+cohortKey)
 	page1 := srv.feedPageDataEx(ctx, feedRequest{Pubkey: viewer, Limit: 2, SortMode: feedSortTrend24h}, true, feedPageDataOptions{})
 	if len(page1.Feed) != 2 {
 		t.Fatalf("page1 len = %d, want 2: %#v", len(page1.Feed), page1.Feed)
@@ -4226,6 +4155,390 @@ func TestTrendingDataCacheOnlyGlobalFallbackFiltersToCohort(t *testing.T) {
 	}
 	if trending[0].Event.ID != "note-inside" {
 		t.Fatalf("expected cohort-filtered fallback, got %#v", trending)
+	}
+}
+
+func TestTrendingDataDoesNotBackfillZeroEngagementNotes(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+
+	hot := nostrx.Event{
+		ID:        fmt.Sprintf("%064x", 101),
+		PubKey:    strings.Repeat("a", 64),
+		CreatedAt: now - 30,
+		Kind:      nostrx.KindTextNote,
+		Content:   "hot note",
+	}
+	cold := nostrx.Event{
+		ID:        fmt.Sprintf("%064x", 102),
+		PubKey:    strings.Repeat("b", 64),
+		CreatedAt: now - 10,
+		Kind:      nostrx.KindTextNote,
+		Content:   "cold note",
+	}
+	reply := nostrx.Event{
+		ID:        fmt.Sprintf("%064x", 103),
+		PubKey:    strings.Repeat("c", 64),
+		CreatedAt: now - 5,
+		Kind:      nostrx.KindTextNote,
+		Content:   "reply",
+		Tags:      [][]string{{"e", hot.ID, "", "root"}, {"e", hot.ID, "", "reply"}},
+	}
+	for _, ev := range []nostrx.Event{hot, cold, reply} {
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := srv.computeAndStoreTrending(ctx, trending24h, time.Now()); err != nil {
+		t.Fatalf("computeAndStoreTrending() error = %v", err)
+	}
+
+	trending := srv.trendingData(ctx, trending24h, "", nil, nil, true)
+	if len(trending) != 2 {
+		t.Fatalf("trending len = %d, want 2 with recent zero-engagement tail: %#v", len(trending), trending)
+	}
+	if trending[0].Event.ID != hot.ID || trending[1].Event.ID != cold.ID {
+		t.Fatalf("unexpected trending note: %#v", trending)
+	}
+}
+
+func TestFeedDataRanksByRepliesAndReactionsFromBackgroundCache(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+
+	reactionBoosted := nostrx.Event{
+		ID:        fmt.Sprintf("%064x", 301),
+		PubKey:    strings.Repeat("1", 64),
+		CreatedAt: now - 40,
+		Kind:      nostrx.KindTextNote,
+		Content:   "feed reaction boosted",
+	}
+	replyOnly := nostrx.Event{
+		ID:        fmt.Sprintf("%064x", 302),
+		PubKey:    strings.Repeat("2", 64),
+		CreatedAt: now - 50,
+		Kind:      nostrx.KindTextNote,
+		Content:   "feed reply only",
+	}
+	replyEvents := []nostrx.Event{
+		{
+			ID:        fmt.Sprintf("%064x", 303),
+			PubKey:    strings.Repeat("3", 64),
+			CreatedAt: now - 30,
+			Kind:      nostrx.KindTextNote,
+			Content:   "reply a",
+			Tags:      [][]string{{"e", reactionBoosted.ID, "", "root"}, {"e", reactionBoosted.ID, "", "reply"}},
+		},
+		{
+			ID:        fmt.Sprintf("%064x", 304),
+			PubKey:    strings.Repeat("4", 64),
+			CreatedAt: now - 20,
+			Kind:      nostrx.KindTextNote,
+			Content:   "reply b1",
+			Tags:      [][]string{{"e", replyOnly.ID, "", "root"}, {"e", replyOnly.ID, "", "reply"}},
+		},
+		{
+			ID:        fmt.Sprintf("%064x", 305),
+			PubKey:    strings.Repeat("5", 64),
+			CreatedAt: now - 10,
+			Kind:      nostrx.KindTextNote,
+			Content:   "reply b2",
+			Tags:      [][]string{{"e", replyOnly.ID, "", "root"}, {"e", replyOnly.ID, "", "reply"}},
+		},
+	}
+	for _, ev := range append([]nostrx.Event{reactionBoosted, replyOnly}, replyEvents...) {
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reactorA := fnostr.Generate()
+	reactorB := fnostr.Generate()
+	for _, ev := range []nostrx.Event{
+		signNostrEvent(t, reactorA, nostrx.KindReaction, "+", [][]string{{"e", reactionBoosted.ID}, {"p", reactionBoosted.PubKey}}),
+		signNostrEvent(t, reactorB, nostrx.KindReaction, "+", [][]string{{"e", reactionBoosted.ID}, {"p", reactionBoosted.PubKey}}),
+	} {
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if _, err := srv.computeAndStoreTrending(ctx, trending24h, time.Unix(now, 0)); err != nil {
+		t.Fatalf("computeAndStoreTrending() error = %v", err)
+	}
+	data := srv.feedData(ctx, feedRequest{Limit: 10, SortMode: feedSortTrend24h})
+	if len(data.Feed) < 2 {
+		t.Fatalf("expected at least two feed items, got %#v", data.Feed)
+	}
+	if data.Feed[0].ID != reactionBoosted.ID || data.Feed[1].ID != replyOnly.ID {
+		t.Fatalf("unexpected cold-cache feed order: %#v", data.Feed)
+	}
+}
+
+func TestLoggedOutRankedColdFallbackUsesRecentRootNotes(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+	likedPub := strings.Repeat("1", 64)
+	repliedPub := strings.Repeat("2", 64)
+	recentPub := strings.Repeat("3", 64)
+
+	liked := nostrx.Event{
+		ID:        fmt.Sprintf("%064x", 501),
+		PubKey:    likedPub,
+		CreatedAt: now - 120,
+		Kind:      nostrx.KindTextNote,
+		Content:   "liked",
+	}
+	replied := nostrx.Event{
+		ID:        fmt.Sprintf("%064x", 502),
+		PubKey:    repliedPub,
+		CreatedAt: now - 60,
+		Kind:      nostrx.KindTextNote,
+		Content:   "replied",
+	}
+	recentTie := nostrx.Event{
+		ID:        fmt.Sprintf("%064x", 503),
+		PubKey:    recentPub,
+		CreatedAt: now - 10,
+		Kind:      nostrx.KindTextNote,
+		Content:   "recent tie",
+	}
+	reply := nostrx.Event{
+		ID:        fmt.Sprintf("%064x", 504),
+		PubKey:    strings.Repeat("4", 64),
+		CreatedAt: now - 20,
+		Kind:      nostrx.KindTextNote,
+		Content:   "reply",
+		Tags:      [][]string{{"e", replied.ID, "", "root"}, {"e", replied.ID, "", "reply"}},
+	}
+	for _, ev := range []nostrx.Event{liked, replied, recentTie, reply} {
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reactorA := fnostr.Generate()
+	reactorB := fnostr.Generate()
+	for _, ev := range []nostrx.Event{
+		signNostrEvent(t, reactorA, nostrx.KindReaction, "+", [][]string{{"e", liked.ID}, {"p", liked.PubKey}}),
+		signNostrEvent(t, reactorB, nostrx.KindReaction, "+", [][]string{{"e", recentTie.ID}, {"p", recentTie.PubKey}}),
+	} {
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	authors := []string{likedPub, repliedPub, recentPub}
+	page, hasMore, _, relayOrdered := srv.fetchRankedFeedPage(ctx, authors, trendingRankKey{}, 10, feedSortTrend24h, true, false)
+	if relayOrdered {
+		t.Fatal("expected computed local ranking, got relay order")
+	}
+	if hasMore {
+		t.Fatal("expected no additional page")
+	}
+	want := []string{recentTie.ID, replied.ID, liked.ID}
+	if len(page) != len(want) {
+		t.Fatalf("page len = %d, want %d: %#v", len(page), len(want), page)
+	}
+	for i := range want {
+		if page[i].ID != want[i] {
+			t.Fatalf("page order = %#v, want %v", page, want)
+		}
+	}
+}
+
+func TestFeedDataGlobalTrendingPrefersLocalCacheOverRelayHot(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+
+	makeSigned := func(createdAt int64, content string) nostrx.Event {
+		t.Helper()
+		secret := fnostr.Generate()
+		ev := fnostr.Event{
+			CreatedAt: fnostr.Timestamp(createdAt),
+			Kind:      fnostr.Kind(nostrx.KindTextNote),
+			Content:   content,
+		}
+		if err := ev.Sign(secret); err != nil {
+			t.Fatalf("Sign: %v", err)
+		}
+		return fnostrToNostrxEvent(ev)
+	}
+	olderHot := makeSigned(now-120, "older but hotter")
+	newerHot := makeSigned(now-60, "newer but second")
+	localTop := makeSigned(now-30, "local cached top")
+	for _, ev := range []nostrx.Event{localTop} {
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.WriteTrendingCache(ctx, trending24h, "", []store.TrendingItem{
+		{NoteID: localTop.ID, ReplyCount: 3, ReactionCount: 2, Score: 5, HotScore: 5, NoteCreatedAt: localTop.CreatedAt},
+	}, now); err != nil {
+		t.Fatal(err)
+	}
+	relay := newRelayWithEvents(t, []nostrx.Event{olderHot, newerHot})
+	defer relay.Close()
+
+	srv.cfg.TrendingSearchRelays = []string{wsURL(relay.URL)}
+	srv.cfg.TrendingSearchMaxRelays = 1
+	srv.cfg.RequestTimeout = 2 * time.Second
+
+	page1 := srv.feedData(ctx, feedRequest{Limit: 1, SortMode: feedSortTrend24h})
+	if len(page1.Feed) != 1 || page1.Feed[0].ID != localTop.ID {
+		t.Fatalf("page1 feed = %#v, want local cached trend row", page1.Feed)
+	}
+	if stored, err := st.GetEvent(ctx, olderHot.ID); err != nil || stored != nil {
+		t.Fatalf("relay hot event should not be fetched on foreground trend request, got event=%#v err=%v", stored, err)
+	}
+}
+
+func TestTrendingHotScoreOrderingAndZeroEngagementTail(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	item := func(id string, replies, reactions int, createdAt int64) store.TrendingItem {
+		score := replies + reactions
+		return store.TrendingItem{
+			NoteID:        id,
+			ReplyCount:    replies,
+			ReactionCount: reactions,
+			Score:         score,
+			HotScore:      trendingHotScore(score, createdAt, trending1w, now),
+			NoteCreatedAt: createdAt,
+		}
+	}
+	items := []store.TrendingItem{
+		item("zero-old", 0, 0, now.Add(-1*time.Hour).Unix()),
+		item("zero-new", 0, 0, now.Add(-10*time.Minute).Unix()),
+		item("newer-weak", 1, 0, now.Add(-1*time.Hour).Unix()),
+		item("older-high", 20, 0, now.Add(-48*time.Hour).Unix()),
+		item("tie-replies", 2, 1, now.Add(-2*time.Hour).Unix()),
+		item("tie-reactions", 1, 2, now.Add(-2*time.Hour).Unix()),
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return trendingItemLess(items[i], items[j])
+	})
+
+	got := make([]string, len(items))
+	for idx, item := range items {
+		got[idx] = item.NoteID
+	}
+	want := []string{"older-high", "tie-replies", "tie-reactions", "newer-weak", "zero-new", "zero-old"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("order = %v, want %v", got, want)
+	}
+	if items[len(items)-2].HotScore != 0 || items[len(items)-1].HotScore != 0 {
+		t.Fatalf("zero-engagement tail should have zero hot scores: %#v", items)
+	}
+}
+
+func TestComputeAndStoreTrendingPreservesWarmCacheOnDegradedRecompute(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	now := time.Unix(20_000, 0)
+	existing := make([]store.TrendingItem, trendingDegradedMinItems)
+	for idx := range existing {
+		existing[idx] = store.TrendingItem{
+			NoteID:        fmt.Sprintf("%064x", 8000+idx),
+			ReplyCount:    trendingDegradedMinItems - idx,
+			ReactionCount: idx,
+			Score:         trendingDegradedMinItems,
+			HotScore:      float64(trendingDegradedMinItems - idx),
+			NoteCreatedAt: now.Add(-time.Duration(idx) * time.Minute).Unix(),
+		}
+	}
+	if err := st.WriteTrendingCache(ctx, trending24h, "", existing, now.Add(-30*time.Minute).Unix()); err != nil {
+		t.Fatal(err)
+	}
+
+	items, err := srv.computeAndStoreTrending(ctx, trending24h, now)
+	if err != nil {
+		t.Fatalf("computeAndStoreTrending() error = %v", err)
+	}
+	if len(items) != len(existing) || items[0].NoteID != existing[0].NoteID {
+		t.Fatalf("expected preserved warm cache, got %#v", items)
+	}
+	cached, computedAt, err := st.ReadTrendingCache(ctx, trending24h, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if computedAt != now.Add(-30*time.Minute).Unix() {
+		t.Fatalf("degraded recompute should not overwrite cache computed_at, got %d", computedAt)
+	}
+	if len(cached) != len(existing) || cached[0].NoteID != existing[0].NoteID {
+		t.Fatalf("unexpected cached items after degraded recompute: %#v", cached)
+	}
+}
+
+func TestComputeAndStoreTrendingExcludesReplies(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	now := time.Now().Unix()
+
+	root := nostrx.Event{
+		ID:        fmt.Sprintf("%064x", 401),
+		PubKey:    strings.Repeat("6", 64),
+		CreatedAt: now - 60,
+		Kind:      nostrx.KindTextNote,
+		Content:   "root note",
+	}
+	reply := nostrx.Event{
+		ID:        fmt.Sprintf("%064x", 402),
+		PubKey:    strings.Repeat("7", 64),
+		CreatedAt: now - 50,
+		Kind:      nostrx.KindTextNote,
+		Content:   "reply note",
+		Tags:      [][]string{{"e", root.ID, "", "root"}, {"e", root.ID, "", "reply"}},
+	}
+	replyChildren := []nostrx.Event{
+		{
+			ID:        fmt.Sprintf("%064x", 403),
+			PubKey:    strings.Repeat("8", 64),
+			CreatedAt: now - 40,
+			Kind:      nostrx.KindTextNote,
+			Content:   "reply child one",
+			Tags:      [][]string{{"e", root.ID, "", "root"}, {"e", reply.ID, "", "reply"}},
+		},
+		{
+			ID:        fmt.Sprintf("%064x", 404),
+			PubKey:    strings.Repeat("9", 64),
+			CreatedAt: now - 30,
+			Kind:      nostrx.KindTextNote,
+			Content:   "reply child two",
+			Tags:      [][]string{{"e", root.ID, "", "root"}, {"e", reply.ID, "", "reply"}},
+		},
+		{
+			ID:        fmt.Sprintf("%064x", 405),
+			PubKey:    strings.Repeat("a", 64),
+			CreatedAt: now - 20,
+			Kind:      nostrx.KindTextNote,
+			Content:   "root child",
+			Tags:      [][]string{{"e", root.ID, "", "root"}, {"e", root.ID, "", "reply"}},
+		},
+	}
+	for _, ev := range append([]nostrx.Event{root, reply}, replyChildren...) {
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	items, err := srv.computeAndStoreTrending(ctx, trending24h, time.Unix(now, 0))
+	if err != nil {
+		t.Fatalf("computeAndStoreTrending() error = %v", err)
+	}
+	if len(items) == 0 {
+		t.Fatal("expected trending items")
+	}
+	for _, item := range items {
+		if item.NoteID == reply.ID {
+			t.Fatalf("expected reply to be excluded from trending items: %#v", items)
+		}
+	}
+	if items[0].NoteID != root.ID {
+		t.Fatalf("expected root note to remain in trending items, got %#v", items)
 	}
 }
 

@@ -4,8 +4,6 @@ import {
   shouldSyncViewerPrefLocation,
   stripViewerPrefSearchParams,
 } from "./session.js";
-import { initMutations, viewerHasAtLeastOneFollow } from "./mutations.js";
-import { activeSignerState } from "./signer.js";
 import {
   BLOSSOM_DEFAULT_SERVER_URLS,
   getBlossomPresetIdForURLs,
@@ -14,13 +12,11 @@ import {
   resetBlossomServerURLsToDefaults,
   setBlossomPreset,
   setBlossomServerURLs,
-  WEB_OF_TRUST_SEED_PRESETS,
   getEffectiveLoggedOutWebOfTrustSeed,
   getImageModePref,
   getWebOfTrustDepthPref,
   getWebOfTrustEnabledPref,
   ensureDefaultViewerPrefs,
-  getWebOfTrustSeedPref,
   normalizeWebOfTrustDepth,
   setFeedSortPref,
   setImageModePref,
@@ -29,13 +25,15 @@ import {
   setTrendingTimeframePref,
   setWebOfTrustDepthPref,
   setWebOfTrustEnabledPref,
-  setWebOfTrustSeedPref,
 } from "./sort-prefs.js";
+import { setAvatarImageSource } from "./avatar-cache.js";
+import { initRetroLoaders } from "./retro-loader.js";
 
 let initialized = false;
 let mobileMenuEscapeBound = false;
 let mobileAppNavHeightBound = false;
 let blossomVisibilityBound = false;
+let feedWotControlsVisibilityBound = false;
 
 /** Matches `app.css` @media (max-width: 700px) feed-shell layout. */
 const mobileShellLayoutQuery = window.matchMedia("(max-width: 700px)");
@@ -63,19 +61,12 @@ export function syncMobileAppNavHeight() {
 
 function syncThreadToolbarSlot() {
   const slot = document.querySelector("#thread-summary > .thread-toolbar-slot");
-  const header = document.querySelector("#thread-summary > .thread-header");
-  if (!(slot instanceof HTMLElement)) return;
-  if (!mobileFeedShellNarrow() || !(header instanceof HTMLElement)) {
-    slot.style.height = "";
-    return;
-  }
-  slot.style.height = `${Math.max(0, Math.ceil(header.getBoundingClientRect().height))}px`;
+  if (slot instanceof HTMLElement) slot.style.height = "";
 }
 
 function bindMobileAppNavHeight() {
   if (mobileAppNavHeightBound) return;
   mobileAppNavHeightBound = true;
-  let observedThreadToolbar = null;
   let rafId = 0;
   const bar = document.querySelector("#app-main .mobile-bar");
   let ro = null;
@@ -84,20 +75,6 @@ function bindMobileAppNavHeight() {
     rafId = requestAnimationFrame(() => {
       rafId = 0;
       syncMobileAppNavHeight();
-      const th = document.querySelector("#thread-summary > .thread-header");
-      if (!ro) return;
-      if (!(th instanceof HTMLElement)) {
-        if (observedThreadToolbar) {
-          ro.unobserve(observedThreadToolbar);
-          observedThreadToolbar = null;
-        }
-        return;
-      }
-      if (observedThreadToolbar !== th) {
-        if (observedThreadToolbar) ro.unobserve(observedThreadToolbar);
-        ro.observe(th);
-        observedThreadToolbar = th;
-      }
     });
   };
   ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(schedule) : null;
@@ -110,11 +87,17 @@ function bindMobileAppNavHeight() {
 }
 
 function bindAvatarImgOnce(img, onFail) {
-  if (!(img instanceof HTMLImageElement) || img.dataset.ptxtAvatarFallback) return;
+  if (!(img instanceof HTMLImageElement)) return;
+  const src = img.dataset.ptxtAvatarOriginalSrc || img.currentSrc || img.getAttribute("src") || "";
+  if (img.dataset.ptxtAvatarFallback === "1" && img.dataset.ptxtAvatarFallbackSrc === src) return;
   img.dataset.ptxtAvatarFallback = "1";
+  img.dataset.ptxtAvatarFallbackSrc = src;
   let failed = false;
+  const expectedSrc = src;
   const run = () => {
     if (failed) return;
+    const currentSrc = img.dataset.ptxtAvatarOriginalSrc || img.currentSrc || img.getAttribute("src") || "";
+    if (expectedSrc && currentSrc && currentSrc !== expectedSrc) return;
     failed = true;
     onFail();
   };
@@ -122,25 +105,64 @@ function bindAvatarImgOnce(img, onFail) {
   if (img.complete && img.naturalWidth === 0 && img.currentSrc) run();
 }
 
+function retryAvatarImageFallback(img, onFail) {
+  if (!(img instanceof HTMLImageElement)) return false;
+  const retryURL = String(img.dataset.ptxtAvatarRetrySrc || "").trim();
+  if (!retryURL || img.dataset.ptxtAvatarRetryAttempted === "1") return false;
+  img.dataset.ptxtAvatarRetryAttempted = "1";
+  delete img.dataset.ptxtAvatarFallback;
+  delete img.dataset.ptxtAvatarFallbackSrc;
+  setAvatarImageSource(img, retryURL, { retryURL: "" });
+  bindAvatarImgOnce(img, onFail);
+  return true;
+}
+
+export function normalizeThreadPersonAvatars(root = document) {
+  const links = [];
+  if (root instanceof Element && root.matches("a.thread-person")) links.push(root);
+  root.querySelectorAll?.("a.thread-person").forEach((link) => links.push(link));
+  links.forEach((link) => {
+    const avatarNodes = Array.from(link.children).filter(
+      (child) => child.matches("img, .thread-person-avatar-fallback"),
+    );
+    if (!avatarNodes.length) return;
+    const keeper = avatarNodes.find((node) => node instanceof HTMLImageElement) || avatarNodes[0];
+    avatarNodes.forEach((node) => {
+      if (node !== keeper) node.remove();
+    });
+    if (keeper !== link.firstElementChild) link.insertBefore(keeper, link.firstChild);
+  });
+}
+
 /** Remove broken avatar images; thread rail uses an explicit @ span instead of :has() CSS. */
 export function wireAvatarImageFallbacks(root = document) {
+  normalizeThreadPersonAvatars(root);
   root.querySelectorAll(
     ".note-feed-avatar img, .comment-avatar img, .note-avatar img, a.thread-person > img",
   ).forEach((img) => {
+    setAvatarImageSource(img, img.dataset.ptxtAvatarOriginalSrc || img.getAttribute("src"));
     const onFail =
       img.closest("a.thread-person") != null
         ? () => {
+            if (retryAvatarImageFallback(img, onFail)) return;
+            const link = img.closest("a.thread-person");
             const span = document.createElement("span");
             span.className = "thread-person-avatar-fallback";
             span.setAttribute("aria-hidden", "true");
             span.textContent = "@";
             img.replaceWith(span);
+            if (link) normalizeThreadPersonAvatars(link);
           }
-        : () => img.remove();
+        : () => {
+            if (retryAvatarImageFallback(img, onFail)) return;
+            img.remove();
+          };
     bindAvatarImgOnce(img, onFail);
   });
   root.querySelectorAll("img.thread-tree-avatar").forEach((img) => {
-    bindAvatarImgOnce(img, () => {
+    setAvatarImageSource(img, img.dataset.ptxtAvatarOriginalSrc || img.getAttribute("src"));
+    const onFail = () => {
+      if (retryAvatarImageFallback(img, onFail)) return;
       const row = img.parentElement;
       img.remove();
       if (!row) return;
@@ -149,16 +171,32 @@ export function wireAvatarImageFallbacks(root = document) {
       span.setAttribute("aria-hidden", "true");
       span.textContent = "@";
       row.insertBefore(span, row.firstChild);
-    });
+    };
+    bindAvatarImgOnce(img, onFail);
   });
   root.querySelectorAll(".profile-avatar-wrap > img.profile-avatar").forEach((img) => {
-    bindAvatarImgOnce(img, () => {
+    setAvatarImageSource(img, img.dataset.ptxtAvatarOriginalSrc || img.getAttribute("src"));
+    const onFail = () => {
+      if (retryAvatarImageFallback(img, onFail)) return;
       const div = document.createElement("div");
       div.className = "profile-avatar-fallback";
       div.setAttribute("aria-hidden", "true");
       div.textContent = "@";
       img.replaceWith(div);
-    });
+    };
+    bindAvatarImgOnce(img, onFail);
+  });
+  root.querySelectorAll(".profile-follow-avatar > img.profile-follow-avatar-image").forEach((img) => {
+    setAvatarImageSource(img, img.dataset.ptxtAvatarOriginalSrc || img.getAttribute("src"));
+    const onFail = () => {
+      if (retryAvatarImageFallback(img, onFail)) return;
+      const span = document.createElement("span");
+      span.className = "profile-follow-avatar-fallback";
+      span.setAttribute("aria-hidden", "true");
+      span.textContent = "@";
+      img.replaceWith(span);
+    };
+    bindAvatarImgOnce(img, onFail);
   });
 }
 
@@ -225,10 +263,13 @@ function ensureMobileMenuEscapeDelegate() {
 }
 
 export function initLayoutUI(root = document) {
+  initRetroLoaders(root);
   wireAvatarImageFallbacks(root);
   bindMobileMenu(root);
   bindMobileAppNavHeight();
-  initMutations(root);
+	if (normalizedPubkey()) {
+		void import("./mutations.js").then(({ initMutations }) => initMutations(root));
+	}
   bindTrendingTimeframe(root);
   bindFeedSortSelect(root);
   bindReadsSortSelect(root);
@@ -236,6 +277,7 @@ export function initLayoutUI(root = document) {
   bindImageModeToggle(root);
   syncBlossomSettingsVisibility(root);
   bindBlossomSettings(root);
+  void maybeHydrateTrendingSidebar(root);
   if (!blossomVisibilityBound) {
     blossomVisibilityBound = true;
     window.addEventListener("ptxt:session", () => syncBlossomSettingsVisibility(document));
@@ -324,6 +366,17 @@ function bindMobileMenu(root) {
   // with the overlay still up, avoiding a flash of the previous screen.
 }
 
+async function maybeHydrateTrendingSidebar(root) {
+	if (document.body?.dataset?.guestV2) return;
+  const target = root.querySelector("[data-trending-target]");
+  if (!target) return;
+  const { directRelaysEnabled } = await import("./relay-config.js");
+  if (!directRelaysEnabled()) return;
+  if (target.querySelector(".trending-list")) return;
+  const { hydrateTrendingSidebar } = await import("./trending-render.js");
+  void hydrateTrendingSidebar(root);
+}
+
 function bindTrendingTimeframe(root) {
   const select = root.querySelector("[data-trending-timeframe]");
   const target = root.querySelector("[data-trending-target]");
@@ -332,14 +385,10 @@ function bindTrendingTimeframe(root) {
   select.addEventListener("change", async () => {
     const tf = select.value || "24h";
     setTrendingTimeframePref(tf);
-    try {
-      // X-Ptxt-Tf header (sessionHeaders) carries the new timeframe.
-      const response = await fetchWithSession(`/trending?fragment=1`);
-      if (!response.ok) throw new Error("trending request failed");
-      target.innerHTML = await response.text();
-    } catch {
-      target.innerHTML = `<p class="muted">Trending unavailable.</p>`;
-    }
+    target.replaceChildren();
+    const { hydrateTrendingSidebar } = await import("./trending-render.js");
+    const { trendingSortFromTimeframe } = await import("./trending-service.js");
+    void hydrateTrendingSidebar(root, { sort: trendingSortFromTimeframe(tf), force: true });
   });
 }
 
@@ -347,15 +396,16 @@ function bindTrendingTimeframe(root) {
  * Bind a select that persists a preference and triggers an in-place refresh
  * of the current route. Because the preference now travels as an X-Ptxt-*
  * request header (not a URL query param), we re-navigate to the same URL
- * with cursors cleared so the SPA refetches with the new header.
+ * with cursors cleared so client hydration refetches with the new header.
  */
-function bindNavigatingSelect(root, { selector, boundFlag, defaultValue, persist }) {
+function bindNavigatingSelect(root, { selector, boundFlag, defaultValue, persist, beforeRefresh = null }) {
   const select = root.querySelector(selector);
   if (!select || select[boundFlag]) return;
   select[boundFlag] = true;
   select.addEventListener("change", () => {
     const value = select.value || defaultValue;
     persist(value);
+    if (typeof beforeRefresh === "function") beforeRefresh(value);
     refreshCurrentRouteForPrefChange();
   });
 }
@@ -366,6 +416,12 @@ function bindFeedSortSelect(root) {
     boundFlag: "_ptxtFeedSortBound",
     defaultValue: "recent",
     persist: setFeedSortPref,
+    beforeRefresh: () => {
+		void import("./feed-refresh-loader.js").then(({ showHomeFeedRefreshLoader }) => showHomeFeedRefreshLoader(root, {
+			percent: 10,
+			statusMessage: "reordering feed...",
+		}));
+    },
   });
 }
 
@@ -388,10 +444,9 @@ function bindReadsTrendingTimeframe(root) {
 }
 
 /**
- * Asks the SPA to re-run the current route's hydration pipeline so the new
+ * Asks the client router to re-run the current route's hydration pipeline so the new
  * `X-Ptxt-*` header values (read from localStorage by fetchWithSession()) are
- * applied. The handler lives in navigation.js, which listens for
- * `ptxt:viewer-prefs-changed`.
+ * applied. The document router listens for `ptxt:viewer-prefs-changed`.
  */
 function refreshCurrentRouteForPrefChange() {
   window.dispatchEvent(new CustomEvent("ptxt:viewer-prefs-changed"));
@@ -399,8 +454,8 @@ function refreshCurrentRouteForPrefChange() {
 
 
 function syncStoredWebOfTrustAwareLinks(root = document) {
-  // The original implementation copied WoT + relay params onto SSR-rendered
-  // navigation links so SPA fetches keyed cleanly off the URL. After moving
+  // The original implementation copied WoT + relay params onto server-rendered
+  // navigation links so route fetches keyed cleanly off the URL. After moving
   // prefs to X-Ptxt-* headers we only need old base hrefs (data-ptxt-wot-base-href)
   // and scrubbing any stale legacy query keys (sort, wot, pubkey, relays, …).
   root.querySelectorAll("[data-feed-home], [data-session-reads-link], [data-session-notifications-link], a[href='/settings'], a[href^='/settings?']").forEach((link) => {
@@ -422,14 +477,18 @@ export function syncLocationFromStoredPrefs() {
   const current = `${url.pathname}${url.search}${url.hash}`;
   stripViewerPrefSearchParams(url);
   const next = `${url.pathname}${url.search}${url.hash}`;
-  if (next !== current) history.replaceState({}, "", next);
+  if (next !== current) history.replaceState(history.state, "", next);
 }
 
 function syncBlossomSettingsVisibility(root) {
-  const section = root.querySelector("[data-blossom-settings-section]");
-  if (!section) return;
-  const signer = activeSignerState();
-  section.hidden = !(signer.isLoggedIn && signer.canSign);
+	const section = root.querySelector("[data-blossom-settings-section]");
+	if (!section) return;
+	section.hidden = true;
+	if (!normalizedPubkey()) return;
+	void import("./signer.js").then(({ activeSignerState }) => {
+		const signer = activeSignerState();
+		section.hidden = !(signer.isLoggedIn && signer.canSign);
+	});
 }
 
 function bindBlossomSettings(root) {
@@ -533,244 +592,116 @@ function bindImageModeToggle(root) {
 function bindWebOfTrustControls(root) {
   const settingsRoot = root.querySelector(".settings-preferences");
   if (!settingsRoot) return;
-  const currentURL = new URL(window.location.href);
-  const toggle = settingsRoot.querySelector("[data-wot-toggle]");
   const depthSelect = settingsRoot.querySelector("[data-wot-depth]");
   const output = settingsRoot.querySelector("[data-wot-depth-label]");
   const note = settingsRoot.querySelector("[data-wot-eligibility-note]");
-  const seedRow = settingsRoot.querySelector("[data-wot-seed-row]");
-  const seedGroup = settingsRoot.querySelector("[data-wot-seed-group]");
-  const switchGroup = settingsRoot.querySelector(".settings-mode-switch[aria-label='Web of Trust toggle']");
-  if ((!toggle && !depthSelect) || settingsRoot._ptxtWotSettingsBound) return;
+  if (!depthSelect || settingsRoot._ptxtWotSettingsBound) return;
   settingsRoot._ptxtWotSettingsBound = true;
-  const modeButtons = Array.from(settingsRoot.querySelectorAll("[data-wot-set]"));
-  const currentSeedFromURL = String(currentURL.searchParams.get("seed_pubkey") || "").trim();
-  const currentDepthFromURL = currentURL.searchParams.get("wot_depth");
-  const currentEnabledFromURL = currentURL.searchParams.get("wot") === "1";
-  const currentHasWOTParams = currentURL.searchParams.has("wot") || currentURL.searchParams.has("wot_depth") || currentURL.searchParams.has("seed_pubkey");
-  const presetsByID = new Map(WEB_OF_TRUST_SEED_PRESETS.map((preset) => [preset.id, preset]));
-  const presetIDByValue = new Map(WEB_OF_TRUST_SEED_PRESETS.map((preset) => [preset.value.toLowerCase(), preset.id]));
-  const noneSeedID = "none";
-  const radioName = "settings-wot-seed-profile";
-  const selectSeedRadio = (seedID) => {
-    if (!seedGroup) return;
-    const next = seedGroup.querySelector(`[data-wot-seed-radio="${seedID}"]`);
-    if (next instanceof HTMLInputElement) next.checked = true;
-  };
-  const seedForSelectedRadio = () => {
-    const selected = seedGroup?.querySelector(`[name="${radioName}"]:checked`);
-    if (!(selected instanceof HTMLInputElement)) return "";
-    if (selected.value === noneSeedID) return "";
-    return presetsByID.get(selected.value)?.value || "";
-  };
-  const resolvePresetID = (seed) => {
-    const normalized = String(seed || "").trim().toLowerCase();
-    if (!normalized) return WEB_OF_TRUST_SEED_PRESETS[0]?.id || "";
-    return presetIDByValue.get(normalized) || (WEB_OF_TRUST_SEED_PRESETS[0]?.id || "");
-  };
-  const effectiveLoggedOutSeed = () => {
-    const stored = getWebOfTrustSeedPref();
-    if (stored) return stored;
-    if (currentSeedFromURL) return currentSeedFromURL;
-    return getEffectiveLoggedOutWebOfTrustSeed();
-  };
-  const renderSeedRadios = () => {
-    if (!seedGroup || seedGroup.dataset.wotSeedBound === "1") return;
-    const cards = [
-      `<label class="settings-wot-seed-card">
-        <input type="radio" name="${radioName}" value="${noneSeedID}" data-wot-seed-radio="${noneSeedID}">
-        <span class="settings-wot-seed-meta">
-          <strong>None</strong>
-          <small class="muted">WOT off. No seed profile is used.</small>
-        </span>
-      </label>`,
-      ...WEB_OF_TRUST_SEED_PRESETS.map((preset) => `
-      <label class="settings-wot-seed-card">
-        <input type="radio" name="${radioName}" value="${preset.id}" data-wot-seed-radio="${preset.id}">
-        <span class="settings-wot-seed-avatar-wrap" aria-hidden="true">
-          <img class="settings-wot-seed-avatar" src="/avatar/${preset.value}" alt="">
-        </span>
-        <span class="settings-wot-seed-meta">
-          <strong>${preset.label}</strong>
-          <small class="muted">${preset.bio || ""}</small>
-        </span>
-      </label>`),
-    ];
-    seedGroup.innerHTML = cards.join("");
-    seedGroup.dataset.wotSeedBound = "1";
-  };
-  const syncSeedControlsFromPref = (enabled) => {
-    renderSeedRadios();
-    if (!seedGroup) return;
-    const radios = Array.from(seedGroup.querySelectorAll(`[name="${radioName}"]`));
-    const chooseNone = !enabled;
-    if (chooseNone) {
-      selectSeedRadio(noneSeedID);
-    } else {
-      const seed = effectiveLoggedOutSeed();
-      const presetID = resolvePresetID(seed);
-      selectSeedRadio(presetID || (WEB_OF_TRUST_SEED_PRESETS[0]?.id || noneSeedID));
-      if (!getWebOfTrustSeedPref()) {
-        const selectedSeed = seedForSelectedRadio() || seed;
-        if (selectedSeed) setWebOfTrustSeedPref(selectedSeed);
-      }
-    }
-    radios.forEach((radio) => {
-      const disabled = !enabled || radio.value === noneSeedID;
-      radio.disabled = disabled;
-    });
-  };
-  const syncLoggedOutSeedState = (enabled) => {
-    syncSeedControlsFromPref(enabled);
-    if (!enabled) return;
-    const seed = effectiveLoggedOutSeed();
-    const presetID = resolvePresetID(seed);
-    selectSeedRadio(presetID);
-  };
   const setEligible = (eligible, options = {}) => {
-    const {
-      showEligibilityNote = false,
-      showSeed = false,
-    } = options;
-    if (switchGroup) switchGroup.classList.toggle("is-disabled", !eligible);
+    const { showEligibilityNote = false } = options;
     if (note) note.hidden = !showEligibilityNote;
-    if (seedRow) seedRow.hidden = !showSeed;
-    modeButtons.forEach((button) => {
-      button.disabled = !eligible;
-      button.setAttribute("aria-disabled", eligible ? "false" : "true");
-      if (eligible) button.removeAttribute("tabindex");
-      else button.tabIndex = -1;
-    });
-    if (toggle) toggle.disabled = !eligible;
     if (depthSelect) depthSelect.disabled = !eligible;
-    if (!seedGroup) return;
-    seedGroup.querySelectorAll(`[name="${radioName}"]`).forEach((radio) => {
-      if (!(radio instanceof HTMLInputElement)) return;
-      radio.disabled = !eligible || !showSeed || radio.value === noneSeedID;
-    });
-  };
-  const syncButtons = (enabled) => {
-    modeButtons.forEach((button) => {
-      const isOn = button.dataset.wotSet === "on";
-      const active = enabled ? isOn : !isOn;
-      button.classList.toggle("is-active", active);
-      button.setAttribute("aria-pressed", active ? "true" : "false");
-    });
   };
   const syncDepth = (depth) => {
     const next = `${normalizeWebOfTrustDepth(depth)}`;
     if (depthSelect) depthSelect.value = next;
-    if (output) output.textContent = next;
+    if (output) output.textContent = `${next}°`;
   };
-  const apply = ({ enabled, depth, announce = true, persist = true }) => {
-    const nextEnabled = Boolean(enabled);
+  const apply = ({ depth, announce = true, persist = true }) => {
     const nextDepth = normalizeWebOfTrustDepth(depth);
-    if (toggle) toggle.checked = nextEnabled;
     if (persist) {
-      setWebOfTrustEnabledPref(nextEnabled);
+      setWebOfTrustEnabledPref(true);
       setWebOfTrustDepthPref(nextDepth);
-    }
-    if (!normalizedPubkey()) {
-      syncLoggedOutSeedState(nextEnabled);
     }
     syncStoredWebOfTrustAwareLinks(document);
     if (window.location.pathname === "/settings") {
       syncLocationFromStoredPrefs();
     }
-    syncButtons(nextEnabled);
     syncDepth(nextDepth);
     if (announce) {
       window.dispatchEvent(new CustomEvent("ptxt:web-of-trust-changed", {
-        detail: { enabled: nextEnabled, depth: nextDepth, seedPubkey: getWebOfTrustSeedPref() || getEffectiveLoggedOutWebOfTrustSeed() },
+        detail: { enabled: true, depth: nextDepth, seedPubkey: getEffectiveLoggedOutWebOfTrustSeed() },
       }));
     }
   };
   ensureDefaultViewerPrefs();
   const syncFromStorage = (announce = false, persist = false) => {
     apply({
-      enabled: getWebOfTrustEnabledPref(),
       depth: getWebOfTrustDepthPref(),
       announce,
       persist,
     });
   };
   const viewer = normalizedPubkey();
-  if (!viewer && currentHasWOTParams) {
-    setWebOfTrustEnabledPref(currentEnabledFromURL);
-    if (currentDepthFromURL) setWebOfTrustDepthPref(currentDepthFromURL);
-    if (currentSeedFromURL) setWebOfTrustSeedPref(currentSeedFromURL);
-  }
   if (!viewer) {
-    setEligible(true, { showSeed: true });
+    syncDepth(1);
+    setEligible(false);
   } else {
-    setEligible(true, { showEligibilityNote: false, showSeed: false });
-    void viewerHasAtLeastOneFollow(viewer).then((hasFollows) => {
+    setEligible(true, { showEligibilityNote: false });
+		void import("./mutations.js").then(({ viewerHasAtLeastOneFollow }) => viewerHasAtLeastOneFollow(viewer)).then((hasFollows) => {
       setEligible(true, {
         showEligibilityNote: !hasFollows,
-        showSeed: false,
       });
     });
   }
   syncFromStorage(false, true);
-  modeButtons.forEach((button) => {
-    button.addEventListener("click", () => {
-      apply({ enabled: button.dataset.wotSet === "on", depth: getWebOfTrustDepthPref() });
-    });
-  });
-  toggle?.addEventListener("change", () => {
-    apply({ enabled: Boolean(toggle.checked), depth: getWebOfTrustDepthPref() });
-  });
   depthSelect?.addEventListener("change", () => {
-    apply({ enabled: getWebOfTrustEnabledPref(), depth: depthSelect.value });
-  });
-  seedGroup?.addEventListener("change", (event) => {
-    const radio = event.target;
-    if (!(radio instanceof HTMLInputElement) || radio.name !== radioName) return;
-    if (!getWebOfTrustEnabledPref()) {
-      selectSeedRadio(noneSeedID);
-      syncStoredWebOfTrustAwareLinks(document);
-      if (window.location.pathname === "/settings") syncLocationFromStoredPrefs();
-      return;
-    }
-    const selected = presetsByID.get(radio.value);
-    if (!selected) return;
-    setWebOfTrustSeedPref(selected.value);
-    syncStoredWebOfTrustAwareLinks(document);
-    if (window.location.pathname === "/settings") syncLocationFromStoredPrefs();
-    window.dispatchEvent(new CustomEvent("ptxt:web-of-trust-changed", {
-      detail: {
-        enabled: getWebOfTrustEnabledPref(),
-        depth: getWebOfTrustDepthPref(),
-        seedPubkey: selected.value,
-      },
-    }));
+    apply({ depth: depthSelect.value });
   });
 }
 
 function bindFeedWebOfTrustControls(root) {
-  const control = root.querySelector("[data-feed-wot-controls]");
-  if (!control || control._ptxtFeedWotBound) return;
-  control._ptxtFeedWotBound = true;
-  const depthSelect = control.querySelector("[data-feed-wot-depth-select]");
-  if (!depthSelect) return;
-  const syncSelect = (depth) => {
+  const controls = Array.from(root.querySelectorAll("[data-feed-wot-controls]"));
+  if (!controls.length) return;
+  if (!normalizedPubkey()) {
+    controls.forEach((control) => { control.hidden = true; });
+    return;
+  }
+  const syncControls = (depth = getWebOfTrustDepthPref(), enabled = getWebOfTrustEnabledPref()) => {
     const nextDepth = `${normalizeWebOfTrustDepth(depth)}`;
-    control.dataset.wotDepth = nextDepth;
-    depthSelect.value = nextDepth;
+    controls.forEach((control) => {
+      control.hidden = !enabled;
+      control.dataset.wotDepth = nextDepth;
+      const depthSelect = control.querySelector("[data-feed-wot-depth-select]");
+      if (depthSelect) depthSelect.value = nextDepth;
+    });
   };
   const applyDepth = (depth) => {
     const nextDepth = normalizeWebOfTrustDepth(depth);
     setWebOfTrustEnabledPref(true);
     setWebOfTrustDepthPref(nextDepth);
-    syncSelect(nextDepth);
+    syncControls(nextDepth, true);
+		void import("./feed-refresh-loader.js").then(({ showHomeFeedRefreshLoader }) => showHomeFeedRefreshLoader(root, {
+			percent: 10,
+			statusMessage: "building trust graph...",
+		}));
     window.dispatchEvent(new CustomEvent("ptxt:web-of-trust-changed", {
       detail: { enabled: true, depth: nextDepth },
     }));
   };
-  syncSelect(control.dataset.wotDepth || getWebOfTrustDepthPref());
-  depthSelect.addEventListener("change", () => {
-    applyDepth(depthSelect.value);
+  syncControls(controls[0].dataset.wotDepth || getWebOfTrustDepthPref(), getWebOfTrustEnabledPref());
+  controls.forEach((control) => {
+    if (control._ptxtFeedWotBound) return;
+    control._ptxtFeedWotBound = true;
+    const depthSelect = control.querySelector("[data-feed-wot-depth-select]");
+    if (!depthSelect) return;
+    depthSelect.addEventListener("change", () => {
+      applyDepth(depthSelect.value);
+    });
   });
+  if (!feedWotControlsVisibilityBound) {
+    feedWotControlsVisibilityBound = true;
+    window.addEventListener("ptxt:web-of-trust-changed", (event) => {
+      const enabled = event.detail?.enabled ?? getWebOfTrustEnabledPref();
+      const depth = event.detail?.depth ?? getWebOfTrustDepthPref();
+      document.querySelectorAll("[data-feed-wot-controls]").forEach((control) => {
+        control.hidden = !enabled;
+        control.dataset.wotDepth = `${normalizeWebOfTrustDepth(depth)}`;
+        const depthSelect = control.querySelector("[data-feed-wot-depth-select]");
+        if (depthSelect) depthSelect.value = `${normalizeWebOfTrustDepth(depth)}`;
+      });
+    });
+  }
 }
 
 if (!initialized) {

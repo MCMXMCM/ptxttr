@@ -60,6 +60,10 @@ func validateHTTPAPIIngestShape(event Event) error {
 	}
 	switch event.Kind {
 	case KindTextNote, KindComment, KindRepost, KindProfileMetadata, KindFollowList, KindMuteList, KindBookmarkList, KindRelayListMetadata:
+	case KindEventDeletion:
+		if err := ValidateDeletionHTTPAPIShape(event); err != nil {
+			return err
+		}
 	case KindReaction:
 		if err := ValidateReactionHTTPAPIShape(event); err != nil {
 			return err

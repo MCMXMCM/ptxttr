@@ -56,7 +56,7 @@ func (s *Server) readsData(ctx context.Context, req feedRequest, trendingTimefra
 		trendingKey := readsCacheKey + "-" + sortMode
 		var cohort []string
 		if resolved.wotEnabled {
-			cohort = resolved.allAuthors
+			cohort = resolved.cohortAuthors()
 		} else if !resolved.loggedOut {
 			cohort = resolved.authors
 		}
@@ -142,7 +142,7 @@ func (s *Server) readsRecentPage(ctx context.Context, req feedRequest, resolved 
 		if resolved.wotViewerPubkey != "" {
 			viewer = resolved.wotViewerPubkey
 		}
-		return s.fetchScannedReadsPage(ctx, viewer, resolved.allAuthors, membership, req.Cursor, req.CursorID, req.Limit, req.Relays, authorsCacheKey(resolved.allAuthors))
+		return s.fetchScannedReadsPage(ctx, viewer, resolved.allAuthors, membership, req.Cursor, req.CursorID, req.Limit, req.Relays, authorsCacheKey(resolved.cohortAuthors()))
 	}
 
 	since := s.feedSince()
@@ -227,6 +227,12 @@ func (s *Server) readDetailData(ctx context.Context, event nostrx.Event, relays 
 
 func (s *Server) trendingReadsData(ctx context.Context, timeframe string, authors []string, membership authorMembership) []TrendingNote {
 	timeframe = normalizeTrendingTimeframe(timeframe)
+	cacheKey := readsTrendingSnapshotKey(timeframe, authors, membership)
+	if cached, ok := s.readsTrendingCache.get(cacheKey, time.Now()); ok {
+		s.metrics.Add("reads.trending_cache.hit", 1)
+		return cached
+	}
+	s.metrics.Add("reads.trending_cache.miss", 1)
 	since := trendingSince(timeframe, time.Now())
 	var candidates []nostrx.Event
 	if len(membership.exact) > 0 {
@@ -246,7 +252,29 @@ func (s *Server) trendingReadsData(ctx context.Context, timeframe string, author
 			break
 		}
 	}
+	s.readsTrendingCache.put(cacheKey, trending, time.Now())
 	return trending
+}
+
+func readsTrendingSnapshotKey(timeframe string, authors []string, membership authorMembership) string {
+	if len(membership.exact) > 0 {
+		return "reads|" + timeframe + "|m|" + authorsCacheKey(authorMembershipKeys(membership))
+	}
+	if len(authors) > 0 {
+		return "reads|" + timeframe + "|a|" + authorsCacheKey(authors)
+	}
+	return "reads|" + timeframe + "|global"
+}
+
+func authorMembershipKeys(membership authorMembership) []string {
+	if len(membership.exact) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(membership.exact))
+	for pubkey := range membership.exact {
+		out = append(out, pubkey)
+	}
+	return out
 }
 
 func (s *Server) refreshReads(ctx context.Context, before int64, limit int, relays []string) int {
@@ -286,38 +314,82 @@ func (s *Server) refreshReads(ctx context.Context, before int64, limit int, rela
 
 func (s *Server) refreshReadsForAuthors(ctx context.Context, viewer string, authors []string, before int64, limit int, relays []string) int {
 	defer s.observe("refresh.reads_authors", time.Now())
-	if len(authors) == 0 {
+	requestedAuthors := uniqueNonEmptyStable(authors)
+	if len(requestedAuthors) == 0 {
 		return -1
 	}
 	if before <= 0 {
 		before = time.Now().Unix() + 1
 	}
-	groups := s.groupAuthorsForOutbox(ctx, viewer, authors, relays)
+	groups := s.groupAuthorsForOutbox(ctx, viewer, requestedAuthors, relays)
 	if len(groups) == 0 {
-		groups = []outboxRouteGroup{{authors: append([]string(nil), authors...), relays: append([]string(nil), relays...)}}
+		groups = []outboxRouteGroup{{authors: append([]string(nil), requestedAuthors...), relays: append([]string(nil), relays...)}}
+	} else if missing := authorsMissingFromRouteGroups(requestedAuthors, groups); len(missing) > 0 {
+		groups = append(groups, outboxRouteGroup{authors: missing, relays: append([]string(nil), relays...)})
 	}
 	total := 0
 	anySuccess := false
 	for _, group := range groups {
-		if len(group.authors) == 0 {
-			continue
+		for _, batch := range relayAuthorBatches(group.authors) {
+			fetched := s.refreshCached(ctx, "reads_authors", authorsCacheKey(batch), 0, group.relays, nostrx.Query{
+				Authors: batch,
+				Kinds:   []int{nostrx.KindLongForm},
+				Until:   before,
+				Limit:   limit,
+			})
+			if fetched < 0 {
+				continue
+			}
+			anySuccess = true
+			total += fetched
 		}
-		fetched := s.refreshCached(ctx, "reads_authors", authorsCacheKey(group.authors), 0, group.relays, nostrx.Query{
-			Authors: group.authors,
-			Kinds:   []int{nostrx.KindLongForm},
-			Until:   before,
-			Limit:   limit,
-		})
-		if fetched < 0 {
-			continue
-		}
-		anySuccess = true
-		total += fetched
 	}
 	if !anySuccess {
 		return -1
 	}
 	return total
+}
+
+func authorsMissingFromRouteGroups(authors []string, groups []outboxRouteGroup) []string {
+	if len(authors) == 0 {
+		return nil
+	}
+	covered := make(map[string]struct{}, len(authors))
+	for _, group := range groups {
+		for _, author := range group.authors {
+			if author != "" {
+				covered[author] = struct{}{}
+			}
+		}
+	}
+	missing := make([]string, 0)
+	for _, author := range authors {
+		if author == "" {
+			continue
+		}
+		if _, ok := covered[author]; ok {
+			continue
+		}
+		missing = append(missing, author)
+	}
+	return missing
+}
+
+func relayAuthorBatches(authors []string) [][]string {
+	authors = uniqueNonEmptyStable(authors)
+	if len(authors) == 0 {
+		return nil
+	}
+	const batchSize = 64
+	batches := make([][]string, 0, (len(authors)+batchSize-1)/batchSize)
+	for start := 0; start < len(authors); start += batchSize {
+		end := start + batchSize
+		if end > len(authors) {
+			end = len(authors)
+		}
+		batches = append(batches, authors[start:end])
+	}
+	return batches
 }
 
 // refreshReadsForTrending picks the right relay-refresh strategy for the
@@ -329,7 +401,7 @@ func (s *Server) refreshReadsForTrending(ctx context.Context, resolved requestAu
 		if resolved.wotViewerPubkey != "" {
 			viewer = resolved.wotViewerPubkey
 		}
-		return s.refreshReadsForAuthors(ctx, viewer, resolved.allAuthors, 0, window, relays) >= 0
+		return s.refreshReadsForAuthors(ctx, viewer, resolved.cohortAuthors(), 0, window, relays) >= 0
 	}
 	if len(authors) > 0 {
 		return s.refreshReadsForAuthors(ctx, resolved.userPubkey, authors, 0, window, relays) >= 0

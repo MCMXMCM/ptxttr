@@ -38,6 +38,11 @@ type SearchNotesResult struct {
 	LatestCachedAt int64
 }
 
+type SearchProfilesQuery struct {
+	Text  string
+	Limit int
+}
+
 const (
 	// SearchMaxQueryRunes bounds user-provided query size before tokenization.
 	SearchMaxQueryRunes = 128
@@ -221,4 +226,95 @@ func PrepareSearch(raw string) PreparedSearch {
 		Normalized: strings.Join(tokens, " "),
 		Match:      buildFTSQuery(tokens),
 	}
+}
+
+// SearchProfiles ranks cached kind-0 profiles similarly to iOS PTN:
+// exact pubkey match first, then prefix matches, then broader contains
+// matches, with recent profile activity as the final tiebreaker.
+func (s *Store) SearchProfiles(ctx context.Context, query SearchProfilesQuery) ([]string, error) {
+	trimmed := strings.TrimSpace(query.Text)
+	limit := nostrx.ClampRelayQueryLimit(query.Limit)
+	if trimmed == "" || limit <= 0 {
+		return nil, nil
+	}
+	loweredQuery := strings.ToLower(trimmed)
+	exactHex, err := nostrx.DecodeIdentifier(trimmed)
+	if err != nil {
+		exactHex = ""
+	}
+	ftsQuery := buildFTSQuery(tokenizeSearch(trimmed))
+	if ftsQuery == "" && exactHex == "" {
+		return nil, nil
+	}
+	prefixQuery := loweredQuery + "%"
+	candidateLimit := max(limit*8, limit)
+	if ftsQuery == "" {
+		rows, err := s.db.QueryContext(ctx, `
+			SELECT pc.pubkey
+			FROM profiles_cache pc
+			WHERE lower(pc.pubkey) = ?
+			ORDER BY pc.last_seen_at DESC, pc.created_at DESC, pc.pubkey ASC
+			LIMIT ?`, exactHex, limit)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = rows.Close() }()
+		var out []string
+		for rows.Next() {
+			var pubkey string
+			if err := rows.Scan(&pubkey); err != nil {
+				return nil, err
+			}
+			out = append(out, pubkey)
+		}
+		return out, rows.Err()
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		WITH fts_matches AS (
+			SELECT rowid FROM profiles_fts WHERE profiles_fts MATCH ? LIMIT ?
+		)
+		SELECT pc.pubkey
+		FROM profiles_cache pc
+		WHERE (
+			(? != '' AND lower(pc.pubkey) = ?)
+			OR pc.rowid IN (SELECT rowid FROM fts_matches)
+		)
+		ORDER BY
+			CASE
+				WHEN (? != '' AND lower(pc.pubkey) = ?) THEN 0
+				WHEN lower(pc.pubkey) LIKE ?
+					OR lower(COALESCE(pc.display_name, '')) LIKE ?
+					OR lower(COALESCE(pc.name, '')) LIKE ?
+					OR lower(COALESCE(pc.nip05, '')) LIKE ? THEN 1
+				ELSE 2
+			END ASC,
+			pc.last_seen_at DESC,
+			pc.created_at DESC,
+			pc.pubkey ASC
+		LIMIT ?`,
+		ftsQuery,
+		candidateLimit,
+		exactHex,
+		exactHex,
+		exactHex,
+		exactHex,
+		prefixQuery,
+		prefixQuery,
+		prefixQuery,
+		prefixQuery,
+		limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []string
+	for rows.Next() {
+		var pubkey string
+		if err := rows.Scan(&pubkey); err != nil {
+			return nil, err
+		}
+		out = append(out, pubkey)
+	}
+	return out, rows.Err()
 }

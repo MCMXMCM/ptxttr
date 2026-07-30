@@ -6,7 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -14,6 +14,8 @@ import (
 	"ptxt-nstr/internal/store"
 	"ptxt-nstr/internal/thread"
 )
+
+const sharePreviewWarmTTL = 7 * 24 * time.Hour
 
 func queryTokensFromRequest(r *http.Request, key string, maxN int, normalize func(string) string) []string {
 	if r == nil || maxN <= 0 {
@@ -129,6 +131,545 @@ func (s *Server) handleReactionStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, out, nil)
 }
 
+type wotAuthorsResponse struct {
+	Authors        []string `json:"authors"`
+	Cached         bool     `json:"cached"`
+	ComputedAtUnix int64    `json:"computed_at"`
+}
+
+func (s *Server) handleWoTAuthors(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.allowSharedCacheAPIRequest(w, r, "wot-authors") {
+		return
+	}
+	seed := strings.TrimSpace(r.URL.Query().Get("seed"))
+	if seed == "" {
+		seed = defaultLoggedOutWOTSeedNPub
+	}
+	if !isDefaultLoggedOutSeed(seed) {
+		writeJSON(w, nil, httpError("anonymous web-of-trust uses the default seed", http.StatusForbidden))
+		return
+	}
+	decoded, err := nostrx.DecodeIdentifier(seed)
+	if err != nil || decoded == "" {
+		writeJSON(w, nil, httpError("invalid seed", http.StatusBadRequest))
+		return
+	}
+	depth := defaultLoggedOutWOTDepth
+	if raw := strings.TrimSpace(r.URL.Query().Get("depth")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil {
+			depth = n
+		}
+	}
+	depth = min(3, max(1, depth))
+	limit := s.resolvedAuthorLimit(webOfTrustOptions{Enabled: true, Depth: depth})
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			limit = min(limit, n)
+		}
+	}
+	wot := webOfTrustOptions{Enabled: true, Depth: depth}
+	if authors, computedAt, ok := s.cachedResolvedAuthors(r.Context(), decoded, wot); ok {
+		setShortCache(w, 60)
+		writeJSON(w, wotAuthorsResponse{
+			Authors:        boundedAuthors(authors, limit),
+			Cached:         true,
+			ComputedAtUnix: computedAt,
+		}, nil)
+		return
+	}
+	setShortCache(w, 30)
+	writeJSON(w, wotAuthorsResponse{Authors: []string{}}, nil)
+}
+
+func (s *Server) cachedResolvedAuthors(ctx context.Context, viewer string, wot webOfTrustOptions) ([]string, int64, bool) {
+	if s == nil {
+		return nil, 0, false
+	}
+	key := resolvedAuthorsCacheKey(viewer, wot)
+	now := time.Now()
+	if authors, ok := s.resolvedAuthors.get(key, now); ok && len(authors) > 0 {
+		return authors, now.Unix(), true
+	}
+	if s.store == nil {
+		return nil, 0, false
+	}
+	authors, ts, ok, err := s.store.GetResolvedAuthorsDurable(ctx, key)
+	if err != nil || !ok || len(authors) == 0 {
+		return nil, 0, false
+	}
+	computed := time.Unix(ts, 0)
+	if age := now.Sub(computed); age < 0 || age >= resolvedAuthorsDurableMaxAge {
+		return nil, 0, false
+	}
+	s.resolvedAuthors.put(key, authors, now)
+	return authors, ts, true
+}
+
+func boundedAuthors(authors []string, limit int) []string {
+	if limit <= 0 || len(authors) <= limit {
+		return append([]string(nil), authors...)
+	}
+	return append([]string(nil), authors[:limit]...)
+}
+
+func limitedEvents(events []nostrx.Event, limit int) []nostrx.Event {
+	if limit <= 0 || len(events) <= limit {
+		return events
+	}
+	return events[:limit]
+}
+
+func (s *Server) allowPublicAPIRequest(w http.ResponseWriter, r *http.Request, scope string, viewerKey string) bool {
+	rateKeys := []string{"ip:" + searchRemoteIP(r)}
+	if scope != "" {
+		rateKeys = append(rateKeys, "api:"+scope+":ip:"+searchRemoteIP(r))
+	}
+	if viewerKey != "" {
+		rateKeys = append(rateKeys, "viewer:"+viewerKey)
+	}
+	if s.searchLimiter.allow(time.Now(), rateKeys...) {
+		return true
+	}
+	w.Header().Set("Retry-After", "1")
+	writeJSON(w, nil, httpError("rate limited", http.StatusTooManyRequests))
+	return false
+}
+
+func (s *Server) allowSharedCacheAPIRequest(w http.ResponseWriter, r *http.Request, scope string) bool {
+	key := "api-cache:" + scope + ":ip:" + searchRemoteIP(r)
+	if s.searchLimiter.allow(time.Now(), key) {
+		return true
+	}
+	w.Header().Set("Retry-After", "10")
+	writeJSON(w, nil, httpError("rate limited", http.StatusTooManyRequests))
+	return false
+}
+
+func (s *Server) resolveRequestAuthorsForPublicAPI(ctx context.Context, req feedRequest) requestAuthors {
+	userPubkey, loggedOut := s.resolveViewer(req.Pubkey, req.Relays)
+	if !loggedOut {
+		return s.resolveRequestAuthors(ctx, req.Pubkey, req.SeedPubkey, req.Relays, req.WoT)
+	}
+	wot := req.WoT
+	if !wot.Enabled {
+		return requestAuthors{loggedOut: true, wotEnabled: false}
+	}
+	seed := req.SeedPubkey
+	if seed == "" {
+		seed = defaultLoggedOutWOTSeedNPub
+	}
+	if !isDefaultLoggedOutSeed(seed) {
+		return requestAuthors{loggedOut: true, wotEnabled: false, seedWOTEnabled: false}
+	}
+	if wot.Depth <= 0 {
+		wot.Depth = defaultLoggedOutWOTDepth
+	}
+	defaultSeed, err := nostrx.DecodeIdentifier(defaultLoggedOutWOTSeedNPub)
+	if err != nil || defaultSeed == "" {
+		return requestAuthors{loggedOut: true, wotEnabled: false}
+	}
+	authors, _, ok := s.cachedResolvedAuthors(ctx, defaultSeed, webOfTrustOptions{Enabled: true, Depth: wot.Depth})
+	if !ok || len(authors) == 0 {
+		return requestAuthors{
+			loggedOut:       true,
+			userPubkey:      userPubkey,
+			wotEnabled:      true,
+			seedWOTEnabled:  true,
+			wotViewerPubkey: defaultSeed,
+			authors:         []string{defaultSeed},
+			allAuthors:      []string{defaultSeed},
+		}
+	}
+	return requestAuthors{
+		loggedOut:       true,
+		userPubkey:      userPubkey,
+		wotEnabled:      true,
+		seedWOTEnabled:  true,
+		wotViewerPubkey: defaultSeed,
+		authors:         boundedAuthors(authors, maxFeedAuthors),
+		allAuthors:      authors,
+	}
+}
+
+func (s *Server) handleFeedNotesAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.allowPublicAPIRequest(w, r, "feed-notes", normalizeViewerKey(viewerFromRequest(r))) {
+		return
+	}
+	req := s.feedRequestFromHTTP(r)
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			req.Limit = min(60, n)
+		}
+	}
+	req.Cursor, _ = strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
+	req.CursorID = strings.TrimSpace(r.URL.Query().Get("cursor_id"))
+	data := s.feedItemsData(r.Context(), req)
+	setShortCache(w, 30)
+	writeJSON(w, map[string]any{
+		"notes":             data.Feed,
+		"profiles":          data.Profiles,
+		"referenced_events": data.ReferencedEvents,
+		"reply_counts":      data.ReplyCounts,
+		"reaction_totals":   data.ReactionTotals,
+		"reaction_viewers":  data.ReactionViewers,
+		"has_more":          data.HasMore,
+		"cursor":            data.Cursor,
+		"cursor_id":         data.CursorID,
+		"sort":              data.FeedSort,
+		"snapshot_starter":  data.FeedSnapshotStarter,
+	}, nil)
+}
+
+func (s *Server) handleSearchNotesAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.allowPublicAPIRequest(w, r, "search-notes", normalizeViewerKey(viewerFromRequest(r))) {
+		return
+	}
+	query := store.PrepareSearch(r.URL.Query().Get("q"))
+	if query.Empty() {
+		writeJSON(w, map[string]any{"notes": []nostrx.Event{}}, nil)
+		return
+	}
+	limit := 30
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			limit = min(60, n)
+		}
+	}
+	cursor, _ := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
+	cursorID := strings.TrimSpace(r.URL.Query().Get("cursor_id"))
+	req := feedRequest{
+		Pubkey:     viewerFromRequest(r),
+		SeedPubkey: seedPubkeyFromRequest(r),
+		Relays:     s.requestRelays(r),
+		WoT:        webOfTrustOptionsFromRequest(r),
+	}
+	resolved := s.resolveRequestAuthorsForPublicAPI(r.Context(), req)
+	scope := normalizeSearchScope(r.URL.Query().Get("scope"), resolved.loggedOut, resolved.wotEnabled)
+	var authors []string
+	if scope == searchScopeNetwork {
+		authors = resolved.authors
+	}
+	result := s.searchNotesStoreResult(r.Context(), query, scope, authors, cursor, cursorID, limit)
+	events := s.hydrateTimelineEvents(r.Context(), result.Events)
+	events = s.filterFeedEventsByViewerMutes(r.Context(), resolved.viewerForMuteFilter(), events)
+	writeJSON(w, map[string]any{
+		"notes":            events,
+		"has_more":         result.HasMore,
+		"cursor":           result.NextCreatedAt,
+		"cursor_id":        result.NextID,
+		"oldest_cached_at": result.OldestCachedAt,
+		"latest_cached_at": result.LatestCachedAt,
+		"scope":            scope,
+	}, nil)
+}
+
+func (s *Server) searchNotesStoreResult(ctx context.Context, query store.PreparedSearch, scope string, authors []string, cursor int64, cursorID string, limit int) store.SearchNotesResult {
+	if query.Empty() || s == nil || s.store == nil {
+		return store.SearchNotesResult{}
+	}
+	key := strings.Join([]string{
+		"search",
+		scope,
+		searchKindsKey,
+		authorsCacheKey(authors),
+		query.Normalized,
+		strconv.FormatInt(cursor, 10),
+		cursorID,
+		strconv.Itoa(limit),
+	}, "|")
+	if cached, ok := s.searchStoreCache.get(key, time.Now()); ok {
+		s.metrics.Add("search.cache.store.hit", 1)
+		return cached
+	}
+	return s.searchGroup.do(key, func() store.SearchNotesResult {
+		if cached, ok := s.searchStoreCache.get(key, time.Now()); ok {
+			s.metrics.Add("search.cache.store.hit_after_wait", 1)
+			return cached
+		}
+		s.metrics.Add("search.cache.store.miss", 1)
+		result, err := s.store.SearchNoteSummaries(ctx, store.SearchNotesQuery{
+			Text:     query,
+			Authors:  authors,
+			Kinds:    noteTimelineKinds,
+			Before:   cursor,
+			BeforeID: cursorID,
+			Limit:    limit,
+		})
+		if err != nil {
+			slog.Warn("search API store query failed", "scope", scope, "err", err)
+			return store.SearchNotesResult{}
+		}
+		s.searchStoreCache.put(key, result, time.Now())
+		return result
+	})
+}
+
+func (s *Server) newPublicAPITagPlan(ctx context.Context, req tagRequest) tagPlan {
+	feedReq := feedRequest{
+		Pubkey:     req.Pubkey,
+		SeedPubkey: req.SeedPubkey,
+		Relays:     req.Relays,
+		WoT:        req.WoT,
+	}
+	resolved := s.resolveRequestAuthorsForPublicAPI(ctx, feedReq)
+	scope := normalizeSearchScope(req.Scope, resolved.loggedOut && !resolved.seedWOTEnabled, resolved.wotEnabled)
+	var scopedAuthors []string
+	if scope == searchScopeNetwork {
+		scopedAuthors = resolved.authors
+	}
+	viewer := resolved.viewerForMuteFilter()
+	tagCacheKey := normalizeTagCacheKey(req.Tag)
+	storeKey := strings.Join([]string{
+		"tag",
+		viewer,
+		scope,
+		searchKindsKey,
+		authorsCacheKey(scopedAuthors),
+		tagCacheKey,
+		strconv.FormatInt(req.Cursor, 10),
+		req.CursorID,
+		strconv.Itoa(req.Limit),
+	}, "|")
+	pageKey := storeKey + "|" + req.Tag + "|" + strconv.FormatBool(req.WoT.Enabled) + "|" + strconv.Itoa(req.WoT.Depth) + "|" + hashStringSlice(req.Relays)
+	return tagPlan{
+		req:           req,
+		resolved:      resolved,
+		scope:         scope,
+		scopedAuthors: scopedAuthors,
+		storeKey:      storeKey,
+		pageKey:       pageKey,
+	}
+}
+
+func (s *Server) handleTagNotesAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.allowPublicAPIRequest(w, r, "tag-notes", normalizeViewerKey(viewerFromRequest(r))) {
+		return
+	}
+	tag := normalizeTagCacheKey(r.URL.Query().Get("tag"))
+	if tag == "" {
+		writeJSON(w, nil, httpError("tag is required", http.StatusBadRequest))
+		return
+	}
+	limit := 30
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 {
+			limit = min(60, n)
+		}
+	}
+	cursor, _ := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
+	req := tagRequest{
+		Pubkey:     viewerFromRequest(r),
+		SeedPubkey: seedPubkeyFromRequest(r),
+		Tag:        tag,
+		Scope:      strings.TrimSpace(r.URL.Query().Get("scope")),
+		Cursor:     cursor,
+		CursorID:   strings.TrimSpace(r.URL.Query().Get("cursor_id")),
+		Limit:      limit,
+		Relays:     s.requestRelays(r),
+		WoT:        webOfTrustOptionsFromRequest(r),
+	}
+	plan := s.newPublicAPITagPlan(r.Context(), req)
+	result := s.tagStoreResult(r.Context(), plan)
+	events := s.hydrateTimelineEvents(r.Context(), result.Events)
+	events = s.filterFeedEventsByViewerMutes(r.Context(), plan.resolved.viewerForMuteFilter(), events)
+	writeJSON(w, map[string]any{
+		"notes":            events,
+		"has_more":         result.HasMore,
+		"cursor":           result.NextCreatedAt,
+		"cursor_id":        result.NextID,
+		"oldest_cached_at": result.OldestCachedAt,
+		"latest_cached_at": result.LatestCachedAt,
+		"scope":            plan.scope,
+	}, nil)
+}
+
+func (s *Server) handleProfilesAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.allowPublicAPIRequest(w, r, "profiles", "") {
+		return
+	}
+	pubkeys := queryTokensFromRequest(r, "pubkey", 32, func(value string) string {
+		decoded, err := nostrx.DecodeIdentifier(value)
+		if err != nil {
+			return ""
+		}
+		return decoded
+	})
+	if len(pubkeys) == 0 {
+		setShortCache(w, 60)
+		writeJSON(w, map[string]nostrx.Profile{}, nil)
+		return
+	}
+	setShortCache(w, 60)
+	writeJSON(w, s.profilesForPubkeys(r.Context(), pubkeys), nil)
+}
+
+func (s *Server) handleThreadPreviewAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.allowPublicAPIRequest(w, r, "thread-preview", "") {
+		return
+	}
+	selectedID := thread.NormalizeHexEventID(r.URL.Query().Get("id"))
+	if selectedID == "" {
+		writeJSON(w, nil, httpError("id is required", http.StatusBadRequest))
+		return
+	}
+	selected := s.eventFromStore(r.Context(), selectedID)
+	if selected == nil {
+		setNegativeCache(w)
+		writeJSON(w, nil, httpError("note not found", http.StatusNotFound))
+		return
+	}
+	lookup := func(id string) *nostrx.Event {
+		return s.eventFromStore(r.Context(), thread.NormalizeHexEventID(id))
+	}
+	rootID := thread.NormalizeHexEventID(r.URL.Query().Get("root"))
+	if rootID == "" {
+		rootID = resolveThreadRootID(*selected, lookup)
+	}
+	if rootID == "" {
+		rootID = selected.ID
+	}
+	root := selected
+	if rootID != selected.ID {
+		if ev := s.eventFromStore(r.Context(), rootID); ev != nil {
+			root = ev
+		}
+	}
+	parentID := thread.NormalizeHexEventID(thread.ParentID(rootID, *selected))
+	events := []nostrx.Event{*selected}
+	if root != nil && root.ID != selected.ID {
+		events = append(events, *root)
+	}
+	if parentID != "" && parentID != rootID && parentID != selected.ID {
+		if parent := s.eventFromStore(r.Context(), parentID); parent != nil {
+			events = append(events, *parent)
+		}
+	}
+	parentByID := map[string]string{}
+	if cache, _, err := s.store.ThreadGraphCache(r.Context(), rootID); err == nil && cache != nil {
+		parentByID = cache.ParentByID
+		for _, ev := range s.eventsByIDInOrder(r.Context(), limitedStrings(cache.EventIDs, 48), true, nil) {
+			events = append(events, ev)
+		}
+		s.metrics.Add("thread.preview.graph_cache_hit", 1)
+	} else {
+		if parentID != "" {
+			parentByID[selected.ID] = parentID
+		}
+		s.metrics.Add("thread.preview.graph_cache_miss", 1)
+	}
+	events = uniqueThreadEvents(events)
+	events = limitedEvents(events, 50)
+	combined := append([]nostrx.Event(nil), events...)
+	rt, rv := s.reactionMapsForEvents(r.Context(), combined, "")
+	setShortCache(w, 30)
+	writeJSON(w, map[string]any{
+		"root_id":          rootID,
+		"selected_id":      selected.ID,
+		"parent_id":        parentID,
+		"events":           events,
+		"parent_by_id":     parentByID,
+		"profiles":         s.profilesFor(r.Context(), combined),
+		"reply_counts":     s.replyCounts(r.Context(), combined),
+		"reaction_totals":  rt,
+		"reaction_viewers": rv,
+	}, nil)
+}
+
+type outboxPlanGroupResponse struct {
+	Authors []string `json:"authors"`
+	Relays  []string `json:"relays"`
+}
+
+func (s *Server) handleOutboxPlanAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.allowPublicAPIRequest(w, r, "outbox-plan", "") {
+		return
+	}
+	authors := queryTokensFromRequest(r, "author", 24, func(value string) string {
+		decoded, err := nostrx.DecodeIdentifier(value)
+		if err != nil {
+			return ""
+		}
+		return decoded
+	})
+	if len(authors) == 0 {
+		setShortCache(w, 60)
+		writeJSON(w, map[string]any{"groups": []outboxPlanGroupResponse{}}, nil)
+		return
+	}
+	groups := s.groupAuthorsForOutbox(r.Context(), "", authors, s.requestRelays(r))
+	out := make([]outboxPlanGroupResponse, 0, len(groups))
+	for _, group := range groups {
+		out = append(out, outboxPlanGroupResponse{
+			Authors: append([]string(nil), group.authors...),
+			Relays:  append([]string(nil), group.relays...),
+		})
+	}
+	setShortCache(w, 60)
+	writeJSON(w, map[string]any{"groups": out}, nil)
+}
+
+func (s *Server) handleAvatarMetaAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.allowPublicAPIRequest(w, r, "avatar-meta", "") {
+		return
+	}
+	pubkey := avatarPathPubkey(r.URL.Query().Get("pubkey"))
+	if pubkey == "" {
+		writeJSON(w, nil, httpError("pubkey is required", http.StatusBadRequest))
+		return
+	}
+	profile := s.profile(r.Context(), pubkey)
+	upstream := strings.TrimSpace(profile.Picture)
+	src := avatarSrcFor(pubkey, upstream)
+	out := map[string]any{
+		"pubkey":   pubkey,
+		"src":      src,
+		"upstream": upstream,
+		"cached":   false,
+	}
+	if upstream != "" {
+		if entry, ok := s.avatarCache.get(upstream); ok {
+			out["cached"] = true
+			out["content_type"] = entry.contentType
+			out["size"] = len(entry.body)
+			out["etag"] = quotedETag(entry.bodyHash)
+		}
+	}
+	setShortCache(w, 300)
+	writeJSON(w, out, nil)
+}
+
 type reactionsAPIEntry struct {
 	Pubkey      string `json:"pubkey"`
 	DisplayName string `json:"display_name"`
@@ -174,7 +715,7 @@ func (s *Server) handleReactionsAPI(w http.ResponseWriter, r *http.Request) {
 	for i := range rows {
 		pubkeys[i] = rows[i].ReactorPubkey
 	}
-	profiles := s.contactProfiles(ctx, pubkeys)
+	profiles := s.contactProfiles(ctx, pubkeys, nil)
 	out := make([]reactionsAPIEntry, 0, len(rows))
 	for _, row := range rows {
 		vote := "up"
@@ -232,6 +773,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
 	defer cancel()
 	if err := s.validateReactionPublishTarget(ctx, payload.Event); err != nil {
+		writeJSON(w, nil, httpError(err.Error(), http.StatusBadRequest))
+		return
+	}
+	if err := s.validateDeletionPublishTarget(ctx, payload.Event); err != nil {
 		writeJSON(w, nil, httpError(err.Error(), http.StatusBadRequest))
 		return
 	}
@@ -358,365 +903,85 @@ func summarizeRelayFailures(results []nostrx.PublishRelayResult) string {
 	return "No relay accepted this event. " + strings.Join(notes, "; ")
 }
 
-func (s *Server) handleProfileAPI(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	pubkey, err := nostrx.DecodeIdentifier(viewerFromRequest(r))
-	if err != nil || pubkey == "" {
-		writeJSON(w, nil, httpError("valid pubkey is required", http.StatusBadRequest))
-		return
-	}
-	profile := s.profile(r.Context(), pubkey)
-	if event, err := s.store.LatestReplaceable(r.Context(), pubkey, nostrx.KindProfileMetadata); err == nil && event != nil {
-		profile = nostrx.ParseProfile(pubkey, event)
-	} else if s.store.ShouldRefresh(r.Context(), "author", pubkey, 10*time.Minute) {
-		// Explicit profile lookup: allow an on-demand refresh on cache miss.
-		s.refreshAuthor(r.Context(), pubkey, s.requestRelays(r))
-		if refreshed, refreshErr := s.store.LatestReplaceable(r.Context(), pubkey, nostrx.KindProfileMetadata); refreshErr == nil && refreshed != nil {
-			profile = nostrx.ParseProfile(pubkey, refreshed)
-		}
-	}
-	content := ""
-	eventID := ""
-	if profile.Event != nil {
-		content = profile.Event.Content
-		eventID = profile.Event.ID
-	}
-	writeJSON(w, map[string]any{
-		"pubkey":       profile.PubKey,
-		"name":         profile.Name,
-		"display_name": profile.Display,
-		"about":        profile.About,
-		"picture":      profile.Picture,
-		"website":      profile.Website,
-		"nip05":        profile.NIP05,
-		"event_id":     eventID,
-		"content":      content,
-	}, nil)
-}
-
-type profileAPIEntry struct {
-	Name        string `json:"name"`
-	DisplayName string `json:"display_name"`
-	AvatarURL   string `json:"avatar_url"`
-}
-
-func profileHasRenderedMetadata(profile nostrx.Profile) bool {
-	return strings.TrimSpace(profile.Display) != "" ||
-		strings.TrimSpace(profile.Name) != "" ||
-		strings.TrimSpace(profile.Picture) != ""
-}
-
-func profilePubkeysFromQuery(r *http.Request, maxN int) []string {
-	return queryTokensFromRequest(r, "pubkey", maxN, func(token string) string {
-		pubkey, err := nostrx.DecodeIdentifier(token)
-		if err != nil {
-			return ""
-		}
-		return pubkey
-	})
-}
-
-func (s *Server) handleProfilesAPI(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	pubkeys := profilePubkeysFromQuery(r, 32)
-	if len(pubkeys) == 0 {
-		writeJSON(w, map[string]profileAPIEntry{}, nil)
-		return
-	}
-	timeout := requestTimeout(s.cfg.RequestTimeout)
-	if timeout <= 0 {
-		timeout = 10 * time.Second
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), timeout)
-	defer cancel()
-	relays := s.requestRelays(r)
-	profiles := s.contactProfiles(ctx, pubkeys)
-	for _, pubkey := range pubkeys {
-		if profileHasRenderedMetadata(profiles[pubkey]) {
-			continue
-		}
-		if s.nostr == nil {
-			continue
-		}
-		if !s.store.ShouldRefresh(ctx, "author", pubkey, 10*time.Minute) {
-			continue
-		}
-		s.refreshAuthor(ctx, pubkey, relays)
-		profiles[pubkey] = s.profile(ctx, pubkey)
-	}
-	out := make(map[string]profileAPIEntry, len(pubkeys))
-	for _, pubkey := range pubkeys {
-		profile := profiles[pubkey]
-		out[pubkey] = profileAPIEntry{
-			Name:        profile.Name,
-			DisplayName: profile.Display,
-			AvatarURL:   avatarSrcFor(pubkey, profile.Picture),
-		}
-	}
-	writeJSON(w, out, nil)
-}
-
 func (s *Server) handleRelayInsightAPI(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	pubkey, err := nostrx.DecodeIdentifier(viewerFromRequest(r))
+	target := viewerFromRequest(r)
+	if strings.TrimSpace(target) == "" {
+		target = seedPubkeyFromRequest(r)
+	}
+	pubkey, err := nostrx.DecodeIdentifier(target)
 	if err != nil || pubkey == "" {
 		writeJSON(w, nil, httpError("valid pubkey is required", http.StatusBadRequest))
 		return
 	}
 	relays := s.requestRelays(r)
-	if s.store.ShouldRefresh(r.Context(), "author", pubkey, 10*time.Minute) {
+	sessionRelays := nostrx.NormalizeRelayList(nostrx.ParseRelayParams(relayParamsFromRequest(r)), nostrx.MaxRelays)
+	if !s.shareServerMode() && s.store.ShouldRefresh(r.Context(), "author", pubkey, 10*time.Minute) {
 		s.refreshAuthor(r.Context(), pubkey, relays)
 	}
-	writeJSON(w, s.buildRelayInsight(r.Context(), pubkey, relays), nil)
+	writeJSON(w, s.buildRelayInsight(r.Context(), pubkey, relays, sessionRelays), nil)
 }
 
-type mentionCandidate struct {
-	PubKey string   `json:"pubkey"`
-	Name   string   `json:"name"`
-	NPub   string   `json:"npub"`
-	NRef   string   `json:"nref"`
-	Relays []string `json:"relays,omitempty"`
-	Source string   `json:"source"`
+type sharePreviewWarmRequest struct {
+	NoteID string `json:"note_id"`
 }
 
-func (s *Server) handleMentionsAPI(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+type sharePreviewWarmResponse struct {
+	NoteID  string `json:"note_id"`
+	Warmed  bool   `json:"warmed"`
+	Cached  bool   `json:"cached"`
+	Already bool   `json:"already"`
+}
+
+func (s *Server) handleSharePreviewWarm(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	pubkey, err := nostrx.DecodeIdentifier(viewerFromRequest(r))
-	if err != nil || pubkey == "" {
-		writeJSON(w, nil, httpError("valid pubkey is required", http.StatusBadRequest))
+	viewer, err := nostrx.DecodeIdentifier(viewerFromRequest(r))
+	if err != nil || strings.TrimSpace(viewer) == "" {
+		writeJSON(w, nil, httpError("login required", http.StatusUnauthorized))
 		return
 	}
-	rootID := strings.TrimSpace(r.URL.Query().Get("root_id"))
+	var payload sharePreviewWarmRequest
+	if err := json.NewDecoder(io.LimitReader(r.Body, 8<<10)).Decode(&payload); err != nil {
+		writeJSON(w, nil, httpError("invalid JSON payload", http.StatusBadRequest))
+		return
+	}
+	noteID := nostrx.CanonicalHex64(payload.NoteID)
+	if noteID == "" {
+		writeJSON(w, nil, httpError("invalid note_id", http.StatusBadRequest))
+		return
+	}
+	if cached := s.eventFromStore(r.Context(), noteID); cached != nil {
+		already := !s.store.ShouldRefresh(r.Context(), "share_preview", noteID, sharePreviewWarmTTL)
+		s.store.MarkRefreshed(r.Context(), "share_preview", noteID)
+		writeJSON(w, sharePreviewWarmResponse{
+			NoteID:  noteID,
+			Warmed:  true,
+			Cached:  true,
+			Already: already,
+		}, nil)
+		return
+	}
 	relays := s.requestRelays(r)
-
-	contactKeys, relayHints := s.mentionContactsAndRelays(r.Context(), pubkey)
-	contactProfiles := s.contactProfiles(r.Context(), contactKeys)
-	candidates := make([]mentionCandidate, 0, len(contactKeys)+32)
-	sortKeys := make([]string, 0, len(contactKeys)+32)
-	seen := make(map[string]bool, len(contactKeys)+32)
-	appendCandidate := func(source string, key string, profile nostrx.Profile, relays []string) {
-		if key == "" || seen[key] {
-			return
-		}
-		seen[key] = true
-		name := authorLabel(contactProfiles, key)
-		if profile.PubKey != "" {
-			name = nostrx.DisplayName(profile)
-		}
-		normalizedRelays := nostrx.NormalizeRelayList(relays, nostrx.MaxRelays)
-		npub := nostrx.EncodeNPub(key)
-		nref := npub
-		if len(normalizedRelays) > 0 {
-			if encoded := nostrx.EncodeNProfile(key, normalizedRelays); encoded != "" {
-				nref = encoded
-			}
-		}
-		candidates = append(candidates, mentionCandidate{
-			PubKey: key,
-			Name:   name,
-			NPub:   npub,
-			NRef:   nref,
-			Relays: normalizedRelays,
-			Source: source,
-		})
-		sortKeys = append(sortKeys, strings.ToLower(name))
-	}
-	for _, key := range contactKeys {
-		appendCandidate("contact", key, contactProfiles[key], relayHints[key])
-	}
-	if rootID != "" {
-		threadKeys := s.threadMentionPubKeys(r.Context(), rootID, relays)
-		threadProfiles := s.contactProfiles(r.Context(), threadKeys)
-		for _, key := range threadKeys {
-			appendCandidate("thread", key, threadProfiles[key], nil)
-		}
-	}
-	indices := make([]int, len(candidates))
-	for i := range indices {
-		indices[i] = i
-	}
-	sort.SliceStable(indices, func(i, j int) bool {
-		a, b := indices[i], indices[j]
-		if sortKeys[a] == sortKeys[b] {
-			return candidates[a].PubKey < candidates[b].PubKey
-		}
-		return sortKeys[a] < sortKeys[b]
-	})
-	sorted := make([]mentionCandidate, len(candidates))
-	for i, idx := range indices {
-		sorted[i] = candidates[idx]
-	}
-	writeJSON(w, map[string]any{
-		"pubkey":     pubkey,
-		"root_id":    rootID,
-		"candidates": sorted,
-	}, nil)
-}
-
-// threadMentionPubKeys returns up to mentionThreadParticipantLimit distinct
-// author pubkeys participating in the thread that contains rootID. It uses the
-// store-backed root_id index so we don't hydrate hundreds of reply events just
-// to harvest authors. Falls back to fetching the selected event when the root
-// id has not been indexed yet (e.g. a thread the viewer just navigated to).
-func (s *Server) threadMentionPubKeys(ctx context.Context, rootID string, relays []string) []string {
-	const mentionThreadParticipantLimit = 250
-	if rootID == "" {
-		return nil
-	}
-	authors, err := s.store.DistinctAuthorsUnderRoot(ctx, rootID, mentionThreadParticipantLimit)
-	if err != nil {
-		slog.Warn("mentions: distinct authors under root failed", "root", short(rootID), "err", err)
-	}
-	if len(authors) > 0 {
-		return authors
-	}
-	selected := s.eventByID(ctx, rootID, relays)
-	if selected == nil {
-		return nil
-	}
-	actualRootID := thread.RootID(*selected)
-	if actualRootID == "" {
-		actualRootID = selected.ID
-	}
-	if actualRootID != rootID {
-		fallback, err := s.store.DistinctAuthorsUnderRoot(ctx, actualRootID, mentionThreadParticipantLimit)
-		if err != nil {
-			slog.Warn("mentions: distinct authors under canonical root failed", "root", short(actualRootID), "err", err)
-		}
-		if len(fallback) > 0 {
-			return fallback
-		}
-	}
-	return []string{selected.PubKey}
-}
-
-// mentionContactsAndRelays returns the viewer's contact list plus a relay-hint
-// map keyed by pubkey, loading the follow-list event at most once.
-func (s *Server) mentionContactsAndRelays(ctx context.Context, pubkey string) ([]string, map[string][]string) {
-	const mentionFollowLimit = 600
-	event, err := s.store.LatestReplaceable(ctx, pubkey, nostrx.KindFollowList)
-	if err != nil {
-		slog.Warn("mentions: load follow-list event failed", "pubkey", short(pubkey), "err", err)
-	}
-	contacts, err := s.store.FollowingPubkeys(ctx, pubkey, mentionFollowLimit)
-	if err != nil {
-		slog.Warn("mentions: load following pubkeys failed", "pubkey", short(pubkey), "err", err)
-	}
-	if err != nil || len(contacts) == 0 {
-		contacts = nostrx.FollowPubkeys(event)
-	}
-	hints := nostrx.FollowRelayHints(event, 4000)
-	relayHints := make(map[string][]string, len(hints))
-	for _, hint := range hints {
-		relayHints[hint.PubKey] = append(relayHints[hint.PubKey], hint.Relay)
-	}
-	for key, relays := range relayHints {
-		relayHints[key] = nostrx.NormalizeRelayList(relays, nostrx.MaxRelays)
-	}
-	return contacts, relayHints
-}
-
-// handleEventAPI returns a single Nostr event as JSON keyed by its hex id.
-// The response is fully content-addressed and immutable (events are signed
-// and not editable), so we return an aggressive `immutable` Cache-Control so
-// CloudFront and viewer browsers can cache the bytes effectively forever.
-//
-// Cache misses are short-cached so a 404 doesn't keep the renderer hot when
-// crawlers ping random ids; clients (or replay later) can re-request.
-func (s *Server) handleEventAPI(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	raw := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/api/event/"))
-	id := strings.ToLower(thread.NormalizeHexEventID(raw))
-	if !isBare64Hex(id) {
-		writeJSON(w, nil, httpError("invalid event id", http.StatusBadRequest))
-		return
-	}
-	if matchesETag(r, id) {
-		writeNotModifiedImmutable(w, id)
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout(s.cfg.RequestTimeout))
 	defer cancel()
-	event := s.eventFromStore(ctx, id)
+	event := s.eventByIDEx(ctx, noteID, relays, true)
 	if event == nil {
-		setNegativeCache(w)
-		writeJSON(w, nil, httpError("event not found", http.StatusNotFound))
+		writeJSON(w, nil, httpError("note not found", http.StatusNotFound))
 		return
 	}
-	setImmutableCache(w, id)
-	writeJSON(w, map[string]any{"event": event}, nil)
-}
-
-func (s *Server) handleBookmarksAPI(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
+	s.store.MarkRefreshed(r.Context(), "share_preview", noteID)
+	if s.store.ShouldRefresh(r.Context(), "author", event.PubKey, 10*time.Minute) {
+		s.refreshAuthor(ctx, event.PubKey, relays)
 	}
-	pubkey, err := nostrx.DecodeIdentifier(viewerFromRequest(r))
-	if err != nil || pubkey == "" {
-		writeJSON(w, nil, httpError("valid pubkey is required", http.StatusBadRequest))
-		return
-	}
-	event := s.bookmarksEvent(r.Context(), pubkey, s.requestRelays(r))
-	entries := nostrx.BookmarkEntries(event, maxBookmarkItems)
-	ids := make([]string, len(entries))
-	payloadEntries := make([]map[string]string, len(entries))
-	for i, entry := range entries {
-		ids[i] = entry.ID
-		payloadEntries[i] = map[string]string{"id": entry.ID, "relay": entry.Relay}
-	}
-	eventID := ""
-	var createdAt int64
-	if event != nil {
-		eventID = event.ID
-		createdAt = event.CreatedAt
-	}
-	writeJSON(w, map[string]any{
-		"pubkey":     pubkey,
-		"event_id":   eventID,
-		"created_at": createdAt,
-		"ids":        ids,
-		"entries":    payloadEntries,
-		"count":      len(ids),
-	}, nil)
-}
-
-func (s *Server) handleMuteListAPI(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	w.Header().Set("Cache-Control", "private, no-store")
-	pubkey, err := nostrx.DecodeIdentifier(viewerFromRequest(r))
-	if err != nil || pubkey == "" {
-		writeJSON(w, nil, httpError("valid pubkey is required", http.StatusBadRequest))
-		return
-	}
-	ctx, cancel := context.WithTimeout(r.Context(), requestTimeout(s.cfg.RequestTimeout))
-	defer cancel()
-	mutedPubkeys, err := s.store.MutedPubkeys(ctx, pubkey, nostrx.MaxMuteListTagRows)
-	if err != nil {
-		slog.Warn("mute-list: MutedPubkeys failed", "pubkey", short(pubkey), "err", err)
-		writeJSON(w, nil, httpError("mute list unavailable", http.StatusServiceUnavailable))
-		return
-	}
-	writeJSON(w, map[string]any{
-		"pubkey":        pubkey,
-		"muted_pubkeys": mutedPubkeys,
+	writeJSON(w, sharePreviewWarmResponse{
+		NoteID: noteID,
+		Warmed: true,
+		Cached: true,
 	}, nil)
 }

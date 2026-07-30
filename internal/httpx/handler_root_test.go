@@ -21,7 +21,7 @@ func TestTryNip19RedirectNPub(t *testing.T) {
 	if !ok {
 		t.Fatalf("tryNip19Redirect(%q) ok = false", npub)
 	}
-	want := "/u/" + testHexPubkey
+	want := "/u/" + npub
 	if got != want {
 		t.Fatalf("tryNip19Redirect(npub) = %q, want %q", got, want)
 	}
@@ -36,7 +36,7 @@ func TestTryNip19RedirectNProfile(t *testing.T) {
 	if !ok {
 		t.Fatalf("tryNip19Redirect(%q) ok = false", nprofile)
 	}
-	want := "/u/" + testHexPubkey
+	want := "/u/" + nprofile
 	if got != want {
 		t.Fatalf("tryNip19Redirect(nprofile) = %q, want %q", got, want)
 	}
@@ -78,7 +78,7 @@ func TestTryNip19RedirectStripNostrPrefix(t *testing.T) {
 	if !ok {
 		t.Fatalf("tryNip19Redirect(nostr:npub) ok = false")
 	}
-	if got != "/u/"+testHexPubkey {
+	if got != "/u/"+npub {
 		t.Fatalf("tryNip19Redirect(nostr:npub) = %q", got)
 	}
 }

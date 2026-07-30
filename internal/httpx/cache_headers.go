@@ -11,14 +11,16 @@ import (
 // Presets:
 //
 //   - Content-addressed (HTML): the URL plus the supplied etag uniquely
-//     identify the rendered bytes for the moment, but new replies on a thread
-//     or new posts on a profile invalidate it. Browser max-age stays at zero so
-//     render/template fixes are revalidated after deploys, while s-maxage is
-//     kept short (5min) so anonymous edge cache staleness is bounded.
+//     identify the rendered bytes for the moment, but new posts on a profile
+//     invalidate it. Browser max-age stays at zero so render/template fixes are
+//     revalidated after deploys, while s-maxage is kept short (5min) so
+//     anonymous edge cache staleness is bounded.
+//   - Thread page (HTML): same browser behavior, but a longer shared-cache TTL.
+//     Threads are the hottest bot target and are content-addressed by URL+ETag;
+//     stale-while-revalidate lets CloudFront absorb crawler bursts while the
+//     origin recomputes.
 //   - Content-addressed (long, e.g. /og/<id>): the response is fully derived
 //     from an immutable event, so a 24h s-maxage is safe.
-//   - Immutable (e.g. /api/event/<id>): signed Nostr events are
-//     content-addressed forever; max-age and s-maxage are set to one year.
 //   - Short: the response can stale-cache briefly (e.g. pagination fragments).
 //   - Negative: a 404 / soft-miss; cache long enough to absorb crawler retry
 //     storms without keeping the renderer hot for the same bad URL.
@@ -27,10 +29,11 @@ import (
 // njump-style traffic behaves consistently in front of ptxt-nstr.
 const (
 	cacheControlContentAddressed     = "public, max-age=0, s-maxage=300, stale-while-revalidate=604800"
+	cacheControlThreadPage           = "public, max-age=0, s-maxage=3600, stale-while-revalidate=604800"
 	cacheControlContentAddressedLong = "public, max-age=300, s-maxage=86400, stale-while-revalidate=604800"
-	cacheControlImmutable            = "public, max-age=31536000, s-maxage=31536000, immutable"
 	cacheControlShortFmt             = "public, max-age=%d, s-maxage=%d"
 	cacheControlNegative             = "public, max-age=300, s-maxage=1200"
+	cacheControlThreadNegative       = "public, max-age=0, s-maxage=30"
 )
 
 // setContentAddressedCache marks a response as cacheable (short s-maxage to
@@ -45,6 +48,21 @@ func setContentAddressedCache(w http.ResponseWriter, etag string) {
 	w.Header().Set("ETag", quotedETag(etag))
 }
 
+func setThreadNegativeCache(w http.ResponseWriter) {
+	if w == nil {
+		return
+	}
+	w.Header().Set("Cache-Control", cacheControlThreadNegative)
+}
+
+func setThreadPageCache(w http.ResponseWriter, etag string) {
+	if w == nil || etag == "" {
+		return
+	}
+	w.Header().Set("Cache-Control", cacheControlThreadPage)
+	w.Header().Set("ETag", quotedETag(etag))
+}
+
 // setContentAddressedCacheLong is the same as setContentAddressedCache but
 // with a 24-hour shared cache TTL. Use only when the response is fully
 // derived from an immutable event (e.g. /og/<id> rendering).
@@ -54,18 +72,6 @@ func setContentAddressedCacheLong(w http.ResponseWriter, etag string) {
 	}
 	w.Header().Set("Cache-Control", cacheControlContentAddressedLong)
 	w.Header().Set("ETag", quotedETag(etag))
-}
-
-// setImmutableCache marks a response as immutable (1y max-age) for true
-// content-addressed payloads like raw Nostr events fetched by id.
-func setImmutableCache(w http.ResponseWriter, etag string) {
-	if w == nil {
-		return
-	}
-	w.Header().Set("Cache-Control", cacheControlImmutable)
-	if etag != "" {
-		w.Header().Set("ETag", quotedETag(etag))
-	}
 }
 
 // setShortCache marks a response as cacheable for `seconds` in the browser and
@@ -96,8 +102,8 @@ func setNegativeCache(w http.ResponseWriter) {
 
 // matchesETag returns true when If-None-Match on the request matches etag
 // (either bare or quoted). Callers that get true should respond with 304 and
-// the same cache shape as the corresponding 200: use writeNotModified,
-// writeNotModifiedLong, or writeNotModifiedImmutable as appropriate.
+// the same cache shape as the corresponding 200: use writeNotModified
+// or writeNotModifiedLong as appropriate.
 func matchesETag(r *http.Request, etag string) bool {
 	if r == nil || etag == "" {
 		return false
@@ -129,6 +135,14 @@ func writeNotModified(w http.ResponseWriter, etag string) {
 	w.WriteHeader(http.StatusNotModified)
 }
 
+func writeThreadPageNotModified(w http.ResponseWriter, etag string) {
+	if w == nil || etag == "" {
+		return
+	}
+	setThreadPageCache(w, etag)
+	w.WriteHeader(http.StatusNotModified)
+}
+
 // writeNotModifiedLong writes a 304 with the long Cache-Control + ETag. Use
 // when the underlying response is fully derived from an immutable event.
 func writeNotModifiedLong(w http.ResponseWriter, etag string) {
@@ -136,15 +150,5 @@ func writeNotModifiedLong(w http.ResponseWriter, etag string) {
 		return
 	}
 	setContentAddressedCacheLong(w, etag)
-	w.WriteHeader(http.StatusNotModified)
-}
-
-// writeNotModifiedImmutable writes a 304 with immutable Cache-Control + ETag.
-// Use for content-addressed payloads that never change (e.g. raw events by id).
-func writeNotModifiedImmutable(w http.ResponseWriter, etag string) {
-	if w == nil || etag == "" {
-		return
-	}
-	setImmutableCache(w, etag)
 	w.WriteHeader(http.StatusNotModified)
 }

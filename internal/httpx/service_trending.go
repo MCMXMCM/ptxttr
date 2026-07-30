@@ -2,11 +2,18 @@ package httpx
 
 import (
 	"context"
+	"math"
 	"sort"
 	"time"
 
 	"ptxt-nstr/internal/nostrx"
 	"ptxt-nstr/internal/store"
+)
+
+const (
+	trendingDegradedMinItems  = 10
+	trendingHydrationTopLimit = 48
+	trendingHydrationTail     = 16
 )
 
 func trendingNoteIsReply(event nostrx.Event) bool {
@@ -67,8 +74,8 @@ func (s *Server) trendingItems(ctx context.Context, timeframe string, cohortKey 
 	timeframe = normalizeTrendingTimeframe(timeframe)
 	now := time.Now()
 	minRecompute := s.cfg.TrendingMinRecompute
-	if minRecompute <= 0 {
-		minRecompute = 20 * time.Minute
+	if minRecompute <= 0 || minRecompute > 10*time.Minute {
+		minRecompute = 10 * time.Minute
 	}
 	items, computedAt, err := s.store.ReadTrendingCache(ctx, timeframe, cohortKey)
 	if err != nil {
@@ -80,20 +87,19 @@ func (s *Server) trendingItems(ctx context.Context, timeframe string, cohortKey 
 		return items
 	}
 	s.refreshTrendingCacheAsync(timeframe, cohortKey, authors)
-	if cacheOnly {
-		if cohortKey != "" {
-			if global, _, gerr := s.store.ReadTrendingCache(ctx, timeframe, ""); gerr == nil && len(global) > 0 {
-				s.metrics.Add("trending.sidebar_global_stale_fallback", 1)
-				return s.filterTrendingItemsToAuthors(ctx, global, authors)
-			}
+	if cohortKey != "" {
+		if global, _, gerr := s.store.ReadTrendingCache(ctx, timeframe, ""); gerr == nil && len(global) > 0 {
+			s.metrics.Add("trending.sidebar_global_stale_fallback", 1)
+			return s.filterTrendingItemsToAuthors(ctx, global, authors)
 		}
 		if cohortKey != "" {
 			s.metrics.Add("trending_cache_empty_by_cohort", 1)
 		}
-		return []store.TrendingItem{}
 	}
-	items, _ = s.computeAndStoreCohortTrending(ctx, timeframe, cohortKey, authors, now)
-	return items
+	if !cacheOnly {
+		s.metrics.Add("trending.cache_miss.foreground_empty", 1)
+	}
+	return []store.TrendingItem{}
 }
 
 func (s *Server) filterTrendingItemsToAuthors(ctx context.Context, items []store.TrendingItem, authors []string) []store.TrendingItem {
@@ -123,145 +129,127 @@ func (s *Server) computeAndStoreCohortTrending(ctx context.Context, timeframe st
 		s.metrics.Add("trending.recompute_error", 1)
 		return nil, err
 	}
+	if len(items) < trendingDegradedMinItems {
+		if existing, _, readErr := s.store.ReadTrendingCache(ctx, timeframe, cohortKey); readErr == nil && len(existing) >= trendingDegradedMinItems {
+			s.metrics.Add("trending.recompute_preserve_warm_cache", 1)
+			s.hydrateTrendingCandidates(existing)
+			return existing, nil
+		}
+	}
 	if err := s.store.WriteTrendingCache(ctx, timeframe, cohortKey, items, now.Unix()); err != nil {
 		s.metrics.Add("trending.recompute_error", 1)
 	}
+	s.metrics.Add("trending.recomputed", 1)
+	s.hydrateTrendingCandidates(items)
 	return items, nil
 }
 
 func (s *Server) buildTrendingItemsFromRecent(ctx context.Context, timeframe string, authors []string, now time.Time) ([]store.TrendingItem, error) {
 	const candidateLimit = trendingCacheLimit * 8
-	scanLimit := trendingScanLimit
 	timeframe = normalizeTrendingTimeframe(timeframe)
 	since := trendingSince(timeframe, now)
-	membership := authorMembership{}
-	if len(authors) > 0 {
-		membership = newAuthorMembership(authors)
-	}
-	candidates := make([]nostrx.Event, 0, candidateLimit)
-	seen := make(map[string]struct{}, candidateLimit)
-	cursor := int64(0)
-	cursorID := ""
-	scanned := 0
-	for scanned < scanLimit && len(candidates) < candidateLimit {
-		batchLimit := min(scanFeedChunkSize, scanLimit-scanned)
-		if batchLimit <= 0 {
-			break
-		}
-		batch, err := s.store.RecentSummariesByKinds(ctx, noteTimelineKinds, since, cursor, cursorID, batchLimit)
-		if err != nil || len(batch) == 0 {
-			break
-		}
-		scanned += len(batch)
-		for _, event := range batch {
-			if len(membership.exact) > 0 && !membership.Contains(event.PubKey) {
-				continue
-			}
-			if event.ID == "" {
-				continue
-			}
-			if _, ok := seen[event.ID]; ok {
-				continue
-			}
-			seen[event.ID] = struct{}{}
-			candidates = append(candidates, event)
-			if len(candidates) >= candidateLimit {
-				break
-			}
-		}
-		last := batch[len(batch)-1]
-		cursor = last.CreatedAt
-		cursorID = last.ID
-		if len(batch) < batchLimit {
-			break
-		}
+	candidates, err := s.store.TrendingCandidatesByKinds(ctx, noteTimelineKinds, since, authors, candidateLimit)
+	if err != nil {
+		return nil, err
 	}
 	if len(candidates) == 0 {
 		s.metrics.Add("trending.candidates.empty", 1)
 		return []store.TrendingItem{}, nil
 	}
-	s.metrics.Add("trending.candidates.scanned", int64(scanned))
 	s.metrics.Add("trending.candidates.selected", int64(len(candidates)))
-	ids := make([]string, 0, len(candidates))
-	for _, candidate := range candidates {
-		ids = append(ids, candidate.ID)
-	}
-	stats, err := s.store.ReplyStatsByNoteIDs(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
-	reactStats, _, rerr := s.store.ReactionStatsByNoteIDs(ctx, ids, "")
-	if rerr != nil {
-		reactStats = nil
+	for idx := range candidates {
+		candidates[idx].Score = trendingEngagementScore(candidates[idx].ReplyCount, candidates[idx].ReactionCount)
+		candidates[idx].HotScore = trendingHotScore(candidates[idx].Score, candidates[idx].NoteCreatedAt, timeframe, now)
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
-		ri := reactStats[candidates[i].ID].Total
-		rj := reactStats[candidates[j].ID].Total
-		// Score blends direct replies with deduped reaction total (up+down); tune weights here if needed.
-		left := trendingEngagementScore(stats[candidates[i].ID].DirectReplies, ri)
-		right := trendingEngagementScore(stats[candidates[j].ID].DirectReplies, rj)
-		if left != right {
-			return left > right
-		}
-		if candidates[i].CreatedAt != candidates[j].CreatedAt {
-			return candidates[i].CreatedAt > candidates[j].CreatedAt
-		}
-		return candidates[i].ID > candidates[j].ID
+		return trendingItemLess(candidates[i], candidates[j])
 	})
 	items := make([]store.TrendingItem, 0, min(len(candidates), trendingCacheLimit))
 	for _, candidate := range candidates {
-		if trendingNoteIsReply(candidate) {
-			continue
-		}
-		replyCount := stats[candidate.ID].DirectReplies
-		rTot := 0
-		if reactStats != nil {
-			rTot = reactStats[candidate.ID].Total
-		}
-		if replyCount <= 0 && rTot <= 0 {
-			continue
-		}
-		score := trendingEngagementScore(replyCount, rTot)
-		items = append(items, store.TrendingItem{
-			NoteID:     candidate.ID,
-			ReplyCount: replyCount,
-			Score:      score,
-		})
+		items = append(items, candidate)
 		if len(items) >= trendingCacheLimit {
 			break
 		}
 	}
-	if len(items) < trendingSidebarBackfillMin && len(candidates) > len(items) {
-		inRanked := make(map[string]struct{}, len(items))
-		for _, item := range items {
-			inRanked[item.NoteID] = struct{}{}
-		}
-		sort.SliceStable(candidates, func(i, j int) bool {
-			if candidates[i].CreatedAt != candidates[j].CreatedAt {
-				return candidates[i].CreatedAt > candidates[j].CreatedAt
-			}
-			return candidates[i].ID > candidates[j].ID
-		})
-		for _, candidate := range candidates {
-			if _, ok := inRanked[candidate.ID]; ok {
-				continue
-			}
-			if trendingNoteIsReply(candidate) {
-				continue
-			}
-			items = append(items, store.TrendingItem{
-				NoteID:     candidate.ID,
-				ReplyCount: stats[candidate.ID].DirectReplies,
-				Score:      stats[candidate.ID].DirectReplies,
-			})
-			inRanked[candidate.ID] = struct{}{}
-			if len(items) >= trendingCacheLimit || len(items) >= trendingSidebarBackfillMin {
-				break
-			}
-		}
-	}
 	s.metrics.Add("trending.items.computed", int64(len(items)))
 	return items, nil
+}
+
+func trendingHalfLife(timeframe string) time.Duration {
+	if normalizeTrendingTimeframe(timeframe) == trending1w {
+		return 36 * time.Hour
+	}
+	return 6 * time.Hour
+}
+
+func trendingHotScore(engagement int, createdAt int64, timeframe string, now time.Time) float64 {
+	if engagement <= 0 || createdAt <= 0 {
+		return 0
+	}
+	age := now.Sub(time.Unix(createdAt, 0))
+	if age < 0 {
+		age = 0
+	}
+	halfLife := trendingHalfLife(timeframe).Seconds()
+	if halfLife <= 0 {
+		return float64(engagement)
+	}
+	return float64(engagement) * math.Pow(0.5, age.Seconds()/halfLife)
+}
+
+func trendingItemLess(left, right store.TrendingItem) bool {
+	if left.HotScore != right.HotScore {
+		return left.HotScore > right.HotScore
+	}
+	leftEngagement := left.ReplyCount + left.ReactionCount
+	rightEngagement := right.ReplyCount + right.ReactionCount
+	if leftEngagement != rightEngagement {
+		return leftEngagement > rightEngagement
+	}
+	if left.ReplyCount != right.ReplyCount {
+		return left.ReplyCount > right.ReplyCount
+	}
+	if left.ReactionCount != right.ReactionCount {
+		return left.ReactionCount > right.ReactionCount
+	}
+	if left.NoteCreatedAt != right.NoteCreatedAt {
+		return left.NoteCreatedAt > right.NoteCreatedAt
+	}
+	return left.NoteID > right.NoteID
+}
+
+func (s *Server) hydrateTrendingCandidates(items []store.TrendingItem) {
+	if s == nil || len(items) == 0 || !s.allowLegacyWarmers() {
+		return
+	}
+	limit := min(len(items), trendingHydrationTopLimit)
+	ids := make([]string, 0, limit+trendingHydrationTail)
+	seen := make(map[string]struct{}, limit+trendingHydrationTail)
+	add := func(id string) {
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	for i := 0; i < limit; i++ {
+		add(items[i].NoteID)
+	}
+	for i := len(items) - 1; i >= 0 && len(ids) < limit+trendingHydrationTail; i-- {
+		add(items[i].NoteID)
+	}
+	if len(ids) == 0 {
+		return
+	}
+	s.metrics.Add("trending.hydration_candidates", int64(len(ids)))
+	relays := s.crawlRelays(nil)
+	s.touchHydrationTargets(s.ctx, noteReplyWarmTargets(ids))
+	s.touchHydrationTargets(s.ctx, noteReactionWarmTargets(ids))
+	s.enqueueWarmNotesForViewer("", "noteReplies", ids, relays)
+	s.enqueueWarmNotesForViewer("", "noteReactions", ids, relays)
 }
 
 func (s *Server) refreshTrendingCacheAsync(timeframe string, cohortKey string, authors []string) {

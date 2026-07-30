@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,7 +15,67 @@ import (
 	"github.com/coder/websocket"
 
 	"ptxt-nstr/internal/nostrx"
+	"ptxt-nstr/internal/store"
 )
+
+func TestDefaultSeedGuestFeedSnapshotReadyRequiresNonSeedAuthor(t *testing.T) {
+	seed := fmt.Sprintf("%064x", 1)
+	other := fmt.Sprintf("%064x", 2)
+	resolved := requestAuthors{
+		allAuthors:      []string{other, seed},
+		wotViewerPubkey: seed,
+		loggedOut:       true,
+		wotEnabled:      true,
+	}
+	seedOnly := &FeedPageData{
+		Feed: []nostrx.Event{
+			{ID: strings.Repeat("a", 64), PubKey: seed, Kind: nostrx.KindTextNote, Content: "seed only"},
+		},
+	}
+	if defaultSeedGuestFeedSnapshotReady(seedOnly, resolved) {
+		t.Fatal("expected seed-only guest snapshot to be rejected")
+	}
+
+	expanded := &FeedPageData{
+		Feed: []nostrx.Event{
+			{ID: strings.Repeat("b", 64), PubKey: seed, Kind: nostrx.KindTextNote, Content: "seed"},
+			{ID: strings.Repeat("c", 64), PubKey: other, Kind: nostrx.KindTextNote, Content: "frontier"},
+		},
+	}
+	if !defaultSeedGuestFeedSnapshotReady(expanded, resolved) {
+		t.Fatal("expected guest snapshot with frontier author notes to be accepted")
+	}
+}
+
+func TestMergePersistedDefaultSeedGuestFeedIntoShellRejectsSeedOnlySnapshot(t *testing.T) {
+	srv, st := newTestServer(t, testServerOptions{})
+	ctx := context.Background()
+	req := srv.canonicalDefaultLoggedOutGuestFeedRequest()
+	seed, err := nostrx.DecodeIdentifier(defaultLoggedOutWOTSeedNPub)
+	if err != nil {
+		t.Fatalf("DecodeIdentifier() error = %v", err)
+	}
+	snap := &store.DefaultSeedGuestFeedSnapshot{
+		RelaysHash: hashStringSlice(req.Relays),
+		Feed: []nostrx.Event{
+			{ID: strings.Repeat("d", 64), PubKey: seed, Kind: nostrx.KindTextNote, Content: "seed only"},
+		},
+		ComputedAtUnix: time.Now().Unix(),
+	}
+	if err := st.SaveEvent(ctx, snap.Feed[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetDefaultSeedGuestFeedSnapshot(ctx, snap); err != nil {
+		t.Fatalf("SetDefaultSeedGuestFeedSnapshot() error = %v", err)
+	}
+	data := &FeedPageData{}
+	if srv.mergePersistedDefaultSeedGuestFeedIntoShell(ctx, data, req) {
+		t.Fatal("expected seed-only persisted guest snapshot to be rejected")
+	}
+	if len(data.Feed) != 0 {
+		t.Fatalf("expected empty feed after rejecting seed-only snapshot, got %d events", len(data.Feed))
+	}
+}
 
 func TestSeedCrawlerPerTickTimeout(t *testing.T) {
 	t.Parallel()
@@ -128,7 +189,7 @@ func TestPrewarmLoggedOutSeedNowEnqueuesAllSeedFollowsAcrossPages(t *testing.T) 
 func TestPrewarmDefaultLoggedOutSeedFailsWithoutFollowMaterialization(t *testing.T) {
 	srv, _ := newTestServer(t, testServerOptions{relayTimeout: 50 * time.Millisecond})
 	ctx := context.Background()
-	// No relays configured in test New() — Jack follow list cannot load.
+	// No relays configured in test New() — Gigi follow list cannot load.
 	err := srv.prewarmBootstrapLoggedOutSeed(ctx, defaultLoggedOutWOTSeedNPub, defaultLoggedOutWOTDepth)
 	if err == nil {
 		t.Fatal("expected error when follow list cannot be materialized")

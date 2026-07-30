@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -40,17 +42,69 @@ func writeJSON(w http.ResponseWriter, value any, err error) {
 
 type statusRecorder struct {
 	http.ResponseWriter
-	status int
+	status      int
+	wroteHeader bool
 }
 
 func (r *statusRecorder) WriteHeader(status int) {
+	if r.wroteHeader {
+		return
+	}
+	r.wroteHeader = true
 	r.status = status
 	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *statusRecorder) Write(body []byte) (int, error) {
+	if !r.wroteHeader {
+		r.WriteHeader(http.StatusOK)
+	}
+	return r.ResponseWriter.Write(body)
+}
+
+func (r *statusRecorder) Flush() {
+	if !r.wroteHeader {
+		r.WriteHeader(http.StatusOK)
+	}
+	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+var requestSequence atomic.Uint64
+
+func requestCorrelationID(r *http.Request) string {
+	if r != nil {
+		for _, header := range []string{"X-Ptxt-Request-ID", "X-Request-ID"} {
+			if id := strings.TrimSpace(r.Header.Get(header)); id != "" && len(id) <= 80 {
+				return id
+			}
+		}
+		if id := threadTelemetryIDFromRequest(r); id != "" {
+			return id
+		}
+	}
+	return fmt.Sprintf("r%x-%x", time.Now().UnixMilli(), requestSequence.Add(1))
+}
+
+func requestVariant(r *http.Request) string {
+	if r == nil || r.URL == nil {
+		return "unknown"
+	}
+	if fragment := strings.TrimSpace(r.URL.Query().Get("fragment")); fragment != "" {
+		return "fragment:" + fragment
+	}
+	if strings.HasPrefix(r.URL.Path, "/thread/") || strings.HasPrefix(r.URL.Path, "/u/") {
+		return "document"
+	}
+	return "request"
 }
 
 func logging(server *Server, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
+		requestID := requestCorrelationID(r)
+		w.Header().Set("X-Ptxt-Request-ID", requestID)
 		if server != nil {
 			server.markRequestStart(start)
 			defer server.markRequestDone()
@@ -79,6 +133,9 @@ func logging(server *Server, next http.Handler) http.Handler {
 			"path", r.URL.Path,
 			"status", rec.status,
 			"duration", time.Since(start),
+			"request_id", requestID,
+			"variant", requestVariant(r),
+			"anonymous", strings.TrimSpace(r.Header.Get(headerViewerPubkey)) == "",
 		)
 	})
 }
@@ -88,6 +145,10 @@ func withTimeout(timeout time.Duration, next http.Handler) http.Handler {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r != nil && r.URL != nil && r.URL.Path == "/api/thread-telemetry" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		ctx, cancel := context.WithTimeout(r.Context(), timeout)
 		defer cancel()
 		next.ServeHTTP(w, r.WithContext(ctx))

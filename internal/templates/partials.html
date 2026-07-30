@@ -3,7 +3,7 @@
 {{$profiles := .Profiles}}
 {{$selectedID := .SelectedID}}
 {{$width := .Width}}
-{{$author := asciiAuthor $width $profiles $event.PubKey}}
+{{$author := asciiFeedAuthor $width $profiles $event.PubKey}}
 {{$age := relTime $event.CreatedAt}}
 {{$replyCount := .ReplyCount}}
 {{$replyLabel := replyBadgeText $replyCount}}
@@ -20,19 +20,33 @@
 {{$isSimpleRepost := isSimpleRepost $event}}
 {{$isQuotePost := isQuotePost $event}}
 {{$content := asciiMentionContent $source $profiles}}
+{{$preview := asciiFeedNotePreview $width $content}}
+{{$media := treeMediaFields $source $event.Tags}}
+{{$mediaSource := $source}}{{if ne $media.ItemsJSON ""}}{{$mediaSource = $media.DisplaySource}}{{end}}
+{{$mediaContent := asciiMentionContent $mediaSource $profiles}}
+{{$mediaPreview := asciiFeedNotePreview $width $mediaContent}}
+{{$desktopHeaderViewMore := and $preview.Collapsed (or $isSimpleRepost $isQuotePost (ne $media.ItemsJSON ""))}}
+{{$mediaDesktopHeaderViewMore := and $mediaPreview.Collapsed (or $isSimpleRepost $isQuotePost (ne $media.ItemsJSON ""))}}
 {{$mentionsJSON := asciiMentionsJSONFor $profiles $source (or $reference.Content "") $inlineReferences}}
 {{$rTot := reactionTotalFor .ReactionTotals $event.ID}}
 {{$rView := reactionViewerFor .ReactionViewers $event.ID}}
 {{$avatar := avatarSrc $profiles $event.PubKey}}
-<article class="note {{if eq $event.ID $selectedID}}is-focused{{end}}" id="note-{{$event.ID}}" data-created-at="{{$event.CreatedAt}}" data-ascii-kind="note" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$event.Kind}}" data-ascii-user-href="/u/{{$event.PubKey}}" data-ascii-thread-href="/thread/{{$event.ID}}" data-ascii-select-href="/thread/{{$event.ID}}" data-ascii-nevent="{{nevent $event.ID $event.PubKey}}" data-ascii-npub="{{npub $event.PubKey}}" data-ascii-relay="{{$event.RelayURL}}" data-ascii-ref-mode="{{if $isSimpleRepost}}repost{{else if $isQuotePost}}quote{{end}}" data-ascii-ref-author="{{if $hasReference}}{{asciiAuthor $width $profiles $reference.PubKey}}{{else if $referenceID}}{{short $referenceID}}{{end}}" data-ascii-ref-age="{{if $hasReference}}{{relTime $reference.CreatedAt}}{{else}}?{{end}}" data-ascii-ref-thread-href="{{if $hasReference}}/thread/{{$reference.ID}}{{else if $referenceID}}/thread/{{$referenceID}}{{end}}" data-ascii-ref-reply-label="{{$referenceReplyLabel}}" data-ascii-ref-reply-count="{{$referenceReplyCount}}" data-reply-root-id="{{$event.ID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}{{with imetaMediaItemsJSON $event.Tags}} data-ascii-imeta-media="{{.}}"{{end}}>
+{{$avatarRetry := avatarURL $profiles $event.PubKey}}
+{{$threadRootID := threadRootID $event}}
+<article class="note {{if eq $event.ID $selectedID}}is-focused{{end}}" id="note-{{$event.ID}}" data-created-at="{{$event.CreatedAt}}" data-ascii-kind="note" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$event.Kind}}" data-ascii-user-href="{{profileHref $event.PubKey $event.RelayURL}}" data-ascii-thread-href="/thread/{{$event.ID}}" data-ascii-thread-root-id="{{$threadRootID}}" data-ascii-select-href="{{threadSelectHref $event}}" data-ascii-nevent="{{nevent $event.ID $event.PubKey}}" data-ascii-npub="{{npub $event.PubKey}}" data-ascii-relay="{{$event.RelayURL}}" data-ascii-ref-mode="{{if $isSimpleRepost}}repost{{else if $isQuotePost}}quote{{end}}" data-ascii-ref-author="{{if $hasReference}}{{asciiAuthor $width $profiles $reference.PubKey}}{{else if $referenceID}}{{short $referenceID}}{{end}}" data-ascii-ref-age="{{if $hasReference}}{{relTime $reference.CreatedAt}}{{else}}?{{end}}" data-ascii-ref-thread-href="{{if $hasReference}}/thread/{{$reference.ID}}{{else if $referenceID}}/thread/{{$referenceID}}{{end}}" data-ascii-ref-relay="{{if $hasReference}}{{$reference.RelayURL}}{{end}}" data-ascii-ref-reply-label="{{$referenceReplyLabel}}" data-ascii-ref-reply-count="{{$referenceReplyCount}}" data-reply-root-id="{{$threadRootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}{{with imetaMediaItemsJSON $event.Tags}} data-ascii-imeta-media="{{.}}"{{end}}{{if $hasReference}}{{with imetaMediaItemsJSON $reference.Tags}} data-ascii-ref-imeta-media="{{.}}"{{end}}{{end}}>
 {{if $isSimpleRepost}}<p class="note-feed-context note-feed-context--repost">{{repostContextHTML $profiles $event}}</p>{{end}}
 <template class="note-reply-context-tmpl">{{if replyContextVisible $event}}{{replyContextHTML $profiles $event}}{{end}}</template>
-<pre class="ascii-card"><a class="note-feed-avatar" href="/u/{{$event.PubKey}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{end}}</a><span class="ascii-line ascii-line-feed-header"><span >+--</span><span class="ascii-line-feed-header-tail"><a href="/u/{{$event.PubKey}}" data-relay-aware>{{$author}}</a> -- {{$age}} {{asciiFill $width "+--" $author " -- " $age " " "[...]" "+"}}<a href="/thread/{{$event.ID}}" data-relay-aware>[...]</a>+</span></span>
-<span class="ascii-line">{{asciiBoxLine $width ""}}</span>
-<span class="note-content"><span class="ascii-line">{{asciiBoxLine $width ""}}</span>
-{{range asciiBoxLines $width $content}}<span class="ascii-line">{{.}}</span>
-{{end}}<span class="ascii-line">{{asciiBoxLine $width ""}}</span></span><span class="ascii-line">{{asciiBoxLine $width ""}}</span>
-{{$rb := reactionBracketBlock $rTot $rView}}<span class="ascii-line">+-- {{$rb}} {{asciiNoteFooterFill $width $rb $replyLabel}}{{if $replyLabel}} {{$replyLabel}}{{end}} [<a href="/thread/{{$event.ID}}" data-relay-aware data-reply-action data-reply-root-id="{{$event.ID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}">reply</a>] ---+</span></pre>
+<pre class="ascii-card"><a class="note-feed-avatar" href="{{profileHref $event.PubKey $event.RelayURL}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img src="{{$avatar}}" data-ptxt-avatar-retry-src="{{$avatarRetry}}" alt="" loading="lazy" decoding="async">{{end}}</a><span class="ascii-ssr-media-mode ascii-ssr-media-on">{{if $mediaDesktopHeaderViewMore}}<span class="ascii-line ascii-line-feed-header ascii-ssr-mobile-only"><span >+--</span><span class="ascii-line-feed-header-tail"><a href="{{profileHref $event.PubKey $event.RelayURL}}" data-relay-aware>{{$author}}</a> -- {{$age}} {{asciiFeedHeaderFill $width "+--" $author " -- " $age " " "[...]" "+"}}<a href="/thread/{{$event.ID}}" data-relay-aware>[...]</a>+</span></span><span class="ascii-line ascii-line-feed-header ascii-ssr-desktop-only"><span >+--</span><span class="ascii-line-feed-header-tail"><a href="{{profileHref $event.PubKey $event.RelayURL}}" data-relay-aware>{{$author}}</a> -- {{$age}} {{asciiFeedHeaderFill $width "+--" $author " -- " $age " " "view more" "+"}}<button type="button" class="link-button">view more</button>+</span></span>{{else}}<span class="ascii-line ascii-line-feed-header"><span >+--</span><span class="ascii-line-feed-header-tail"><a href="{{profileHref $event.PubKey $event.RelayURL}}" data-relay-aware>{{$author}}</a> -- {{$age}} {{asciiFeedHeaderFill $width "+--" $author " -- " $age " " "[...]" "+"}}<a href="/thread/{{$event.ID}}" data-relay-aware>[...]</a>+</span></span>{{end}}</span><span class="ascii-ssr-media-mode ascii-ssr-media-off">{{if $desktopHeaderViewMore}}<span class="ascii-line ascii-line-feed-header ascii-ssr-mobile-only"><span >+--</span><span class="ascii-line-feed-header-tail"><a href="{{profileHref $event.PubKey $event.RelayURL}}" data-relay-aware>{{$author}}</a> -- {{$age}} {{asciiFeedHeaderFill $width "+--" $author " -- " $age " " "[...]" "+"}}<a href="/thread/{{$event.ID}}" data-relay-aware>[...]</a>+</span></span><span class="ascii-line ascii-line-feed-header ascii-ssr-desktop-only"><span >+--</span><span class="ascii-line-feed-header-tail"><a href="{{profileHref $event.PubKey $event.RelayURL}}" data-relay-aware>{{$author}}</a> -- {{$age}} {{asciiFeedHeaderFill $width "+--" $author " -- " $age " " "view more" "+"}}<button type="button" class="link-button">view more</button>+</span></span>{{else}}<span class="ascii-line ascii-line-feed-header"><span >+--</span><span class="ascii-line-feed-header-tail"><a href="{{profileHref $event.PubKey $event.RelayURL}}" data-relay-aware>{{$author}}</a> -- {{$age}} {{asciiFeedHeaderFill $width "+--" $author " -- " $age " " "[...]" "+"}}<a href="/thread/{{$event.ID}}" data-relay-aware>[...]</a>+</span></span>{{end}}</span>
+<span class="ascii-ssr-media-mode ascii-ssr-media-on"><span class="ascii-line">{{asciiBoxLine $width ""}}</span>
+<span class="note-content ascii-note-content"><span class="ascii-line">{{asciiBoxLine $width ""}}</span>
+{{range $mediaPreview.Lines}}<span class="ascii-line">{{.}}</span>
+{{end}}<span class="ascii-line">{{asciiBoxLine $width ""}}</span>{{if $mediaPreview.Collapsed}}<span class="ascii-line ascii-line-note-view-more ascii-ssr-mobile-only">|        <button type="button" class="link-button">view more</button>{{asciiFeedViewMorePad $width}} |</span>{{end}}{{if $isSimpleRepost}}{{template "ascii_repost_placeholder" dict "Width" $width "ReferenceID" $referenceID}}{{end}}{{if $media.Items}}<span class="ascii-line note-image-boxed-row note-media-grid-row" style="--ascii-box-row-width: {{$width}}ch"><span class="note-media-grid-edge note-media-grid-edge-left" aria-hidden="true"></span>{{template "ssr_media_grid_span" $media}}<span class="note-media-grid-edge note-media-grid-edge-right" aria-hidden="true"></span></span>
+{{end}}{{if $hasReference}}{{$referenceMedia := treeMediaFields $reference.Content $reference.Tags}}{{template "ssr_reference_media_row" dict "Media" $referenceMedia "Width" $width}}{{end}}</span><span class="ascii-line">{{asciiBoxLine $width ""}}</span>
+{{$rb := reactionBracketBlock $rTot $rView}}{{if $mediaPreview.Collapsed}}<span class="ascii-line ascii-ssr-mobile-only">+-- {{$rb}} {{asciiNoteFooterFill $width $rb $replyLabel}}{{if $replyLabel}} {{$replyLabel}}{{end}} [<a href="/thread/{{$event.ID}}" data-relay-aware data-reply-action data-reply-root-id="{{$threadRootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}">reply</a>] ---+</span><span class="ascii-line ascii-ssr-desktop-only">+-- {{$rb}} {{asciiNoteFooterFill $width $rb $replyLabel}}{{if $replyLabel}} {{$replyLabel}}{{end}} [<a href="/thread/{{$event.ID}}" data-relay-aware data-reply-action data-reply-root-id="{{$threadRootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}">reply</a>] ---+</span>{{else}}<span class="ascii-line">+-- {{$rb}} {{asciiNoteFooterFill $width $rb $replyLabel}}{{if $replyLabel}} {{$replyLabel}}{{end}} [<a href="/thread/{{$event.ID}}" data-relay-aware data-reply-action data-reply-root-id="{{$threadRootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}">reply</a>] ---+</span>{{end}}</span><span class="ascii-ssr-media-mode ascii-ssr-media-off"><span class="ascii-line">{{asciiBoxLine $width ""}}</span>
+<span class="note-content ascii-note-content"><span class="ascii-line">{{asciiBoxLine $width ""}}</span>
+{{range $preview.Lines}}<span class="ascii-line">{{.}}</span>
+{{end}}<span class="ascii-line">{{asciiBoxLine $width ""}}</span>{{if $preview.Collapsed}}<span class="ascii-line ascii-line-note-view-more ascii-ssr-mobile-only">|        <button type="button" class="link-button">view more</button>{{asciiFeedViewMorePad $width}} |</span>{{end}}{{if $isSimpleRepost}}{{template "ascii_repost_placeholder" dict "Width" $width "ReferenceID" $referenceID}}{{end}}</span><span class="ascii-line">{{asciiBoxLine $width ""}}</span>
+{{if $preview.Collapsed}}<span class="ascii-line ascii-ssr-mobile-only">+-- {{$rb}} {{asciiNoteFooterFill $width $rb $replyLabel}}{{if $replyLabel}} {{$replyLabel}}{{end}} [<a href="/thread/{{$event.ID}}" data-relay-aware data-reply-action data-reply-root-id="{{$threadRootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}">reply</a>] ---+</span>{{if $desktopHeaderViewMore}}<span class="ascii-line ascii-ssr-desktop-only">+-- {{$rb}} {{asciiNoteFooterFill $width $rb $replyLabel}}{{if $replyLabel}} {{$replyLabel}}{{end}} [<a href="/thread/{{$event.ID}}" data-relay-aware data-reply-action data-reply-root-id="{{$threadRootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}">reply</a>] ---+</span>{{else}}<span class="ascii-line ascii-ssr-desktop-only">+-- {{$rb}} --- <button type="button" class="link-button">view more</button> {{asciiNoteCollapsedFooterFill $width $rb $replyLabel}}{{if $replyLabel}} {{$replyLabel}}{{end}} [<a href="/thread/{{$event.ID}}" data-relay-aware data-reply-action data-reply-root-id="{{$threadRootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}">reply</a>] ---+</span>{{end}}{{else}}<span class="ascii-line">+-- {{$rb}} {{asciiNoteFooterFill $width $rb $replyLabel}}{{if $replyLabel}} {{$replyLabel}}{{end}} [<a href="/thread/{{$event.ID}}" data-relay-aware data-reply-action data-reply-root-id="{{$threadRootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}">reply</a>] ---+</span>{{end}}</span></pre>
 <template class="ascii-source">{{$content}}</template>
 <template class="ascii-reference-source">{{if $hasReference}}{{asciiMentionContent $reference.Content $profiles}}{{else if $referenceID}}[reposted note unavailable on current relays]{{end}}</template>
 {{range $inlineReferences}}<template class="ascii-inline-reference-source" data-ascii-ref-id="{{.ID}}" data-ascii-ref-author="{{asciiAuthor $width $profiles .PubKey}}" data-ascii-ref-age="{{relTime .CreatedAt}}" data-ascii-ref-thread-href="/thread/{{.ID}}" data-ascii-ref-reply-label="{{replyBadgeText (replyCountFor $replyCounts .ID)}}">{{asciiMentionContent .Content $profiles}}</template>{{end}}
@@ -42,47 +56,113 @@
 
 {{define "note_media_drawer"}}<div class="note-media-drawer" data-note-image-mount hidden></div>{{end}}
 
+{{define "ssr_media_grid_span" -}}
+{{$items := .Items -}}{{$ratio := mediaGridAspectRatio $items -}}
+<span class="note-media-grid-wrap ascii-inline-media" data-media-grid-signature="{{mediaGridSignature $items}}"><span class="{{mediaGridClass $items}}{{if and (eq (len $items) 1) (eq (index $items 0).Type "video")}} note-media-grid-single-video{{end}}"{{if $ratio}} style="{{mediaGridAspectStyle $items}}" data-media-grid-aspect-ratio="{{$ratio}}"{{end}}>{{range $index, $item := mediaGridVisibleItems $items}}{{if eq $item.Type "image"}}<button type="button" class="note-media-tile note-media-image-tile" data-media-grid-open="{{$index}}" aria-label="Open media {{add $index 1}} of {{len $items}}"><img src="{{$item.URL}}" alt="" loading="lazy" decoding="async"{{if and (gt $item.Width 0) (gt $item.Height 0)}} width="{{$item.Width}}" height="{{$item.Height}}"{{end}}></button>{{else}}<span class="note-media-tile note-media-video-tile{{if eq (len $items) 1}} note-media-video-tile-single{{end}}" aria-label="Video {{add $index 1}} of {{len $items}}"><video src="{{$item.URL}}" controls preload="metadata" playsinline></video></span>{{end}}{{end}}{{if gt (len $items) 6}}<button type="button" class="note-media-tile note-media-more-tile" data-media-grid-open="5" aria-label="View all {{len $items}} media items">+</button>{{end}}</span></span>
+{{- end}}
+
+{{define "ssr_media_grid_div" -}}
+{{$items := .Items -}}{{$ratio := mediaGridAspectRatio $items -}}
+<div class="note-media-grid-wrap thread-tree-media-grid-wrap" data-media-grid-signature="{{mediaGridSignature $items}}"><div class="{{mediaGridClass $items}}{{if and (eq (len $items) 1) (eq (index $items 0).Type "video")}} note-media-grid-single-video{{end}}"{{if $ratio}} style="{{mediaGridAspectStyle $items}}" data-media-grid-aspect-ratio="{{$ratio}}"{{end}}>{{range $index, $item := mediaGridVisibleItems $items}}{{if eq $item.Type "image"}}<button type="button" class="note-media-tile note-media-image-tile" data-media-grid-open="{{$index}}" aria-label="Open media {{add $index 1}} of {{len $items}}"><img src="{{$item.URL}}" alt="" loading="lazy" decoding="async"{{if and (gt $item.Width 0) (gt $item.Height 0)}} width="{{$item.Width}}" height="{{$item.Height}}"{{end}}></button>{{else}}<span class="note-media-tile note-media-video-tile{{if eq (len $items) 1}} note-media-video-tile-single{{end}}" aria-label="Video {{add $index 1}} of {{len $items}}"><video src="{{$item.URL}}" controls preload="metadata" playsinline></video></span>{{end}}{{end}}{{if gt (len $items) 6}}<button type="button" class="note-media-tile note-media-more-tile" data-media-grid-open="5" aria-label="View all {{len $items}} media items">+</button>{{end}}</div></div>
+{{- end}}
+
+{{define "ssr_reference_media_row"}}
+{{$media := .Media}}{{if $media.Items}}<span class="ascii-line note-image-boxed-row note-media-grid-row reference-media-row" style="--ascii-box-row-width: {{.Width}}ch"><span class="note-media-reference-prefix" aria-hidden="true"></span>{{template "ssr_media_grid_span" $media}}<span class="note-media-reference-suffix" aria-hidden="true"></span></span>
+{{end}}{{end}}
+
+{{define "ssr_thread_tree_text"}}
+{{$source := .Source}}{{$media := .Media}}{{$mediaSource := $source}}{{if ne $media.ItemsJSON ""}}{{$mediaSource = $media.DisplaySource}}{{end}}
+<div class="hn-commtext thread-tree-text"><span class="ascii-ssr-media-mode ascii-ssr-media-on">{{range asciiTextLines $mediaSource .Width}}<span class="thread-tree-text-line">{{.}}</span>{{end}}</span><span class="ascii-ssr-media-mode ascii-ssr-media-off">{{range asciiTextLines $source .Width}}<span class="thread-tree-text-line">{{.}}</span>{{end}}</span></div>
+{{end}}
+
+{{define "ssr_thread_tree_media"}}
+{{$media := .}}{{if $media.Items}}<p class="thread-tree-media hn-media" data-thread-tree-media-wrap hidden><button class="link-button thread-tree-media-toggle" type="button" data-thread-tree-media-toggle>{{$media.Label}}</button></p><div class="thread-tree-media-preview ascii-ssr-media-on" data-thread-tree-media-mount>{{template "ssr_media_grid_div" $media}}</div>{{end}}
+{{end}}
+
+{{define "ascii_repost_placeholder"}}
+{{$href := ""}}{{if .ReferenceID}}{{$href = printf "/thread/%s" .ReferenceID}}{{end}}
+{{if $href}}<a class="ascii-reference-placeholder" href="{{$href}}" data-relay-aware data-ascii-ref-select-href="{{$href}}" aria-label="Loading reposted note">{{else}}<span class="ascii-reference-placeholder" aria-label="Loading reposted note">{{end}}
+{{range asciiReferencePlaceholderLines .Width}}<span class="ascii-line">{{.}}</span>
+{{end}}{{if $href}}</a>{{else}}</span>{{end}}
+{{end}}
+
 {{define "profile_header_modern"}}
 {{$avatar := avatarSrcURL .Profile.PubKey .Profile.Picture}}
 <section class="profile profile-modern">
   <div class="profile-hero">
-    <div class="profile-hero-top">
-      <a class="profile-back" href="/" data-relay-aware data-feed-home>&lt;-- Back</a>
-      <span class="ascii-action-menu profile-stats-menu profile-hero-options-menu" data-profile-stats-menu>
-        <button type="button" class="profile-hero-options-trigger profile-stats-menu-trigger" aria-haspopup="true" aria-expanded="false" aria-label="Profile options">...</button>
-        <span class="ascii-action-menu-list" role="menu">
-          <a role="menuitem" href="/" data-relay-aware>view feed</a>
-          <button type="button" role="menuitem" class="link-button" data-profile-tab="user-tab-identifiers">Identities</button>
-        </span>
-      </span>
-    </div>
     <div class="profile-hero-body">
-      <div class="profile-avatar-wrap">
-        {{if $avatar}}<img class="profile-avatar" src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{else}}<div class="profile-avatar-fallback" aria-hidden="true">@</div>{{end}}
-      </div>
-      <div class="profile-hero-text">
-        <h1 class="profile-display-name">{{if .Profile.Display}}{{.Profile.Display}}{{else if .Profile.Name}}{{.Profile.Name}}{{else}}{{short .Profile.PubKey}}{{end}}</h1>
-        <div class="profile-actions" data-profile-actions data-profile-pubkey="{{.Profile.PubKey}}">
-          <span class="profile-follow-mute" data-profile-follow-mute>
-            <button type="button" class="profile-follow-mute-link profile-follow-toggle" data-follow-toggle data-pubkey="{{.Profile.PubKey}}" aria-pressed="false">Follow</button>
-            <button type="button" class="profile-follow-mute-link profile-mute-toggle" data-mute-toggle data-pubkey="{{.Profile.PubKey}}" aria-pressed="false" hidden>Mute</button>
+      <div class="profile-hero-head">
+        <div class="profile-hero-top">
+          <h1 class="profile-display-name">{{if .Profile.Display}}{{.Profile.Display}}{{else if .Profile.Name}}{{.Profile.Name}}{{else}}{{short .Profile.PubKey}}{{end}}</h1>
+          <span class="ascii-action-menu profile-hero-options-menu" data-profile-stats-menu data-profile-actions data-profile-pubkey="{{.Profile.PubKey}}">
+            <button type="button" class="profile-hero-options-trigger" data-ascii-action-menu-trigger="1" aria-haspopup="menu" aria-expanded="false" aria-label="Profile options">...</button>
+            <span class="ascii-action-menu-list" role="menu">
+              <span class="profile-follow-mute" data-profile-follow-mute>
+                <button type="button" role="menuitem" class="link-button profile-follow-toggle" data-follow-toggle data-pubkey="{{.Profile.PubKey}}" aria-pressed="false">Follow</button>
+                <button type="button" role="menuitem" class="link-button profile-mute-toggle" data-mute-toggle data-pubkey="{{.Profile.PubKey}}" aria-pressed="false" hidden>Mute</button>
+              </span>
+              <a role="menuitem" href="/" data-relay-aware>view feed</a>
+              <button type="button" role="menuitem" class="link-button" data-profile-tab="user-tab-identifiers">Identities</button>
+              <button type="button" role="menuitem" class="link-button" data-profile-hex-copy data-pubkey="{{.Profile.PubKey}}">Copy hex pubkey</button>
+              <a role="menuitem" href="/profile/edit" class="link-button" data-own-profile-edit hidden>Edit profile</a>
+              <button type="button" role="menuitem" class="link-button" data-own-profile-logout data-logout data-logout-redirect="/login" hidden>Log out</button>
+            </span>
           </span>
-          <a href="/profile/edit" class="profile-action-link" data-own-profile-edit hidden>Edit profile</a>
-          <button type="button" class="profile-action-link" data-own-profile-logout data-logout data-logout-redirect="/login" hidden>Log out</button>
         </div>
-        <div class="profile-npub-block profile-npub-block--header profile-npub-copy" data-profile-npub-copy data-npub="{{npub .Profile.PubKey}}" role="button" tabindex="0" aria-label="Copy npub to clipboard">
-          <span class="profile-npub-copy-toast" data-profile-npub-copy-status role="status" aria-live="polite" hidden></span>
-          {{npubGridHTML .Profile.PubKey}}
+      </div>
+      <div class="profile-hero-media-row">
+        <div class="profile-avatar-wrap">
+          {{if $avatar}}<img class="profile-avatar" src="{{$avatar}}" data-ptxt-avatar-retry-src="{{.Profile.Picture}}" alt="" loading="lazy" decoding="async">{{else}}<div class="profile-avatar-fallback" aria-hidden="true">@</div>{{end}}
+        </div>
+        <div class="profile-hero-side">
+          {{if .Profile.NIP05}}
+          <p class="profile-nip05-line profile-hero-nip05" data-nip05-verify data-nip05="{{.Profile.NIP05}}" data-pubkey="{{.Profile.PubKey}}">
+            <span class="profile-nip05-text">{{.Profile.NIP05}}</span>
+            {{if .NIP05Status}}
+            <button type="button" class="profile-nip05-status {{if eq .NIP05Status "verified"}}is-ok{{else}}is-error{{end}}" data-nip05-status data-nip05-status-kind="{{.NIP05Status}}" data-nip05-status-detail="{{.NIP05StatusLabel}}" aria-label="NIP-5 verification status: {{.NIP05StatusLabel}}" aria-haspopup="dialog" aria-expanded="false">{{if eq .NIP05Status "verified"}}✓{{else}}×{{end}}</button>
+            {{else}}
+            <button type="button" class="profile-nip05-status muted" data-nip05-status aria-label="NIP-5 verification status" aria-haspopup="dialog" aria-expanded="false" hidden>…</button>
+            {{end}}
+          </p>
+          {{end}}
+          {{if .Profile.Website}}
+          {{$websiteURL := profileWebsiteURL .Profile.Website}}
+          {{$websiteLabel := profileWebsiteDisplay .Profile.Website}}
+          <p class="profile-website-line">
+            <span class="profile-website-symbol muted">↗</span>
+            <span class="profile-website-value"><a href="{{$websiteURL}}" rel="noopener noreferrer" target="_blank">{{$websiteLabel}}</a></span>
+          </p>
+          {{end}}
+          {{if profileHasMetadataLinks .Profile}}
+          {{$payment := profilePaymentRaw .Profile}}
+          <p class="profile-payment-line" data-profile-payment-copy data-payment="{{$payment}}">
+            {{if .Profile.Lud16}}
+            <a class="profile-payment-target" href="lightning:{{$payment}}">
+              <span class="profile-payment-symbol muted">₿</span>
+              <span class="profile-payment-value">{{$payment}}</span>
+            </a>
+            {{else}}
+            <span class="profile-payment-symbol muted">₿</span>
+            <span class="profile-payment-value">{{$payment}}</span>
+            {{end}}
+            <span class="profile-payment-actions">
+              <button type="button" class="link-button profile-payment-copy-icon" data-profile-payment-copy-btn aria-label="Copy lightning address" title="Copy lightning address"><span aria-hidden="true" data-profile-payment-copy-glyph>⧉</span></button>
+            </span>
+          </p>
+          {{end}}
+          <div class="profile-npub-block profile-npub-block--header profile-npub-copy" data-profile-npub-copy data-npub="{{npub .Profile.PubKey}}" role="button" tabindex="0" aria-label="Copy npub to clipboard">
+            <span class="profile-npub-copy-toast" data-profile-npub-copy-status role="status" aria-live="polite" hidden></span>
+            {{npubGridHTML .Profile.PubKey}}
+          </div>
         </div>
       </div>
     </div>
   </div>
   <div class="profile-main">
     <div class="profile-ident">
-      {{if .Profile.NIP05}}<p>{{.Profile.NIP05}}</p>{{end}}
       {{if .Profile.About}}<p>{{bioLinkHTML .Profile.About}}</p>{{end}}
       {{if .Profile.Event}}
-        <p class="muted">metadata from <a href="/thread/{{.Profile.Event.ID}}" data-relay-aware>{{short .Profile.Event.ID}}</a></p>
+      <p class="muted profile-hero-metadata">metadata from <a href="/thread/{{.Profile.Event.ID}}" data-relay-aware>{{short .Profile.Event.ID}}</a> <time datetime="{{formatProfileMetadataDateISO .Profile.Event.CreatedAt}}">{{formatProfileMetadataDate .Profile.Event.CreatedAt}}</time></p>
       {{end}}
     </div>
   </div>
@@ -92,6 +172,7 @@
 {{define "comment"}}
 {{$node := .Node}}
 {{$profiles := .Profiles}}
+{{$referencedEvents := .ReferencedEvents}}
 {{$selectedID := .SelectedID}}
 {{$rootID := .RootID}}
 {{$width := .Width}}
@@ -105,26 +186,48 @@
 {{$author := asciiAuthor $width $profiles $node.Event.PubKey}}
 {{$age := relTime $node.Event.CreatedAt}}
 {{$avatar := avatarSrc $profiles $node.Event.PubKey}}
+{{$avatarRetry := avatarURL $profiles $node.Event.PubKey}}
 {{$replyCount := $node.ReplyCount}}
 {{with .ReplyCounts}}{{$replyCount = index . $node.Event.ID}}{{end}}
 {{$replyLabel := replyBadgeText $replyCount}}
-{{$content := asciiMentionContent $node.Event.Content $profiles}}
-{{$mentionsJSON := asciiMentionsJSON $node.Event.Content $profiles}}
+{{$referenceID := referencedEventID $node.Event}}
+{{$reference := referenceEvent $referencedEvents $referenceID}}
+{{$hasReference := ne $reference.ID ""}}
+{{$referenceReplyCount := 0}}
+{{if $hasReference}}{{$referenceReplyCount = replyCountFor .ReplyCounts $reference.ID}}{{end}}
+{{$referenceReplyLabel := replyBadgeText $referenceReplyCount}}
+{{$source := noteMainBodySourceText $node.Event}}
+{{$inlineReferences := inlineReferenceEvents $source $referencedEvents}}
+{{$content := asciiMentionContent $source $profiles}}
+{{$media := treeMediaFields $source $node.Event.Tags}}
+{{$mediaSource := $source}}{{if ne $media.ItemsJSON ""}}{{$mediaSource = $media.DisplaySource}}{{end}}
+{{$mediaContent := asciiMentionContent $mediaSource $profiles}}
+{{$mentionsJSON := asciiMentionsJSONFor $profiles $source (or $reference.Content "") $inlineReferences}}
 {{$rTot := reactionTotalFor .ReactionTotals $node.Event.ID}}
 {{$rView := reactionViewerFor .ReactionViewers $node.Event.ID}}
-<div id="note-{{$node.Event.ID}}" class="comment {{if eq $node.Event.ID $selectedID}}is-focused{{end}}" data-depth="{{$node.Depth}}" style="--depth: {{$node.Depth}}" data-ascii-kind="reply" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-is-last="{{$isLast}}" data-ascii-has-children="{{$hasChildren}}" data-ascii-selected="{{eq $node.Event.ID $selectedID}}" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$node.Event.Kind}}" data-ascii-user-href="/u/{{$node.Event.PubKey}}" data-ascii-select-href="/thread/{{$node.Event.ID}}" data-ascii-nevent="{{nevent $node.Event.ID $node.Event.PubKey}}" data-ascii-npub="{{npub $node.Event.PubKey}}" data-ascii-relay="{{$node.Event.RelayURL}}" data-reply-root-id="{{$rootID}}" data-reply-target-id="{{$node.Event.ID}}" data-reply-pubkey="{{$node.Event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}{{with imetaMediaItemsJSON $node.Event.Tags}} data-ascii-imeta-media="{{.}}"{{end}}>
-<a class="comment-avatar" href="/u/{{$node.Event.PubKey}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{end}}</a>
-<pre class="ascii-reply"><span class="ascii-line"><a href="/u/{{$node.Event.PubKey}}" data-relay-aware>{{$author}}</a> -- {{$age}}</span>
-<span class="thread-reply-collapse"><span class="reply-content"><span class="ascii-line">{{if $showRail}}|    {{else}}     {{end}}{{asciiReplyPadLine $width}}</span>
+{{$headerAuthor := asciiReplyHeaderAuthor $width $author $age}}
+{{$contentPrefix := "     "}}{{if $showRail}}{{$contentPrefix = "|    "}}{{end}}
+{{$rb := reactionBracketBlock $rTot $rView}}
+<div id="note-{{$node.Event.ID}}" class="comment {{if eq $node.Event.ID $selectedID}}is-focused{{end}}" data-depth="{{$node.Depth}}" style="--depth: {{$node.Depth}}" data-ascii-kind="reply" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-is-last="{{$isLast}}" data-ascii-has-children="{{$hasChildren}}" data-ascii-selected="{{eq $node.Event.ID $selectedID}}" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$node.Event.Kind}}" data-ascii-user-href="{{profileHref $node.Event.PubKey $node.Event.RelayURL}}" data-ascii-select-href="{{threadSelectHrefForRoot $rootID $node.Event.ID}}" data-ascii-nevent="{{nevent $node.Event.ID $node.Event.PubKey}}" data-ascii-npub="{{npub $node.Event.PubKey}}" data-ascii-relay="{{$node.Event.RelayURL}}" data-ascii-ref-mode="{{if isSimpleRepost $node.Event}}repost{{else if isQuotePost $node.Event}}quote{{end}}" data-ascii-ref-author="{{if $hasReference}}{{asciiAuthor $width $profiles $reference.PubKey}}{{else if $referenceID}}{{short $referenceID}}{{end}}" data-ascii-ref-age="{{if $hasReference}}{{relTime $reference.CreatedAt}}{{else}}?{{end}}" data-ascii-ref-thread-href="{{if $hasReference}}/thread/{{$reference.ID}}{{else if $referenceID}}/thread/{{$referenceID}}{{end}}" data-ascii-ref-relay="{{if $hasReference}}{{$reference.RelayURL}}{{end}}" data-ascii-ref-reply-label="{{$referenceReplyLabel}}" data-ascii-ref-reply-count="{{$referenceReplyCount}}" data-reply-root-id="{{$rootID}}" data-reply-target-id="{{$node.Event.ID}}" data-reply-pubkey="{{$node.Event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}{{with imetaMediaItemsJSON $node.Event.Tags}} data-ascii-imeta-media="{{.}}"{{end}}{{if $hasReference}}{{with imetaMediaItemsJSON $reference.Tags}} data-ascii-ref-imeta-media="{{.}}"{{end}}{{end}}>
+<a class="comment-avatar" href="{{profileHref $node.Event.PubKey $node.Event.RelayURL}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img src="{{$avatar}}" data-ptxt-avatar-retry-src="{{$avatarRetry}}" alt="" loading="lazy" decoding="async">{{end}}</a>
+<pre class="ascii-reply"><span class="ascii-line"><a href="{{profileHref $node.Event.PubKey $node.Event.RelayURL}}" data-relay-aware>{{$headerAuthor}}</a> -- {{$age}}{{asciiReplyHeaderFill $width $headerAuthor $age}}<a href="{{threadSelectHrefForRoot $rootID $node.Event.ID}}" data-relay-aware>[...]</a></span>
+<span class="thread-reply-collapse"><span class="ascii-ssr-media-mode ascii-ssr-media-on"><span class="reply-content">{{if $mediaContent}}<span class="ascii-line">{{if $showRail}}|    {{else}}     {{end}}{{asciiReplyPadLine $width}}</span>
+{{range asciiTextLines $mediaContent (replyTextWidth $width)}}<span class="ascii-line">{{if $showRail}}|    {{else}}     {{end}}{{.}}</span>
+{{end}}<span class="ascii-line">{{if $showRail}}|    {{else}}     {{end}}{{asciiReplyPadLine $width}}</span>{{end}}{{if isSimpleRepost $node.Event}}{{template "ascii_repost_placeholder" dict "Width" $width "ReferenceID" $referenceID}}{{end}}{{if $media.Items}}<span class="ascii-line reply-media-row note-media-grid-row"><span class="note-media-reply-prefix{{if $showRail}} has-rail{{end}}" aria-hidden="true"></span>{{template "ssr_media_grid_span" $media}}</span>
+{{end}}{{if $hasReference}}{{$referenceMedia := treeMediaFields $reference.Content $reference.Tags}}{{template "ssr_reference_media_row" dict "Media" $referenceMedia "Width" $width}}{{end}}</span></span><span class="ascii-ssr-media-mode ascii-ssr-media-off"><span class="reply-content"><span class="ascii-line">{{if $showRail}}|    {{else}}     {{end}}{{asciiReplyPadLine $width}}</span>
 {{range asciiTextLines $content (replyTextWidth $width)}}<span class="ascii-line">{{if $showRail}}|    {{else}}     {{end}}{{.}}</span>
-{{end}}<span class="ascii-line">{{if $showRail}}|    {{else}}     {{end}}{{asciiReplyPadLine $width}}</span></span><span class="ascii-line">{{if $showRail}}|    {{else}}     {{end}}<a href="/thread/{{$node.Event.ID}}" data-relay-aware data-reply-action data-reply-root-id="{{$rootID}}" data-reply-target-id="{{$node.Event.ID}}" data-reply-pubkey="{{$node.Event.PubKey}}">reply</a>{{if $replyLabel}} {{$replyLabel}}{{end}}</span></span></pre>
+{{end}}<span class="ascii-line">{{if $showRail}}|    {{else}}     {{end}}{{asciiReplyPadLine $width}}</span>{{if isSimpleRepost $node.Event}}{{template "ascii_repost_placeholder" dict "Width" $width "ReferenceID" $referenceID}}{{end}}</span></span>
+<span class="ascii-line">{{$contentPrefix}} {{$rb}} {{asciiReplyFooterFill $width $contentPrefix $rb $replyLabel}}{{if $replyLabel}} {{$replyLabel}}{{end}} [<a href="{{threadSelectHrefForRoot $rootID $node.Event.ID}}" data-relay-aware data-reply-action data-reply-root-id="{{$rootID}}" data-reply-target-id="{{$node.Event.ID}}" data-reply-pubkey="{{$node.Event.PubKey}}">reply</a>] ---+</span>
+{{if $showRail}}<span class="ascii-line">|</span>
+{{end}}</span></pre>
 <template class="ascii-source">{{$content}}</template>
+{{if or (isSimpleRepost $node.Event) (isQuotePost $node.Event)}}<template class="ascii-reference-source">{{if $hasReference}}{{asciiMentionContent $reference.Content $profiles}}{{else if $referenceID}}[reposted note unavailable on current relays]{{end}}</template>{{end}}
 {{template "note_media_drawer"}}
 {{if $node.Children}}
 <p class="continue-thread continue-thread-mobile"><a href="/thread/{{$node.Event.ID}}?back={{$rootID}}&back_note={{$node.Event.ID}}" data-relay-aware>continue thread</a></p>
 <p class="continue-thread continue-thread-desktop"><a href="/thread/{{$node.Event.ID}}?back={{$rootID}}&back_note={{$node.Event.ID}}" data-relay-aware>continue thread</a></p>
 <div class="comments">
-{{range $index, $child := $node.Children}}{{template "comment" dict "Node" $child "Profiles" $profiles "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "SelectedID" $selectedID "RootID" $rootID "Width" $width "IsLast" (isLastIndex $index (len $node.Children))}}{{end}}
+{{range $index, $child := $node.Children}}{{template "comment" dict "Node" $child "Profiles" $profiles "ReferencedEvents" $referencedEvents "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "SelectedID" $selectedID "RootID" $rootID "Width" $width "IsLast" (isLastIndex $index (len $node.Children))}}{{end}}
 </div>
 {{end}}
 </div>
@@ -133,25 +236,47 @@
 {{define "thread_focus_parent"}}
 {{$event := .Event}}
 {{$profiles := .Profiles}}
+{{$referencedEvents := .ReferencedEvents}}
 {{$width := .Width}}
 {{$rootID := .RootID}}
 {{$author := asciiAuthor $width $profiles $event.PubKey}}
 {{$age := relTime $event.CreatedAt}}
 {{$avatar := avatarSrc $profiles $event.PubKey}}
+{{$avatarRetry := avatarURL $profiles $event.PubKey}}
 {{$replyCount := .ReplyCount}}
 {{with .ReplyCounts}}{{$replyCount = index . $event.ID}}{{end}}
 {{$replyLabel := replyBadgeText $replyCount}}
-{{$content := asciiMentionContent $event.Content $profiles}}
-{{$mentionsJSON := asciiMentionsJSON $event.Content $profiles}}
+{{$referenceID := referencedEventID $event}}
+{{$reference := referenceEvent $referencedEvents $referenceID}}
+{{$hasReference := ne $reference.ID ""}}
+{{$referenceReplyCount := 0}}
+{{if $hasReference}}{{$referenceReplyCount = replyCountFor .ReplyCounts $reference.ID}}{{end}}
+{{$referenceReplyLabel := replyBadgeText $referenceReplyCount}}
+{{$source := noteMainBodySourceText $event}}
+{{$inlineReferences := inlineReferenceEvents $source $referencedEvents}}
+{{$content := asciiMentionContent $source $profiles}}
+{{$media := treeMediaFields $source $event.Tags}}
+{{$mediaSource := $source}}{{if ne $media.ItemsJSON ""}}{{$mediaSource = $media.DisplaySource}}{{end}}
+{{$mediaContent := asciiMentionContent $mediaSource $profiles}}
+{{$mentionsJSON := asciiMentionsJSONFor $profiles $source (or $reference.Content "") $inlineReferences}}
 {{$rTot := reactionTotalFor .ReactionTotals $event.ID}}
 {{$rView := reactionViewerFor .ReactionViewers $event.ID}}
-<div id="note-{{$event.ID}}" class="comment thread-focus-parent" data-depth="1" style="--depth: 1" data-ascii-kind="reply" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-is-last="false" data-ascii-has-children="true" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$event.Kind}}" data-ascii-user-href="/u/{{$event.PubKey}}" data-ascii-select-href="/thread/{{$event.ID}}" data-ascii-nevent="{{nevent $event.ID $event.PubKey}}" data-ascii-npub="{{npub $event.PubKey}}" data-ascii-relay="{{$event.RelayURL}}" data-reply-root-id="{{$rootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}{{with imetaMediaItemsJSON $event.Tags}} data-ascii-imeta-media="{{.}}"{{end}}>
-<a class="comment-avatar" href="/u/{{$event.PubKey}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{end}}</a>
-<pre class="ascii-reply"><span class="ascii-line"><a href="/u/{{$event.PubKey}}" data-relay-aware>{{$author}}</a> -- {{$age}}</span>
-<span class="thread-reply-collapse"><span class="reply-content"><span class="ascii-line">|    {{asciiReplyPadLine $width}}</span>
+{{$headerAuthor := asciiReplyHeaderAuthor $width $author $age}}
+{{$rb := reactionBracketBlock $rTot $rView}}
+<div id="note-{{$event.ID}}" class="comment thread-focus-parent" data-depth="1" style="--depth: 1" data-ascii-kind="reply" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-is-last="false" data-ascii-has-children="true" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$event.Kind}}" data-ascii-user-href="{{profileHref $event.PubKey $event.RelayURL}}" data-ascii-select-href="{{threadSelectHrefForRoot $rootID $event.ID}}" data-ascii-nevent="{{nevent $event.ID $event.PubKey}}" data-ascii-npub="{{npub $event.PubKey}}" data-ascii-relay="{{$event.RelayURL}}" data-ascii-ref-mode="{{if isSimpleRepost $event}}repost{{else if isQuotePost $event}}quote{{end}}" data-ascii-ref-author="{{if $hasReference}}{{asciiAuthor $width $profiles $reference.PubKey}}{{else if $referenceID}}{{short $referenceID}}{{end}}" data-ascii-ref-age="{{if $hasReference}}{{relTime $reference.CreatedAt}}{{else}}?{{end}}" data-ascii-ref-thread-href="{{if $hasReference}}/thread/{{$reference.ID}}{{else if $referenceID}}/thread/{{$referenceID}}{{end}}" data-ascii-ref-relay="{{if $hasReference}}{{$reference.RelayURL}}{{end}}" data-ascii-ref-reply-label="{{$referenceReplyLabel}}" data-ascii-ref-reply-count="{{$referenceReplyCount}}" data-reply-root-id="{{$rootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}{{with imetaMediaItemsJSON $event.Tags}} data-ascii-imeta-media="{{.}}"{{end}}{{if $hasReference}}{{with imetaMediaItemsJSON $reference.Tags}} data-ascii-ref-imeta-media="{{.}}"{{end}}{{end}}>
+<a class="comment-avatar" href="{{profileHref $event.PubKey $event.RelayURL}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img src="{{$avatar}}" data-ptxt-avatar-retry-src="{{$avatarRetry}}" alt="" loading="lazy" decoding="async">{{end}}</a>
+<pre class="ascii-reply"><span class="ascii-line"><a href="{{profileHref $event.PubKey $event.RelayURL}}" data-relay-aware>{{$headerAuthor}}</a> -- {{$age}}{{asciiReplyHeaderFill $width $headerAuthor $age}}<a href="{{threadSelectHrefForRoot $rootID $event.ID}}" data-relay-aware>[...]</a></span>
+<span class="thread-reply-collapse"><span class="ascii-ssr-media-mode ascii-ssr-media-on"><span class="reply-content">{{if $mediaContent}}<span class="ascii-line">|    {{asciiReplyPadLine $width}}</span>
+{{range asciiTextLines $mediaContent (replyTextWidth $width)}}<span class="ascii-line">|    {{.}}</span>
+{{end}}<span class="ascii-line">|    {{asciiReplyPadLine $width}}</span>{{end}}{{if isSimpleRepost $event}}{{template "ascii_repost_placeholder" dict "Width" $width "ReferenceID" $referenceID}}{{end}}{{if $media.Items}}<span class="ascii-line reply-media-row note-media-grid-row"><span class="note-media-reply-prefix has-rail" aria-hidden="true"></span>{{template "ssr_media_grid_span" $media}}</span>
+{{end}}{{if $hasReference}}{{$referenceMedia := treeMediaFields $reference.Content $reference.Tags}}{{template "ssr_reference_media_row" dict "Media" $referenceMedia "Width" $width}}{{end}}</span></span><span class="ascii-ssr-media-mode ascii-ssr-media-off"><span class="reply-content"><span class="ascii-line">|    {{asciiReplyPadLine $width}}</span>
 {{range asciiTextLines $content (replyTextWidth $width)}}<span class="ascii-line">|    {{.}}</span>
-{{end}}<span class="ascii-line">|    {{asciiReplyPadLine $width}}</span></span><span class="ascii-line">|    <a href="/thread/{{$event.ID}}" data-relay-aware data-reply-action data-reply-root-id="{{$rootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}">reply</a>{{if $replyLabel}} {{$replyLabel}}{{end}}</span></span></pre>
+{{end}}<span class="ascii-line">|    {{asciiReplyPadLine $width}}</span>{{if isSimpleRepost $event}}{{template "ascii_repost_placeholder" dict "Width" $width "ReferenceID" $referenceID}}{{end}}</span></span>
+<span class="ascii-line">|     {{$rb}} {{asciiReplyFooterFill $width "|    " $rb $replyLabel}}{{if $replyLabel}} {{$replyLabel}}{{end}} [<a href="{{threadSelectHrefForRoot $rootID $event.ID}}" data-relay-aware data-reply-action data-reply-root-id="{{$rootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}">reply</a>] ---+</span>
+<span class="ascii-line">|</span>
+</span></pre>
 <template class="ascii-source">{{$content}}</template>
+{{if or (isSimpleRepost $event) (isQuotePost $event)}}<template class="ascii-reference-source">{{if $hasReference}}{{asciiMentionContent $reference.Content $profiles}}{{else if $referenceID}}[reposted note unavailable on current relays]{{end}}</template>{{end}}
 {{template "note_media_drawer"}}
 </div>
 {{end}}
@@ -159,23 +284,42 @@
 {{define "thread_focus_selected"}}
 {{$event := .Event}}
 {{$profiles := .Profiles}}
+{{$referencedEvents := .ReferencedEvents}}
 {{$width := .Width}}
 {{$replyCount := .ReplyCount}}
 {{$replyLabel := replyBadgeText $replyCount}}
 {{$author := asciiAuthor $width $profiles $event.PubKey}}
 {{$age := relTime $event.CreatedAt}}
 {{$avatar := avatarSrc $profiles $event.PubKey}}
-{{$content := asciiMentionContent $event.Content $profiles}}
-{{$mentionsJSON := asciiMentionsJSON $event.Content $profiles}}
+{{$avatarRetry := avatarURL $profiles $event.PubKey}}
+{{$referenceID := referencedEventID $event}}
+{{$reference := referenceEvent $referencedEvents $referenceID}}
+{{$hasReference := ne $reference.ID ""}}
+{{$referenceReplyCount := 0}}
+{{if $hasReference}}{{$referenceReplyCount = replyCountFor .ReplyCounts $reference.ID}}{{end}}
+{{$referenceReplyLabel := replyBadgeText $referenceReplyCount}}
+{{$source := noteMainBodySourceText $event}}
+{{$inlineReferences := inlineReferenceEvents $source $referencedEvents}}
+{{$content := asciiMentionContent $source $profiles}}
+{{$media := treeMediaFields $source $event.Tags}}
+{{$mediaSource := $source}}{{if ne $media.ItemsJSON ""}}{{$mediaSource = $media.DisplaySource}}{{end}}
+{{$mediaContent := asciiMentionContent $mediaSource $profiles}}
+{{$mentionsJSON := asciiMentionsJSONFor $profiles $source (or $reference.Content "") $inlineReferences}}
 {{$rTot := reactionTotalFor .ReactionTotals $event.ID}}
 {{$rView := reactionViewerFor .ReactionViewers $event.ID}}
-<article class="note is-focused thread-focus-selected" id="note-{{$event.ID}}" data-depth="1" style="--depth: 1" data-created-at="{{$event.CreatedAt}}" data-ascii-kind="selected" data-ascii-selected="true" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$event.Kind}}" data-ascii-user-href="/u/{{$event.PubKey}}" data-ascii-thread-href="/thread/{{$event.ID}}" data-ascii-select-href="/thread/{{$event.ID}}" data-ascii-nevent="{{nevent $event.ID $event.PubKey}}" data-ascii-npub="{{npub $event.PubKey}}" data-ascii-relay="{{$event.RelayURL}}" data-reply-root-id="{{.RootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}{{with imetaMediaItemsJSON $event.Tags}} data-ascii-imeta-media="{{.}}"{{end}}>
-<a class="note-avatar" href="/u/{{$event.PubKey}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{end}}</a>
-<pre class="ascii-reply"><span class="ascii-line"><a href="/u/{{$event.PubKey}}" data-relay-aware>{{$author}}</a> -- {{$age}}</span>
-<span class="note-content"><span class="ascii-line">{{asciiReplyPadLine $width}}</span>
-{{range asciiTextLines $content (replyTextWidth $width)}}<span class="ascii-line">{{.}}</span>
-{{end}}<span class="ascii-line">{{asciiReplyPadLine $width}}</span></span><span class="ascii-line"><a href="/thread/{{$event.ID}}" data-relay-aware data-reply-action data-reply-root-id="{{.RootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}">reply</a>{{if gt $replyCount 0}} {{$replyLabel}}{{end}}</span></pre>
+{{$headerAuthor := asciiSelectedHeaderAuthor $width $author $age}}
+{{$rb := reactionBracketBlock $rTot $rView}}
+<article class="note is-focused thread-focus-selected" id="note-{{$event.ID}}" data-depth="1" style="--depth: 1" data-created-at="{{$event.CreatedAt}}" data-ascii-kind="selected" data-ascii-selected="true" data-ascii-author="{{$author}}" data-ascii-age="{{$age}}" data-ascii-avatar="{{$avatar}}" data-ascii-reply-label="{{$replyLabel}}" data-ascii-reply-count="{{$replyCount}}" data-ascii-reaction-total="{{$rTot}}" data-ascii-reaction-viewer="{{$rView}}" data-ascii-event-kind="{{$event.Kind}}" data-ascii-user-href="{{profileHref $event.PubKey $event.RelayURL}}" data-ascii-thread-href="/thread/{{$event.ID}}" data-ascii-select-href="{{threadSelectHrefForRoot .RootID $event.ID}}" data-ascii-nevent="{{nevent $event.ID $event.PubKey}}" data-ascii-npub="{{npub $event.PubKey}}" data-ascii-relay="{{$event.RelayURL}}" data-ascii-ref-mode="{{if isSimpleRepost $event}}repost{{else if isQuotePost $event}}quote{{end}}" data-ascii-ref-author="{{if $hasReference}}{{asciiAuthor $width $profiles $reference.PubKey}}{{else if $referenceID}}{{short $referenceID}}{{end}}" data-ascii-ref-age="{{if $hasReference}}{{relTime $reference.CreatedAt}}{{else}}?{{end}}" data-ascii-ref-thread-href="{{if $hasReference}}/thread/{{$reference.ID}}{{else if $referenceID}}/thread/{{$referenceID}}{{end}}" data-ascii-ref-relay="{{if $hasReference}}{{$reference.RelayURL}}{{end}}" data-ascii-ref-reply-label="{{$referenceReplyLabel}}" data-ascii-ref-reply-count="{{$referenceReplyCount}}" data-reply-root-id="{{.RootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}"{{if $mentionsJSON}} data-ascii-mentions="{{$mentionsJSON}}"{{end}}{{with imetaMediaItemsJSON $event.Tags}} data-ascii-imeta-media="{{.}}"{{end}}{{if $hasReference}}{{with imetaMediaItemsJSON $reference.Tags}} data-ascii-ref-imeta-media="{{.}}"{{end}}{{end}}>
+<a class="note-avatar" href="{{profileHref $event.PubKey $event.RelayURL}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img src="{{$avatar}}" data-ptxt-avatar-retry-src="{{$avatarRetry}}" alt="" loading="lazy" decoding="async">{{end}}</a>
+<pre class="ascii-reply"><span class="ascii-line"><a href="{{profileHref $event.PubKey $event.RelayURL}}" data-relay-aware>{{$headerAuthor}}</a> -- {{$age}} {{asciiSelectedHeaderFill $width $headerAuthor $age}}<a href="/thread/{{$event.ID}}" data-relay-aware>[...]</a>+</span>
+<span class="ascii-ssr-media-mode ascii-ssr-media-on"><span class="note-content">{{if $mediaContent}}<span class="ascii-line">{{asciiSelectedReplyPadLine $width}} |</span>
+{{range asciiTextLines $mediaContent (selectedReplyTextWidth $width)}}<span class="ascii-line">{{asciiPaddedTextLine . (selectedReplyTextWidth $width)}} |</span>
+{{end}}<span class="ascii-line">{{asciiSelectedReplyPadLine $width}} |</span>{{end}}{{if isSimpleRepost $event}}{{template "ascii_repost_placeholder" dict "Width" $width "ReferenceID" $referenceID}}{{end}}{{if $media.Items}}<span class="ascii-line selected-media-row note-media-grid-row">{{template "ssr_media_grid_span" $media}}<span class="note-media-grid-edge note-media-grid-edge-right" aria-hidden="true"></span></span>
+{{end}}{{if $hasReference}}{{$referenceMedia := treeMediaFields $reference.Content $reference.Tags}}{{template "ssr_reference_media_row" dict "Media" $referenceMedia "Width" $width}}{{end}}</span></span><span class="ascii-ssr-media-mode ascii-ssr-media-off"><span class="note-content">{{if $content}}<span class="ascii-line">{{asciiSelectedReplyPadLine $width}} |</span>
+{{range asciiTextLines $content (selectedReplyTextWidth $width)}}<span class="ascii-line">{{asciiPaddedTextLine . (selectedReplyTextWidth $width)}} |</span>
+{{end}}<span class="ascii-line">{{asciiSelectedReplyPadLine $width}} |</span>{{end}}{{if isSimpleRepost $event}}{{template "ascii_repost_placeholder" dict "Width" $width "ReferenceID" $referenceID}}{{end}}</span></span><span class="ascii-line"> {{$rb}} {{asciiReplyFooterFill $width "" $rb $replyLabel}}{{if $replyLabel}} {{$replyLabel}}{{end}} [<a href="/thread/{{$event.ID}}" data-relay-aware data-reply-action data-reply-root-id="{{.RootID}}" data-reply-target-id="{{$event.ID}}" data-reply-pubkey="{{$event.PubKey}}">reply</a>] ---+</span></pre>
 <template class="ascii-source">{{$content}}</template>
+{{if or (isSimpleRepost $event) (isQuotePost $event)}}<template class="ascii-reference-source">{{if $hasReference}}{{asciiMentionContent $reference.Content $profiles}}{{else if $referenceID}}[reposted note unavailable on current relays]{{end}}</template>{{end}}
 {{template "note_media_drawer"}}
 </article>
 {{end}}
@@ -205,9 +349,7 @@
 
 {{define "right_rail"}}
 <aside class="right-rail">
-  <form action="/search" method="get" class="rail-search">
-    <input type="search" name="q" placeholder="Search" value="{{.SearchQuery}}">
-  </form>
+  {{template "search_form" .}}
   <section class="trending-panel">
     <h2>Trending</h2>
     <label class="trending-filter">Timeframe
@@ -223,37 +365,45 @@
 </aside>
 {{end}}
 
+{{define "thread_people_items"}}
+  {{range .Participants}}
+    {{$display := displayName $.Profiles .PubKey}}
+    {{$avatar := avatarSrc $.Profiles .PubKey}}
+    {{$avatarRetry := avatarURL $.Profiles .PubKey}}
+    <li>
+      <a class="thread-person" href="{{profileHref .PubKey}}" data-relay-aware>
+        {{if $avatar}}<img src="{{$avatar}}" data-ptxt-avatar-retry-src="{{$avatarRetry}}" alt="" loading="lazy" decoding="async">{{else}}<span class="thread-person-avatar-fallback" aria-hidden="true">@</span>{{end}}
+        <div class="thread-person-meta">
+          <strong>{{$display}}</strong>
+          {{if .Profile.About}}<span class="muted thread-person-about">{{briefBio .Profile.About 12}}</span>{{end}}
+          <em class="muted">{{.Posts}} post{{if ne .Posts 1}}s{{end}}</em>
+        </div>
+      </a>
+    </li>
+  {{else}}
+    <li class="muted">No participants yet.</li>
+  {{end}}
+{{end}}
+
 {{define "thread_right_rail"}}
 <aside class="right-rail" data-thread-fragment="participants">
   <section class="thread-people-panel">
     <h2>People in this thread</h2>
-    <ul class="thread-people">
-      {{range .Participants}}
-        {{$display := displayName $.Profiles .PubKey}}
-        {{$avatar := avatarSrc $.Profiles .PubKey}}
-        <li>
-          <a class="thread-person" href="/u/{{.PubKey}}" data-relay-aware>
-            {{if $avatar}}<img src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{else}}<span class="thread-person-avatar-fallback" aria-hidden="true">@</span>{{end}}
-            <div class="thread-person-meta">
-              <strong>{{$display}}</strong>
-              {{if .Profile.About}}<span class="muted thread-person-about">{{bioLinkHTML .Profile.About}}</span>{{end}}
-              <em class="muted">{{.Posts}} post{{if ne .Posts 1}}s{{end}}</em>
-            </div>
-          </a>
-        </li>
-      {{else}}
-        <li class="muted">No participants yet.</li>
-      {{end}}
+    <ul class="thread-people" data-thread-collapsed-participants>
+      {{template "thread_people_items" dict "Participants" .Participants "Profiles" .Profiles}}
     </ul>
+    {{if .ExpandedParticipants}}
+      <ul class="thread-people" data-thread-expanded-participants hidden>
+        {{template "thread_people_items" dict "Participants" .ExpandedParticipants "Profiles" .Profiles}}
+      </ul>
+    {{end}}
   </section>
 </aside>
 {{end}}
 
 {{define "right_rail_static"}}
 <aside class="right-rail">
-  <form action="/search" method="get" class="rail-search">
-    <input type="search" name="q" placeholder="Search" value="{{.SearchQuery}}">
-  </form>
+  {{template "search_form" .}}
   {{if not .HideTrendingRail}}
   <section class="trending-panel">
     <h2>Trending</h2>
@@ -271,9 +421,7 @@
 
 {{define "login_right_rail"}}
 <aside class="right-rail login-right-rail">
-  <form action="/search" method="get" class="rail-search">
-    <input type="search" name="q" placeholder="Search">
-  </form>
+  {{template "search_form" .}}
   <section class="trending-panel login-help-panel">
     <h2>How login works</h2>
     <p class="muted">Keys stay in your browser. The server only needs your public key for read paths.</p>
@@ -285,6 +433,26 @@
     </ul>
   </section>
 </aside>
+{{end}}
+
+{{define "search_form"}}
+<form action="/search" method="get" class="rail-search" role="search" aria-label="Search">
+  <p class="search-mode-toggle" aria-label="Search mode">
+    {{if ne .SearchMode "users"}}
+      <strong class="search-mode-option is-active">Search notes</strong>
+    {{else}}
+      <a class="search-mode-option" href="{{.SearchModeNotesURL}}" data-relay-aware>Search notes</a>
+    {{end}}
+    <span class="search-mode-sep" aria-hidden="true">·</span>
+    {{if eq .SearchMode "users"}}
+      <strong class="search-mode-option is-active">User search</strong>
+    {{else}}
+      <a class="search-mode-option" href="{{.SearchModeUsersURL}}" data-relay-aware>User search</a>
+    {{end}}
+  </p>
+  <input type="hidden" name="mode" value="{{.SearchMode}}">
+  <input type="search" name="q" placeholder="{{if eq .SearchMode "users"}}Search users{{else}}Search notes{{end}}" value="{{.SearchQuery}}" aria-label="{{if eq .SearchMode "users"}}Search cached profiles{{else}}Search cached notes{{end}}">
+</form>
 {{end}}
 
 {{define "trending_list"}}
@@ -310,29 +478,23 @@
     <div class="mobile-menu-header">
       <div class="mobile-menu-header-logo" aria-hidden="true">
         <span class="about-page-logo">
-          <img src="/static/img/ascritch_icon_black.png" alt="" width="80" height="80" decoding="async" class="about-logo about-logo-light-scheme">
-          <img src="/static/img/ascritch_icon_white.png" alt="" width="80" height="80" decoding="async" class="about-logo about-logo-dark-scheme">
+          <img src="{{assetPath .AssetBasePath "/static/img/ascritch_icon_black.png"}}" alt="" width="80" height="80" decoding="async" class="about-logo about-logo-light-scheme">
+          <img src="{{assetPath .AssetBasePath "/static/img/ascritch_icon_white.png"}}" alt="" width="80" height="80" decoding="async" class="about-logo about-logo-dark-scheme">
         </span>
       </div>
-      <div class="mobile-menu-header-title">
-        <strong>Plain Text Nostr</strong>
-      </div>
+      <section class="mobile-menu-intro" aria-label="Plain Text Nostr summary">
+        <p class="mobile-menu-intro-copy muted">A simple and fast Nostr web reader.</p>
+      </section>
       <div class="mobile-menu-session">
-        <a href="/login" class="mobile-menu-login-cta" data-session-cta>@ Login</a>
-        <a href="/login" class="mobile-menu-profile" data-session-user-link data-session-user-copy hidden>
-          <img src="" alt="" width="32" height="32" loading="lazy" decoding="async" data-session-avatar hidden>
-          <span class="mobile-trigger-fallback" data-session-avatar-fallback>@</span>
+        <a href="/login" class="mobile-menu-login-cta" data-session-cta>Login</a>
+        <div class="mobile-menu-current-user" data-session-user-copy hidden>
           <strong data-session-display-name>Guest</strong>
-        </a>
+          <button type="button" class="link-button mobile-menu-logout" data-logout data-session-logout-wrap hidden>Log out</button>
+        </div>
       </div>
     </div>
-    <section class="mobile-menu-intro" aria-label="Plain Text Nostr summary">
-      <p class="mobile-menu-intro-copy muted">A plain-text Nostr reader: relay aggregation, web of trust, local cache.</p>
-    </section>
     <div class="mobile-menu-search">
-      <form action="/search" method="get" class="rail-search" role="search" aria-label="Search cached notes">
-        <input type="search" name="q" placeholder="Search" value="{{.SearchQuery}}" aria-label="Search cached notes">
-      </form>
+      {{template "search_form" .}}
     </div>
     <nav class="mobile-menu-nav" aria-label="Mobile menu">
       <a href="/" data-relay-aware data-feed-home data-main-menu-link>Home</a>
@@ -391,23 +553,33 @@
 <section class="route-error-panel" role="status">
   <div class="route-error-inner">
     <div class="route-error-logo about-page-logo" aria-hidden="true">
-      <img src="/static/img/ascritch_icon_black.png" alt="" width="72" height="72" decoding="async" class="about-logo about-logo-light-scheme route-error-icon">
-      <img src="/static/img/ascritch_icon_white.png" alt="" width="72" height="72" decoding="async" class="about-logo about-logo-dark-scheme route-error-icon">
+      <img src="{{assetPath .AssetBasePath "/static/img/ascritch_icon_black.png"}}" alt="" width="72" height="72" decoding="async" class="about-logo about-logo-light-scheme route-error-icon">
+      <img src="{{assetPath .AssetBasePath "/static/img/ascritch_icon_white.png"}}" alt="" width="72" height="72" decoding="async" class="about-logo about-logo-dark-scheme route-error-icon">
     </div>
     <h1 class="route-error-heading">{{if .Heading}}{{.Heading}}{{else}}Something went wrong{{end}}</h1>
     {{if .Message}}<p class="route-error-message">{{.Message}}</p>{{end}}
+    {{if .ShowLoginHint}}<p class="route-error-message">This note may be outside the default Web of Trust. <a href="/login" data-relay-aware>Login</a> to look for notes using your own Web of Trust.</p>{{end}}
     {{if .Detail}}<p class="route-error-detail muted">{{.Detail}}</p>{{end}}
   </div>
 </section>
 {{end}}
 
 {{define "shell_mobile_bar"}}
+{{$wotDepth := webOfTrustDepth .}}
+{{$wotEnabled := webOfTrustEnabled .}}
 <header class="mobile-bar">
-  <a href="/login" class="mobile-menu-trigger" data-session-user-link aria-label="Open profile">
-    <img src="" alt="" loading="lazy" decoding="async" data-session-avatar hidden>
-    <span class="mobile-trigger-fallback" data-session-avatar-fallback>@</span>
-  </a>
-  <a href="/" data-relay-aware class="mobile-brand" data-feed-home>Plain Text Nostr</a>
+  <a href="/" data-relay-aware class="mobile-brand" data-feed-home><span class="mobile-brand-text">Plain Text Nostr</span></a>
+  <div class="mobile-bar-center" data-thread-view-mode aria-label="Thread view mode">
+    <button type="button" class="link-button thread-view-toggle" data-thread-view-toggle data-thread-view-current="thread" aria-label="Viewing thread. Tap to switch to tree.">thread</button>
+  </div>
+  <div class="feed-wot-quick mobile-bar-wot" data-feed-wot-controls data-wot-depth="{{$wotDepth}}"{{if or (not $wotEnabled) (not .ViewerPubKey)}} hidden{{end}}>
+    <label class="feed-wot-quick-label" for="feed-wot-depth-header">WOT</label>
+    <select id="feed-wot-depth-header" class="feed-wot-depth-select" data-feed-wot-depth-select aria-label="Web of Trust depth">
+      <option value="1" {{if eq $wotDepth 1}}selected{{end}}>wot: 1°</option>
+      <option value="2" {{if eq $wotDepth 2}}selected{{end}}>wot: 2°</option>
+      <option value="3" {{if eq $wotDepth 3}}selected{{end}}>wot: 3°</option>
+    </select>
+  </div>
   <button type="button" class="mobile-menu-trigger mobile-menu-bar-glyph" data-mobile-menu-trigger aria-label="Open menu">
     <span class="mobile-menu-bar-icon" aria-hidden="true">≡</span>
   </button>

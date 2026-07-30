@@ -1,7 +1,6 @@
 {{define "reads"}}
 {{template "document_start" .}}
-<div class="app-shell reads-shell">
-  {{template "left_rail" .}}
+<div class="reads-shell">
   <section class="feed-column reads-column">
     <section id="reads-heading" data-reads-heading>
       {{template "reads_heading" .}}
@@ -17,15 +16,13 @@
   </section>
   {{template "reads_right_rail" .}}
 </div>
-<script type="module" src="/static/js/layout.js"></script>
+<script type="module" src="{{assetPath .AssetBasePath "/static/js/layout.js"}}"></script>
 {{template "document_end" .}}
 {{end}}
 
 {{define "reads_right_rail"}}
 <aside class="right-rail reads-right-rail">
-  <form action="/search" method="get" class="rail-search">
-    <input type="search" name="q" placeholder="Search reads" value="{{.SearchQuery}}">
-  </form>
+  {{template "search_form" .}}
   <section class="trending-panel">
     <h2>Trending Reads</h2>
     <label class="trending-filter">Timeframe
@@ -67,7 +64,7 @@
         </label>
       </div>
     </div>
-    <p class="muted">NIP-23 long-form notes in a simple preview feed.{{if .WebOfTrustEnabled}} {{if .LoggedOutWOTSeedDisplayName}}Filtering to authors within {{.WebOfTrustDepth}} degrees of {{.LoggedOutWOTSeedDisplayName}}'s follow graph.{{else}}Filtering to authors within {{.WebOfTrustDepth}} degrees of your follow graph.{{end}}{{end}}</p>
+    <p class="muted">NIP-23 long-form notes in a simple preview feed.{{if .WebOfTrustEnabled}} {{if .LoggedOutWOTSeedDisplayName}}Logged-out browsing filters to authors within {{.WebOfTrustDepth}} degrees of {{.LoggedOutWOTSeedDisplayName}}'s follow graph. Log in to use your own follow graph.{{else}}Filtering to authors within {{.WebOfTrustDepth}} degrees of your follow graph.{{end}}{{end}}</p>
   </div>
   <div class="ascii-border">{{asciiBorder}}</div>
 </section>
@@ -83,7 +80,7 @@
       <header class="read-meta">
         <div class="read-meta-copy">
           <h2><a href="/reads/{{.Event.ID}}" data-relay-aware>{{.Title}}</a></h2>
-          <p class="muted"><a href="/u/{{.Event.PubKey}}" data-relay-aware>{{displayName $.Profiles .Event.PubKey}}</a> · <span class="mono">{{formatDate .PublishedAt}}</span></p>
+          <p class="muted"><a href="{{profileHref .Event.PubKey .Event.RelayURL}}" data-relay-aware>{{displayName $.Profiles .Event.PubKey}}</a> · <span class="mono">{{formatDate .PublishedAt}}</span></p>
           {{if .Summary}}<p class="read-summary">{{.Summary}}</p>{{end}}
         </div>
         {{if .ImageURL}}

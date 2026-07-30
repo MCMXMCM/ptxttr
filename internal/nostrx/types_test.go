@@ -2,6 +2,8 @@ package nostrx
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -106,6 +108,23 @@ func TestFollowPubkeysExtractsUniqueValidTags(t *testing.T) {
 	got := FollowPubkeys(&event)
 	if len(got) != 2 || got[0] != alice || got[1] != bob {
 		t.Fatalf("unexpected follow list: %#v", got)
+	}
+}
+
+func TestFollowHashtagsExtractsUniqueValidTags(t *testing.T) {
+	event := Event{
+		Kind: KindFollowList,
+		Tags: [][]string{
+			{"t", "nostr"},
+			{"t", "#Nostr"},
+			{"t", "nostr"},
+			{"t", "bad!tag"},
+			{"p", strings.Repeat("a", 64)},
+		},
+	}
+	got := FollowHashtags(&event)
+	if len(got) != 2 || got[0] != "nostr" || got[1] != "Nostr" {
+		t.Fatalf("unexpected follow hashtags: %#v", got)
 	}
 }
 
@@ -386,27 +405,47 @@ func TestClassifyClosedPolicyReason(t *testing.T) {
 	}
 }
 
+func TestClassifyRelayFailurePolicy(t *testing.T) {
+	tests := []struct {
+		err  error
+		kind string
+		ok   bool
+	}{
+		{err: errors.New("expected handshake response status code 101 but got 403"), kind: relayPolicyKindAuth, ok: true},
+		{err: errors.New("expected handshake response status code 101 but got 404"), kind: relayPolicyKindBlocked, ok: true},
+		{err: errors.New("expected handshake response status code 101 but got 200"), kind: relayPolicyKindBlocked, ok: true},
+		{err: errors.New("429 too many requests"), kind: relayPolicyKindRateLimit, ok: true},
+		{err: errors.New("context deadline exceeded"), ok: false},
+	}
+	for _, test := range tests {
+		kind, ok := classifyRelayFailurePolicy(test.err)
+		if kind != test.kind || ok != test.ok {
+			t.Fatalf("classifyRelayFailurePolicy(%q) = (%q,%v), want (%q,%v)", test.err, kind, ok, test.kind, test.ok)
+		}
+	}
+}
+
 func TestRelayPolicyBackoffCaps(t *testing.T) {
-	if got := relayPolicyBackoff(1); got != 2*time.Minute {
-		t.Fatalf("relayPolicyBackoff(1) = %s, want 2m", got)
+	if got := relayPolicyBackoff(1); got != 6*time.Hour {
+		t.Fatalf("relayPolicyBackoff(1) = %s, want 6h", got)
 	}
-	if got := relayPolicyBackoff(3); got != 8*time.Minute {
-		t.Fatalf("relayPolicyBackoff(3) = %s, want 8m", got)
+	if got := relayPolicyBackoff(2); got != 12*time.Hour {
+		t.Fatalf("relayPolicyBackoff(2) = %s, want 12h", got)
 	}
-	if got := relayPolicyBackoff(10); got != 30*time.Minute {
-		t.Fatalf("relayPolicyBackoff(10) = %s, want 30m cap", got)
+	if got := relayPolicyBackoff(10); got != 24*time.Hour {
+		t.Fatalf("relayPolicyBackoff(10) = %s, want 24h cap", got)
 	}
 }
 
 func TestRelayRateLimitBackoffCaps(t *testing.T) {
-	if got := relayRateLimitBackoff(1); got != 5*time.Minute {
-		t.Fatalf("relayRateLimitBackoff(1) = %s, want 5m", got)
+	if got := relayRateLimitBackoff(1); got != 15*time.Minute {
+		t.Fatalf("relayRateLimitBackoff(1) = %s, want 15m", got)
 	}
-	if got := relayRateLimitBackoff(3); got != 20*time.Minute {
-		t.Fatalf("relayRateLimitBackoff(3) = %s, want 20m", got)
+	if got := relayRateLimitBackoff(3); got != time.Hour {
+		t.Fatalf("relayRateLimitBackoff(3) = %s, want 1h", got)
 	}
-	if got := relayRateLimitBackoff(10); got != time.Hour {
-		t.Fatalf("relayRateLimitBackoff(10) = %s, want 1h cap", got)
+	if got := relayRateLimitBackoff(10); got != 4*time.Hour {
+		t.Fatalf("relayRateLimitBackoff(10) = %s, want 4h cap", got)
 	}
 }
 
@@ -417,7 +456,7 @@ func TestRelayPolicyStateExpiresAndClears(t *testing.T) {
 	if !client.relayPolicyBlocked("wss://relay.example", now.Add(time.Minute)) {
 		t.Fatal("expected relay to be blocked during backoff window")
 	}
-	if client.relayPolicyBlocked("wss://relay.example", now.Add(3*time.Minute)) {
+	if client.relayPolicyBlocked("wss://relay.example", now.Add(7*time.Hour)) {
 		t.Fatal("expected relay to unblock after backoff expires")
 	}
 }
@@ -429,7 +468,7 @@ func TestRelayRateLimitPolicyStateExpiresAndClears(t *testing.T) {
 	if !client.relayPolicyBlocked("wss://relay.example", now.Add(4*time.Minute)) {
 		t.Fatal("expected relay to be blocked during rate-limit backoff window")
 	}
-	if client.relayPolicyBlocked("wss://relay.example", now.Add(6*time.Minute)) {
+	if client.relayPolicyBlocked("wss://relay.example", now.Add(16*time.Minute)) {
 		t.Fatal("expected relay to unblock after rate-limit backoff expires")
 	}
 }
@@ -445,6 +484,24 @@ func TestFilterAvailableRelaysSkipsBlocked(t *testing.T) {
 	})
 	if len(got) != 1 || got[0] != "wss://good.example" {
 		t.Fatalf("FilterAvailableRelays = %#v, want only good relay", got)
+	}
+}
+
+func TestRelayPolicyStatePrunesToCap(t *testing.T) {
+	client := NewClient(nil, time.Second)
+	now := time.Now()
+	for i := 0; i < relayPolicyMaxEntries+10; i++ {
+		relay := fmt.Sprintf("wss://relay-%04d.example", i)
+		client.relayPolicy[relay] = relayPolicyState{
+			failCount: 1,
+			until:     now.Add(6 * time.Hour),
+			reason:    relayPolicyKindAuth,
+			updatedAt: now.Add(time.Duration(i) * time.Second),
+		}
+	}
+	client.pruneRelayPolicyLocked(now)
+	if got := len(client.relayPolicy); got > relayPolicyMaxEntries {
+		t.Fatalf("relay policy entries = %d, want <= %d", got, relayPolicyMaxEntries)
 	}
 }
 

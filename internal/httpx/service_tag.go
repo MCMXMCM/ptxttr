@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"ptxt-nstr/internal/store"
@@ -40,17 +41,18 @@ func (s *Server) newTagPlan(ctx context.Context, req tagRequest) tagPlan {
 		scopedAuthors = resolved.authors
 	}
 	viewer := resolved.viewerForMuteFilter()
+	tagCacheKey := normalizeTagCacheKey(req.Tag)
 	storeKey := fmt.Sprintf("tag|%s|%s|%s|%s|%s|%d|%s|%d",
 		viewer,
 		scope,
 		searchKindsKey,
 		authorsCacheKey(scopedAuthors),
-		req.Tag,
+		tagCacheKey,
 		req.Cursor,
 		req.CursorID,
 		req.Limit,
 	)
-	pageKey := storeKey + "|" + strconv.FormatBool(req.WoT.Enabled) + "|" + strconv.Itoa(req.WoT.Depth) + "|" + hashStringSlice(req.Relays)
+	pageKey := storeKey + "|" + req.Tag + "|" + strconv.FormatBool(req.WoT.Enabled) + "|" + strconv.Itoa(req.WoT.Depth) + "|" + hashStringSlice(req.Relays)
 	return tagPlan{
 		req:           req,
 		resolved:      resolved,
@@ -59,6 +61,10 @@ func (s *Server) newTagPlan(ctx context.Context, req tagRequest) tagPlan {
 		storeKey:      storeKey,
 		pageKey:       pageKey,
 	}
+}
+
+func normalizeTagCacheKey(tag string) string {
+	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(tag), "#"))
 }
 
 func (s *Server) tagData(ctx context.Context, plan tagPlan) TagPageData {

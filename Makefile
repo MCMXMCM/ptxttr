@@ -1,20 +1,21 @@
-.PHONY: run test fmt tidy vet lint check build-cfn-artifact upload-cfn-artifact deploy deploy-infra deploy-cloudfront grow-prod-volume grow-prod-data-volume validate-cfn build-desktop desktop-build desktop-package desktop-sign
+.PHONY: build-web run test test-js test-e2e fmt tidy vet lint check build-cfn-artifact upload-cfn-artifact deploy deploy-infra deploy-cloudfront grow-prod-volume grow-prod-data-volume validate-cfn build-desktop desktop-build desktop-package desktop-sign
 
 ARTIFACT_BUCKET ?= your-artifact-bucket
 
-run:
+build-web:
+	npm run build:web
+
+run: build-web
 	go run ./cmd/server
 
-JS_SNAPSHOT_TESTS = web/static/js/feed-snapshot-keys.test.js web/static/js/profile-snapshot-keys.test.js web/static/js/prefetch.test.js web/static/js/thread-hydrate.test.js web/static/js/thread-prefetch.test.js
-
-test:
+test: build-web
 	go test ./...
 	$(MAKE) test-js
 
 test-js:
-	node --test $(JS_SNAPSHOT_TESTS)
+	npm run test:unit
 
-test-e2e:
+test-e2e: build-web
 	@env -i HOME="$$HOME" PATH="$$PATH" USER="$$USER" LOGNAME="$$LOGNAME" \
 		GOMODCACHE="$$HOME/go/pkg/mod" GOCACHE="$$HOME/Library/Caches/go-build" \
 		go build -o /tmp/ptxt-e2e-server ./cmd/server
@@ -27,10 +28,10 @@ fmt:
 tidy:
 	go mod tidy
 
-vet:
+vet: build-web
 	go vet ./...
 
-lint:
+lint: build-web
 	golangci-lint run ./...
 
 check: fmt vet lint test

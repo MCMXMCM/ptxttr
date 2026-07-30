@@ -3,6 +3,7 @@ package httpx
 import (
 	"bytes"
 	"html/template"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -28,6 +29,64 @@ func TestAsciiFillHasMinimumOneDash(t *testing.T) {
 	got := asciiFill(8, "+- ", "very-long-author-label", " -- ", "20d", " ", "[...]", " +")
 	if got != "-" {
 		t.Fatalf("asciiFill() = %q, want one dash", got)
+	}
+}
+
+func TestServerFeedHeaderReservesAvatarGutter(t *testing.T) {
+	profiles := map[string]nostrx.Profile{
+		"author": {Name: "Derek Ross"},
+	}
+	author := asciiFeedAuthor(asciiWidthMobile, profiles, "author")
+	age := "10m"
+	dashes := asciiFeedHeaderFill(asciiWidthMobile, "+--", author, " -- ", age, " ", "[...]", "+")
+	header := "+--" + author + " -- " + age + " " + dashes + "[...]+"
+
+	got := stringDisplayWidth(header) + feedNoteAvatarRuneReserve
+	if got != asciiWidthMobile {
+		t.Fatalf("feed header visual width = %d, want %d; header=%q", got, asciiWidthMobile, header)
+	}
+	if !strings.HasSuffix(header, "[...]+") {
+		t.Fatalf("feed header suffix = %q, want visible [...]+", header)
+	}
+}
+
+func TestServerThreadHeadersAndFootersFitMobileWidth(t *testing.T) {
+	const (
+		width  = asciiWidthMobile
+		author = "Noshole"
+		age    = "1h"
+	)
+
+	replyAuthor := asciiReplyHeaderAuthor(width, author, age)
+	replyHeader := replyAuthor + " -- " + age + asciiReplyHeaderFill(width, replyAuthor, age) + "[...]"
+	if got := stringDisplayWidth(replyHeader) + replyHeaderAvatarRuneReserve; got != width {
+		t.Fatalf("reply header visual width = %d, want %d; header=%q", got, width, replyHeader)
+	}
+
+	selectedAuthor := asciiSelectedHeaderAuthor(width, author, age)
+	selectedHeader := selectedAuthor + " -- " + age + " " + asciiSelectedHeaderFill(width, selectedAuthor, age) + "[...]+"
+	if got := stringDisplayWidth(selectedHeader) + selectedHeaderAvatarRuneReserve; got != width {
+		t.Fatalf("selected header visual width = %d, want %d; header=%q", got, width, selectedHeader)
+	}
+
+	rb := reactionBracketBlock(0, "")
+	for _, tc := range []struct {
+		name   string
+		prefix string
+		label  string
+	}{
+		{name: "parent", prefix: "|    ", label: "1 reply"},
+		{name: "selected", prefix: "", label: ""},
+	} {
+		fill := asciiReplyFooterFill(width, tc.prefix, rb, tc.label)
+		footer := tc.prefix + " " + rb + " " + fill
+		if tc.label != "" {
+			footer += " " + tc.label
+		}
+		footer += " [reply] ---+"
+		if got := stringDisplayWidth(footer); got != width {
+			t.Fatalf("%s footer width = %d, want %d; footer=%q", tc.name, got, width, footer)
+		}
 	}
 }
 
@@ -60,6 +119,21 @@ func TestAsciiBoxLinePadsToFixedWidth(t *testing.T) {
 	}
 	if len([]rune(got)) != 20 {
 		t.Fatalf("asciiBoxLine() length = %d, want 20", len([]rune(got)))
+	}
+}
+
+func TestAsciiReferencePlaceholderLinesFitMobileWidth(t *testing.T) {
+	lines := asciiReferencePlaceholderLines(asciiWidthMobile)
+	if len(lines) != 4 {
+		t.Fatalf("placeholder line count = %d, want 4", len(lines))
+	}
+	if !strings.Contains(lines[0], "loading reposted note") {
+		t.Fatalf("placeholder header = %q", lines[0])
+	}
+	for i, line := range lines {
+		if got := stringDisplayWidth(line); got != asciiWidthMobile {
+			t.Fatalf("placeholder line %d width = %d, want %d: %q", i, got, asciiWidthMobile, line)
+		}
 	}
 }
 
@@ -114,6 +188,35 @@ func TestAsciiTextLinesCachesByContentAndWidth(t *testing.T) {
 	}
 }
 
+func TestUserFollowItemUsesRawNIP05ForVerification(t *testing.T) {
+	const pubkey = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	tmpl, err := template.New("").Funcs(templateFuncs()).ParseFS(templatesfs.FS, "*.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	err = tmpl.ExecuteTemplate(&buf, "user_follow_item", map[string]any{
+		"Pubkey": pubkey,
+		"Profiles": map[string]nostrx.Profile{
+			pubkey: {
+				PubKey: pubkey,
+				Name:   "Root Domain",
+				NIP05:  "_@example.com",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, `data-nip05="_@example.com"`) {
+		t.Fatalf("follow item should verify with raw NIP-05 identifier, got: %s", got)
+	}
+	if !strings.Contains(got, `>example.com</span>`) {
+		t.Fatalf("follow item should display domain-root NIP-05 without _@, got: %s", got)
+	}
+}
+
 func TestReplyTextWidthUsesAvailableCardWidth(t *testing.T) {
 	if got := replyTextWidth(120); got != 112 {
 		t.Fatalf("replyTextWidth(120) = %d, want 112", got)
@@ -123,12 +226,40 @@ func TestReplyTextWidthUsesAvailableCardWidth(t *testing.T) {
 	}
 }
 
+func TestSelectedReplyTextWidthUsesRightPipeWidth(t *testing.T) {
+	if got := selectedReplyTextWidth(42); got != 40 {
+		t.Fatalf("selectedReplyTextWidth(42) = %d, want 40", got)
+	}
+	if got := selectedReplyTextWidth(24); got != 22 {
+		t.Fatalf("selectedReplyTextWidth(24) = %d, want 22", got)
+	}
+}
+
+func TestThreadTreeTextWidthUsesMoreMobileColumns(t *testing.T) {
+	want := asciiWidthMobile - 4
+	if got := threadTreeTextWidth(asciiWidthMobile); got != want {
+		t.Fatalf("threadTreeTextWidth(%d) = %d, want %d", asciiWidthMobile, got, want)
+	}
+	if got := threadTreeTextWidth(24); got != 20 {
+		t.Fatalf("threadTreeTextWidth(24) = %d, want minimum 20", got)
+	}
+}
+
 func TestAsciiReplyPadLineMatchesWrappedColumnWidth(t *testing.T) {
 	w := 120
 	want := clampRenderWidth(replyTextWidth(w))
 	got := len(asciiReplyPadLine(w))
 	if got != want {
 		t.Fatalf("len(asciiReplyPadLine(%d)) = %d, want %d", w, got, want)
+	}
+}
+
+func TestAsciiSelectedReplyPadLineMatchesWrappedColumnWidth(t *testing.T) {
+	w := 42
+	want := clampRenderWidth(selectedReplyTextWidth(w))
+	got := len(asciiSelectedReplyPadLine(w))
+	if got != want {
+		t.Fatalf("len(asciiSelectedReplyPadLine(%d)) = %d, want %d", w, got, want)
 	}
 }
 
@@ -218,14 +349,50 @@ func TestAuthorLabelFallsBackToTruncatedID(t *testing.T) {
 	}
 }
 
+func TestThreadSelectHrefForRoot(t *testing.T) {
+	eventID := strings.Repeat("b", 64)
+	if got := threadSelectHrefForRoot("", eventID); got != "/thread/"+eventID {
+		t.Fatalf("threadSelectHrefForRoot(empty, event) = %q", got)
+	}
+	if got := threadSelectHrefForRoot(eventID, eventID); got != "/thread/"+eventID {
+		t.Fatalf("threadSelectHrefForRoot(self, event) = %q", got)
+	}
+	rootID := strings.Repeat("a", 64)
+	if got := threadSelectHrefForRoot(rootID, eventID); got != "/thread/"+rootID+"?selected="+eventID+"#note-"+eventID {
+		t.Fatalf("threadSelectHrefForRoot(root, event) = %q", got)
+	}
+}
+
+func TestThreadSelectHrefForNIP22CommentFocusesReplyUnderRoot(t *testing.T) {
+	rootID := strings.Repeat("a", 64)
+	parentID := strings.Repeat("b", 64)
+	commentID := strings.Repeat("c", 64)
+	comment := nostrx.Event{
+		ID:   commentID,
+		Kind: nostrx.KindComment,
+		Tags: [][]string{
+			{"E", rootID, "wss://root.example", strings.Repeat("d", 64)},
+			{"e", parentID, "wss://parent.example", strings.Repeat("e", 64)},
+		},
+	}
+	want := "/thread/" + rootID + "?selected=" + commentID + "#note-" + commentID
+	if got := threadSelectHref(comment); got != want {
+		t.Fatalf("threadSelectHref(kind 1111) = %q, want %q", got, want)
+	}
+}
+
 func TestAsciiWidthForRequestWithQuery(t *testing.T) {
 	s := &Server{}
 	req := httptest.NewRequest("GET", "/thread/abc?ascii_w=42&fragment=focus", nil)
 	req.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)")
-	if got := s.asciiWidthForRequestWithQuery(req); got != asciiWidthMobile {
-		t.Fatalf("asciiWidthForRequestWithQuery() = %d, want %d (ascii_w overrides desktop UA)", got, asciiWidthMobile)
+	if got := s.asciiWidthForRequestWithQuery(req); got != 42 {
+		t.Fatalf("asciiWidthForRequestWithQuery() = %d, want 42 (ascii_w overrides desktop UA)", got)
 	}
-	userReq := httptest.NewRequest("GET", "/u/npub1?ascii_w=120&fragment=posts", nil)
+	exact := httptest.NewRequest("GET", "/thread/abc?ascii_w=57&fragment=focus", nil)
+	if got := s.asciiWidthForRequestWithQuery(exact); got != 57 {
+		t.Fatalf("asciiWidthForRequestWithQuery(exact) = %d, want 57", got)
+	}
+	userReq := httptest.NewRequest("GET", "/u/npub1?ascii_w=120", nil)
 	userReq.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)")
 	if got := s.asciiWidthForUserRequestWithQuery(userReq); got != asciiWidthUserDesktop {
 		t.Fatalf("asciiWidthForUserRequestWithQuery(ascii_w=120) = %d, want %d", got, asciiWidthUserDesktop)
@@ -281,6 +448,30 @@ func TestAsciiWidthForRequest(t *testing.T) {
 	}
 }
 
+func TestAsciiWidthForRequestUsesMeasuredCookie(t *testing.T) {
+	s := &Server{}
+	mobile := httptest.NewRequest("GET", "/", nil)
+	mobile.Header.Set("User-Agent", "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) Mobile/15E148")
+	mobile.AddCookie(&http.Cookie{Name: asciiWidthCookieName, Value: "58"})
+	if got := s.asciiWidthForRequest(mobile); got != 58 {
+		t.Fatalf("mobile cookie width = %d, want 58", got)
+	}
+
+	desktop := httptest.NewRequest("GET", "/", nil)
+	desktop.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)")
+	desktop.AddCookie(&http.Cookie{Name: asciiWidthDesktopCookieName, Value: "58"})
+	if got := s.asciiWidthForRequest(desktop); got != 58 {
+		t.Fatalf("desktop cookie width = %d, want 58", got)
+	}
+
+	desktopWithMobileCookie := httptest.NewRequest("GET", "/", nil)
+	desktopWithMobileCookie.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)")
+	desktopWithMobileCookie.AddCookie(&http.Cookie{Name: asciiWidthCookieName, Value: "75"})
+	if got := s.asciiWidthForRequest(desktopWithMobileCookie); got != asciiWidthDesktop {
+		t.Fatalf("desktop mobile-cookie width = %d, want fallback %d", got, asciiWidthDesktop)
+	}
+}
+
 // Regression: home must always emit data-load-more so feed.js can bind even when
 // SSR shows notes but HasMore is false (deferred shell / starter snapshot).
 func TestHomeIncludesLoadMoreWhenHasMoreFalseWithNonEmptyFeed(t *testing.T) {
@@ -327,6 +518,45 @@ func TestHomeIncludesLoadMoreWhenHasMoreFalseWithNonEmptyFeed(t *testing.T) {
 	if !strings.Contains(out, `id="note-deadbeefcafe"`) {
 		t.Fatalf("expected rendered feed note id in output")
 	}
+	if strings.Contains(out, `id="feed-wot-depth-feed"`) {
+		t.Fatalf("logged-out home template unexpectedly rendered an editable Web of Trust selector")
+	}
+}
+
+func TestHomeHidesLoadMoreWhileFeedLoaderIsVisible(t *testing.T) {
+	tmpl, err := template.New("").Funcs(templateFuncs()).ParseFS(templatesfs.FS, "*.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := FeedPageData{
+		BasePageData: BasePageData{
+			Title:      "Nostr Feed",
+			Active:     "feed",
+			PageClass:  "feed-shell",
+			AsciiWidth: asciiWidthMobile,
+		},
+		Feed:              nil,
+		Profiles:          map[string]nostrx.Profile{},
+		ReplyCounts:       map[string]int{},
+		ReferencedEvents:  map[string]nostrx.Event{},
+		ReactionTotals:    map[string]int{},
+		ReactionViewers:   map[string]string{},
+		HasMore:           true,
+		DefaultFeed:       true,
+		FeedSort:          "recent",
+		TrendingTimeframe: "24h",
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "home", data); err != nil {
+		t.Fatalf("execute home: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `data-feed-loader`) {
+		t.Fatal("expected feed loader")
+	}
+	if !strings.Contains(out, `data-feed-url="/feed" data-fragment="1" data-cursor="0" data-cursor-id="" type="button" hidden`) {
+		t.Fatalf("load-more button was not hidden with the feed loader: %s", truncateForLog(out, 1200))
+	}
 }
 
 func TestAsciiTemplatesExecute(t *testing.T) {
@@ -360,6 +590,102 @@ func TestAsciiTemplatesExecute(t *testing.T) {
 		t.Fatalf("note template did not render note-feed-avatar: %s", note.String())
 	}
 
+	longEvent := event
+	longEvent.Content = strings.Repeat("wrapped note content ", 20)
+	var longNote bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&longNote, "note", map[string]any{
+		"Event":      longEvent,
+		"Profiles":   data["Profiles"],
+		"Width":      asciiWidthMobile,
+		"ReplyCount": 0,
+	}); err != nil {
+		t.Fatalf("execute long note template: %v", err)
+	}
+	longNoteHTML := longNote.String()
+	if !strings.Contains(longNoteHTML, `ascii-line-note-view-more ascii-ssr-mobile-only`) ||
+		!strings.Contains(longNoteHTML, `ascii-ssr-desktop-only`) {
+		t.Fatalf("long note first paint did not render responsive collapse controls: %s", longNoteHTML)
+	}
+	mediaOnStart := strings.Index(longNoteHTML, `ascii-ssr-media-mode ascii-ssr-media-on`)
+	mediaOffStart := strings.Index(longNoteHTML, `ascii-ssr-media-mode ascii-ssr-media-off`)
+	if mediaOnStart < 0 || mediaOffStart <= mediaOnStart {
+		t.Fatalf("long note first paint omitted media-mode variants: %s", longNoteHTML)
+	}
+	mediaBodyOnOffset := strings.Index(longNoteHTML[mediaOffStart:], `ascii-ssr-media-mode ascii-ssr-media-on`)
+	if mediaBodyOnOffset < 0 {
+		t.Fatalf("long note first paint omitted media-on body variant: %s", longNoteHTML)
+	}
+	mediaBodyOnStart := mediaOffStart + mediaBodyOnOffset
+	mediaBodyOffOffset := strings.Index(longNoteHTML[mediaBodyOnStart:], `ascii-ssr-media-mode ascii-ssr-media-off`)
+	if mediaBodyOffOffset < 0 {
+		t.Fatalf("long note first paint omitted media-off body variant: %s", longNoteHTML)
+	}
+	mediaOnHTML := longNoteHTML[mediaBodyOnStart : mediaBodyOnStart+mediaBodyOffOffset]
+	if got := strings.Count(mediaOnHTML, `<span class="ascii-line">| wrapped note content`); got != collapsedFeedNoteLines {
+		t.Fatalf("long note first paint rendered %d body rows, want %d: %s", got, collapsedFeedNoteLines, longNoteHTML)
+	}
+
+	longMediaEvent := event
+	longMediaEvent.ID = "long-media"
+	longMediaEvent.Content = strings.Repeat("wrapped media note content ", 20) + "https://media.example.test/large.jpg"
+	longMediaEvent.Tags = [][]string{
+		{"imeta", "url https://media.example.test/large.jpg", "m image/jpeg", "dim 1200x800"},
+	}
+	var longMediaNote bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&longMediaNote, "note", map[string]any{
+		"Event":      longMediaEvent,
+		"Profiles":   data["Profiles"],
+		"Width":      asciiWidthMobile,
+		"ReplyCount": 0,
+	}); err != nil {
+		t.Fatalf("execute long media note template: %v", err)
+	}
+	longMediaHTML := longMediaNote.String()
+	if !strings.Contains(longMediaHTML, `ascii-line-feed-header ascii-ssr-desktop-only`) ||
+		!strings.Contains(longMediaHTML, `<button type="button" class="link-button">view more</button>+</span></span>`) {
+		t.Fatalf("long media note first paint did not put desktop view more in its header: %s", longMediaHTML)
+	}
+	if strings.Contains(longMediaHTML, `ascii-ssr-desktop-only">+-- [△] 0 [▽] --- <button type="button" class="link-button">view more</button>`) {
+		t.Fatalf("long media note first paint left desktop view more in its footer: %s", longMediaHTML)
+	}
+	if !strings.Contains(longMediaHTML, `data-media-grid-signature="image:https://media.example.test/large.jpg"`) ||
+		!strings.Contains(longMediaHTML, `style="--note-media-image-aspect-ratio: 1200 / 800"`) ||
+		!strings.Contains(longMediaHTML, `<img src="https://media.example.test/large.jpg" alt="" loading="lazy" decoding="async" width="1200" height="800">`) ||
+		!strings.Contains(longMediaHTML, `ascii-ssr-media-mode ascii-ssr-media-off`) {
+		t.Fatalf("long media note first paint omitted reusable media grid or preference fallback: %s", longMediaHTML)
+	}
+
+	referenceID := strings.Repeat("b", 64)
+	repost := event
+	repost.ID = "repost"
+	repost.Kind = nostrx.KindRepost
+	repost.Content = ""
+	repost.Tags = [][]string{{"e", referenceID}}
+	repostData := map[string]any{
+		"Event":      repost,
+		"Profiles":   data["Profiles"],
+		"Width":      asciiWidthMobile,
+		"ReplyCount": 0,
+		"ReferencedEvents": map[string]nostrx.Event{referenceID: {
+			ID:      referenceID,
+			PubKey:  event.PubKey,
+			Content: "referenced content https://media.example.test/reference.jpg",
+			Tags:    [][]string{{"imeta", "url https://media.example.test/reference.jpg", "m image/jpeg", "dim 640x480"}},
+		}},
+	}
+	var repostNote bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&repostNote, "note", repostData); err != nil {
+		t.Fatalf("execute repost note template: %v", err)
+	}
+	repostHTML := repostNote.String()
+	if !strings.Contains(repostHTML, `class="ascii-reference-placeholder"`) ||
+		!strings.Contains(repostHTML, `data-ascii-ref-select-href="/thread/`+referenceID+`"`) ||
+		!strings.Contains(repostHTML, "loading reposted note") ||
+		!strings.Contains(repostHTML, `note-media-grid-row reference-media-row`) ||
+		!strings.Contains(repostHTML, `data-media-grid-signature="image:https://media.example.test/reference.jpg"`) {
+		t.Fatalf("repost first paint should contain a navigable reference placeholder: %s", repostHTML)
+	}
+
 	node := thread.Node{Event: event, Depth: 1, ParentID: "parent"}
 	var reply bytes.Buffer
 	if err := tmpl.ExecuteTemplate(&reply, "comment", map[string]any{
@@ -388,6 +714,26 @@ func TestAsciiTemplatesExecute(t *testing.T) {
 	if strings.Contains(out, `[select]`) {
 		t.Fatalf("comment template should not render [select]: %s", out)
 	}
+	if !strings.Contains(out, `>[...]</a>`) || !strings.Contains(out, `] ---+`) {
+		t.Fatalf("comment first paint should include menu and reaction footer: %s", out)
+	}
+
+	mediaNode := thread.Node{Event: longMediaEvent, Depth: 1, ParentID: "parent"}
+	var mediaReply bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&mediaReply, "comment", map[string]any{
+		"Node":       mediaNode,
+		"Profiles":   data["Profiles"],
+		"SelectedID": "",
+		"RootID":     "root",
+		"Width":      asciiWidthMobile,
+		"IsLast":     true,
+	}); err != nil {
+		t.Fatalf("execute media comment template: %v", err)
+	}
+	if mediaReplyHTML := mediaReply.String(); !strings.Contains(mediaReplyHTML, `reply-media-row note-media-grid-row`) ||
+		!strings.Contains(mediaReplyHTML, `data-media-grid-signature="image:https://media.example.test/large.jpg"`) {
+		t.Fatalf("comment first paint omitted reusable media grid: %s", mediaReplyHTML)
+	}
 
 	var selectedReply bytes.Buffer
 	if err := tmpl.ExecuteTemplate(&selectedReply, "comment", map[string]any{
@@ -402,6 +748,58 @@ func TestAsciiTemplatesExecute(t *testing.T) {
 	}
 	if strings.Contains(selectedReply.String(), `[select]`) {
 		t.Fatalf("selected comment should not render [select]: %s", selectedReply.String())
+	}
+
+	focusData := map[string]any{
+		"Event":      event,
+		"Profiles":   data["Profiles"],
+		"RootID":     "root",
+		"Width":      asciiWidthMobile,
+		"ReplyCount": 2,
+	}
+	for _, name := range []string{"thread_focus_parent", "thread_focus_selected"} {
+		var focus bytes.Buffer
+		if err := tmpl.ExecuteTemplate(&focus, name, focusData); err != nil {
+			t.Fatalf("execute %s template: %v", name, err)
+		}
+		focusHTML := focus.String()
+		if !strings.Contains(focusHTML, `>[...]</a>`) || !strings.Contains(focusHTML, `] ---+`) {
+			t.Fatalf("%s first paint should include menu and reaction footer: %s", name, focusHTML)
+		}
+	}
+}
+
+func TestThreadSummaryPlacesDepthAfterViewModeToggle(t *testing.T) {
+	tmpl, err := template.New("").Funcs(templateFuncs()).ParseFS(templatesfs.FS, "*.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootID := strings.Repeat("a", 64)
+	selectedID := strings.Repeat("b", 64)
+	data := ThreadPageData{
+		BasePageData: BasePageData{
+			Title:      "Thread",
+			PageClass:  "feed-shell",
+			AsciiWidth: asciiWidthMobile,
+		},
+		Thread: thread.View{
+			Root:     &nostrx.Event{ID: rootID},
+			Selected: &nostrx.Event{ID: selectedID},
+		},
+		SelectedID:    selectedID,
+		SelectedDepth: 2,
+		FocusedView:   true,
+	}
+	var buf bytes.Buffer
+	if err := tmpl.ExecuteTemplate(&buf, "thread_summary", data); err != nil {
+		t.Fatalf("execute thread_summary: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, `data-thread-view-toggle`) {
+		t.Fatalf("expected thread view toggle in summary: %s", out)
+	}
+	if strings.Contains(out, `data-thread-wot-toggle`) {
+		t.Fatalf("unexpected thread WoT toggle in summary header: %s", out)
 	}
 }
 
@@ -464,6 +862,14 @@ func TestBioLinkHTMLHashtagAnchors(t *testing.T) {
 	}
 	if strings.Contains(html, "<script") {
 		t.Fatalf("unexpected script-like content: %s", html)
+	}
+}
+
+func TestBriefBioTruncatesToWordCount(t *testing.T) {
+	got := briefBio("one two three four five six seven eight nine ten eleven twelve thirteen fourteen", 12)
+	want := "one two three four five six seven eight nine ten eleven twelve..."
+	if got != want {
+		t.Fatalf("briefBio() = %q, want %q", got, want)
 	}
 }
 

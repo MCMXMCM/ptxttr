@@ -26,7 +26,7 @@ func signedInFeedSnapshotKey(viewerHex string, sortMode string, wot webOfTrustOp
 }
 
 // isGuestCanonicalSnapshotTarget matches anonymous home shapes we keep durable
-// snapshots for: default Jack seed, default WoT depth, canonical default relays.
+// snapshots for: default Gigi seed, default WoT depth, canonical default relays.
 func (s *Server) isGuestCanonicalSnapshotTarget(req feedRequest) bool {
 	if s == nil {
 		return false
@@ -74,14 +74,14 @@ func feedSnapshotRecordFromFeedPageData(req feedRequest, data *FeedPageData, isS
 		}
 	}
 	rec := &store.FeedSnapshotRecord{
-		IsStarter:        isStarter,
-		RelaysHash:       hashStringSlice(req.Relays),
-		Feed:             append([]nostrx.Event(nil), data.Feed...),
-		Profiles:         prof,
-		Cursor:           data.Cursor,
-		CursorID:         data.CursorID,
-		HasMore:          data.HasMore,
-		ComputedAtUnix:   time.Now().Unix(),
+		IsStarter:      isStarter,
+		RelaysHash:     hashStringSlice(req.Relays),
+		Feed:           append([]nostrx.Event(nil), data.Feed...),
+		Profiles:       prof,
+		Cursor:         data.Cursor,
+		CursorID:       data.CursorID,
+		HasMore:        data.HasMore,
+		ComputedAtUnix: time.Now().Unix(),
 	}
 	if data.ReferencedEvents != nil {
 		rec.ReferencedEvents = maps.Clone(data.ReferencedEvents)

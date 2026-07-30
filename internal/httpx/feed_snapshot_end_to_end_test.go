@@ -24,15 +24,41 @@ func testFeedSnapshotRecord(relaysHash string, content string) *store.FeedSnapsh
 	}
 }
 
-func TestSignedInFeedDocumentUsesDurableSnapshotWhenPersonalizationCold(t *testing.T) {
+func persistTestFeedSnapshot(t *testing.T, ctx context.Context, st *store.Store, key string, rec *store.FeedSnapshotRecord) {
+	t.Helper()
+	for _, event := range rec.Feed {
+		if err := st.SaveEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.SetFeedSnapshot(ctx, key, rec); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertClientShellFeedDocument(t *testing.T, body, pathSnippet string) {
+	t.Helper()
+	if !strings.Contains(body, "ptxt-route-context") {
+		t.Fatalf("expected route context in shell document: %s", body)
+	}
+	if !strings.Contains(body, `data-route-outlet="root"`) {
+		t.Fatalf("expected app shell root outlet in shell document: %s", body)
+	}
+	if strings.Contains(body, `data-feed-loader`) {
+		t.Fatalf("expected feed document to avoid server-rendered feed loader markup: %s", body)
+	}
+	if pathSnippet != "" && !strings.Contains(body, pathSnippet) {
+		t.Fatalf("expected route context path snippet %q in shell document: %s", pathSnippet, body)
+	}
+}
+
+func TestSignedInFeedDocumentRendersPersonalizedSnapshot(t *testing.T) {
 	srv, st := testServer(t)
 	ctx := context.Background()
 	viewer := strings.Repeat("a", 64)
 	relays := []string{"wss://custom.example"}
 	key := signedInFeedSnapshotKey(viewer, feedSortTrend24h, webOfTrustOptions{Enabled: false, Depth: 1}, relays)
-	if err := st.SetFeedSnapshot(ctx, key, testFeedSnapshotRecord(hashStringSlice(relays), "persisted personalized note")); err != nil {
-		t.Fatal(err)
-	}
+	persistTestFeedSnapshot(t, ctx, st, key, testFeedSnapshotRecord(hashStringSlice(relays), "persisted personalized note"))
 
 	req := httptest.NewRequest(http.MethodGet, "/feed?pubkey="+viewer+"&sort=trend24h&relay=wss://custom.example", nil)
 	rec := httptest.NewRecorder()
@@ -42,14 +68,11 @@ func TestSignedInFeedDocumentUsesDurableSnapshotWhenPersonalizationCold(t *testi
 	}
 	body := rec.Body.String()
 	if !strings.Contains(body, "persisted personalized note") {
-		t.Fatalf("expected durable snapshot note in body: %s", body)
-	}
-	if strings.Contains(body, `data-feed-loader`) {
-		t.Fatalf("unexpected loader for durable signed-in snapshot: %s", body)
+		t.Fatalf("expected signed-in feed document to render cached server note, got %s", body)
 	}
 }
 
-func TestSignedInFeedBypassesStalePersonalizedSnapshot(t *testing.T) {
+func TestSignedInFeedDocumentIgnoresStalePersonalizedSnapshot(t *testing.T) {
 	srv, st := testServer(t)
 	ctx := context.Background()
 	viewer := strings.Repeat("a", 64)
@@ -58,9 +81,7 @@ func TestSignedInFeedBypassesStalePersonalizedSnapshot(t *testing.T) {
 	key := signedInFeedSnapshotKey(viewer, feedSortRecent, webOfTrustOptions{Enabled: false, Depth: 1}, relays)
 	rec := testFeedSnapshotRecord(hashStringSlice(relays), "stale personalized note")
 	rec.ComputedAtUnix = time.Now().Add(-signedInFeedSnapshotMaxAge - time.Minute).Unix()
-	if err := st.SetFeedSnapshot(ctx, key, rec); err != nil {
-		t.Fatal(err)
-	}
+	persistTestFeedSnapshot(t, ctx, st, key, rec)
 	for _, event := range []nostrx.Event{
 		{ID: strings.Repeat("4", 64), PubKey: viewer, CreatedAt: time.Now().Unix() - 10, Kind: nostrx.KindFollowList, Tags: [][]string{{"p", author}}, Sig: strings.Repeat("5", 128)},
 		{ID: strings.Repeat("6", 64), PubKey: author, CreatedAt: time.Now().Unix() - 5, Kind: nostrx.KindTextNote, Content: "fresh live note", Sig: strings.Repeat("7", 128)},
@@ -77,11 +98,14 @@ func TestSignedInFeedBypassesStalePersonalizedSnapshot(t *testing.T) {
 		t.Fatalf("status = %d, want 200", recorder.Code)
 	}
 	body := recorder.Body.String()
+	if !strings.Contains(body, `data-feed`) || !strings.Contains(body, `data-load-more`) {
+		t.Fatalf("expected server-rendered feed document chrome: %s", body)
+	}
 	if strings.Contains(body, "stale personalized note") {
 		t.Fatalf("stale snapshot should have been bypassed: %s", body)
 	}
 	if !strings.Contains(body, "fresh live note") {
-		t.Fatalf("expected live feed note after stale snapshot bypass: %s", body)
+		t.Fatalf("expected stale snapshot bypass to render fresh server note: %s", body)
 	}
 }
 
@@ -93,16 +117,15 @@ func TestSignedInFeedSnapshotMutedItemsTopUpFromLiveFeed(t *testing.T) {
 	author := strings.Repeat("c", 64)
 	relays := []string{"wss://custom.example"}
 	key := signedInFeedSnapshotKey(viewer, feedSortRecent, webOfTrustOptions{Enabled: false, Depth: 1}, relays)
-	if err := st.SetFeedSnapshot(ctx, key, &store.FeedSnapshotRecord{
+	mutedSnapshot := &store.FeedSnapshotRecord{
 		Version:        feedSnapshotRecordVersion,
 		RelaysHash:     hashStringSlice(relays),
 		Feed:           []nostrx.Event{{ID: strings.Repeat("8", 64), PubKey: muted, CreatedAt: time.Now().Unix(), Kind: nostrx.KindTextNote, Content: "muted snapshot note", Sig: strings.Repeat("9", 128)}},
 		Profiles:       map[string]store.DefaultSeedProfileSnap{},
 		HasMore:        true,
 		ComputedAtUnix: time.Now().Unix(),
-	}); err != nil {
-		t.Fatal(err)
 	}
+	persistTestFeedSnapshot(t, ctx, st, key, mutedSnapshot)
 	for _, event := range []nostrx.Event{
 		{ID: strings.Repeat("d", 64), PubKey: viewer, CreatedAt: time.Now().Unix() - 20, Kind: nostrx.KindFollowList, Tags: [][]string{{"p", author}}, Sig: strings.Repeat("1", 128)},
 		{ID: strings.Repeat("e", 64), PubKey: viewer, CreatedAt: time.Now().Unix() - 19, Kind: nostrx.KindMuteList, Tags: [][]string{{"p", muted}}, Sig: strings.Repeat("2", 128)},
@@ -120,76 +143,18 @@ func TestSignedInFeedSnapshotMutedItemsTopUpFromLiveFeed(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
+	if !strings.Contains(body, `data-feed`) || !strings.Contains(body, `data-load-more`) {
+		t.Fatalf("expected server-rendered feed document chrome: %s", body)
+	}
 	if strings.Contains(body, "muted snapshot note") {
-		t.Fatalf("muted snapshot note should be filtered: %s", body)
+		t.Fatalf("muted snapshot note should not be inlined into server feed document: %s", body)
 	}
 	if !strings.Contains(body, "top up live note") {
-		t.Fatalf("expected live top-up note after mute filtering: %s", body)
+		t.Fatalf("expected server feed document to top up muted snapshot from live cache: %s", body)
 	}
 }
 
-func TestSignedInFeedFragmentServesStarterSnapshotThenPersistsPersonalizedSnapshot(t *testing.T) {
-	srv, st := testServer(t)
-	ctx := context.Background()
-	viewer := strings.Repeat("a", 64)
-	author := strings.Repeat("b", 64)
-	starterNoteID := strings.Repeat("c", 64)
-	personalizedNoteID := strings.Repeat("d", 64)
-
-	if err := st.SetDefaultSeedGuestFeedSnapshot(ctx, &store.DefaultSeedGuestFeedSnapshot{
-		RelaysHash:       hashStringSlice(srv.canonicalDefaultLoggedOutRelays()),
-		Feed:             []nostrx.Event{{ID: starterNoteID, PubKey: strings.Repeat("e", 64), CreatedAt: time.Now().Unix(), Kind: nostrx.KindTextNote, Content: "starter snapshot note", Sig: strings.Repeat("4", 128)}},
-		Profiles:         map[string]store.DefaultSeedProfileSnap{},
-		ReferencedEvents: map[string]nostrx.Event{},
-		ReplyCounts:      map[string]int{},
-		ReactionTotals:   map[string]int{},
-		ReactionViewers:  map[string]string{},
-		ComputedAtUnix:   time.Now().Unix(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	for _, event := range []nostrx.Event{
-		{ID: strings.Repeat("f", 64), PubKey: viewer, CreatedAt: time.Now().Unix() - 10, Kind: nostrx.KindFollowList, Tags: [][]string{{"p", author}}, Sig: strings.Repeat("5", 128)},
-		{ID: personalizedNoteID, PubKey: author, CreatedAt: time.Now().Unix() - 5, Kind: nostrx.KindTextNote, Content: "personalized warm note", Sig: strings.Repeat("6", 128)},
-	} {
-		if err := st.SaveEvent(ctx, event); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/feed?fragment=1&pubkey="+viewer+"&relay=wss://custom.example", nil)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	if got := rec.Header().Get("X-Ptxt-Feed-Snapshot-Starter"); got != "1" {
-		t.Fatalf("starter header = %q, want 1", got)
-	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "starter snapshot note") {
-		t.Fatalf("expected starter snapshot note in fragment: %s", body)
-	}
-
-	relays := []string{"wss://custom.example"}
-	key := signedInFeedSnapshotKey(viewer, feedSortRecent, webOfTrustOptions{Enabled: false, Depth: 1}, relays)
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		snap, ok, err := st.GetFeedSnapshot(ctx, key)
-		if err == nil && ok && snap != nil && len(snap.Feed) > 0 {
-			if !strings.Contains(snap.Feed[0].Content, "personalized warm note") {
-				t.Fatalf("expected personalized snapshot content, got %#v", snap.Feed)
-			}
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for personalized snapshot key %q", key)
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-}
-
-func TestGuestTrendSnapshotSurvivesProcessRestart(t *testing.T) {
+func TestGuestTrendDocumentStaysShellFirstAfterProcessRestart(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	dbPath := filepath.Join(root, "snapshot.sqlite")
@@ -203,9 +168,7 @@ func TestGuestTrendSnapshotSurvivesProcessRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	key := guestCanonicalFeedSnapshotKey(feedSortTrend7d, srv1.canonicalDefaultLoggedOutRelays())
-	if err := st1.SetFeedSnapshot(ctx, key, testFeedSnapshotRecord(hashStringSlice(srv1.canonicalDefaultLoggedOutRelays()), "restart durable trend note")); err != nil {
-		t.Fatal(err)
-	}
+	persistTestFeedSnapshot(t, ctx, st1, key, testFeedSnapshotRecord(hashStringSlice(srv1.canonicalDefaultLoggedOutRelays()), "restart durable trend note"))
 	srv1.Close()
 	_ = st1.Close()
 
@@ -226,10 +189,10 @@ func TestGuestTrendSnapshotSurvivesProcessRestart(t *testing.T) {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "restart durable trend note") {
-		t.Fatalf("expected durable trend snapshot after restart: %s", body)
+	if !strings.Contains(body, `data-feed`) || !strings.Contains(body, `data-feed-snapshot-starter="1"`) {
+		t.Fatalf("expected server-rendered guest trend feed document: %s", body)
 	}
-	if strings.Contains(body, `data-feed-loader`) {
-		t.Fatalf("unexpected loader for durable trend snapshot after restart: %s", body)
+	if !strings.Contains(body, "restart durable trend note") {
+		t.Fatalf("expected guest trend document to render durable snapshot after restart: %s", body)
 	}
 }

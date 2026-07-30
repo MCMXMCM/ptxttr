@@ -129,6 +129,24 @@ func (s *Server) eventByID(ctx context.Context, id string, relays []string) *nos
 	return s.eventByIDEx(ctx, id, relays, true)
 }
 
+// threadContextEventByIDEx gives thread ancestor/root lookups one extra pass
+// through the configured indexer relay tier before giving up.
+func (s *Server) threadContextEventByIDEx(ctx context.Context, id string, relays []string, allowRelayFetch bool) *nostrx.Event {
+	event := s.eventByIDEx(ctx, id, relays, allowRelayFetch)
+	if event != nil || !allowRelayFetch || s == nil {
+		return event
+	}
+	indexers := s.indexerRelays()
+	if len(indexers) == 0 {
+		return nil
+	}
+	merged := mergeRelayTiers(relays, indexers, nostrx.MaxRelays)
+	if len(merged) == 0 {
+		return nil
+	}
+	return s.eventByIDEx(ctx, id, merged, true)
+}
+
 // eventByIDEx returns the note from the store, or fetches from relays when
 // allowRelayFetch is true (otherwise cache misses return nil).
 func (s *Server) eventByIDEx(ctx context.Context, id string, relays []string, allowRelayFetch bool) *nostrx.Event {

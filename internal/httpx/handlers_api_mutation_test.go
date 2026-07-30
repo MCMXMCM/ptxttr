@@ -380,81 +380,46 @@ func TestHandleEventsSucceedsWhenPersistFails(t *testing.T) {
 	}
 }
 
-func TestHandleProfileAPIReturnsCachedMetadata(t *testing.T) {
-	srv, st := mutationTestServer(t)
-	event := signedMutationEvent(t, nostrx.KindProfileMetadata, `{"name":"seed","display_name":"Seed","website":"https://seed.example","nip05":"seed@example.com"}`, nil)
-	if err := st.SaveEvent(context.Background(), event); err != nil {
-		t.Fatal(err)
-	}
-	req := httptest.NewRequest(http.MethodGet, "/api/profile?pubkey="+event.PubKey, nil)
-	rec := httptest.NewRecorder()
-
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	var response map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatalf("response JSON decode failed: %v", err)
-	}
-	if response["display_name"] != "Seed" {
-		t.Fatalf("display_name = %#v, want Seed", response["display_name"])
-	}
-	if response["website"] != "https://seed.example" {
-		t.Fatalf("website = %#v, want https://seed.example", response["website"])
-	}
-}
-
-func TestHandleProfilesAPIReturnsBatchMetadata(t *testing.T) {
-	srv, st := mutationTestServer(t)
-	event := signedMutationEvent(t, nostrx.KindProfileMetadata, `{"name":"seed","display_name":"Seed","picture":"https://seed.example/a.png"}`, nil)
-	if err := st.SaveEvent(context.Background(), event); err != nil {
-		t.Fatal(err)
-	}
-	req := httptest.NewRequest(http.MethodGet, "/api/profiles?pubkey="+event.PubKey, nil)
-	rec := httptest.NewRecorder()
-
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	var response map[string]struct {
-		DisplayName string `json:"display_name"`
-		AvatarURL   string `json:"avatar_url"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatalf("response JSON decode failed: %v", err)
-	}
-	got := response[event.PubKey]
-	if got.DisplayName != "Seed" {
-		t.Fatalf("display_name = %#v, want Seed", got.DisplayName)
-	}
-	if got.AvatarURL == "" {
-		t.Fatalf("avatar_url is empty")
-	}
-}
-
 func TestHandleRelayInsightAPIReturnsPublishedRelayHints(t *testing.T) {
 	srv, st := mutationTestServer(t)
+	authorSecret := fnostr.Generate()
 	event := signedMutationEvent(t, nostrx.KindRelayListMetadata, "", [][]string{
 		{"r", "wss://relay.primal.net", "write"},
 		{"r", "wss://relay.damus.io", "read"},
 	})
+	authorRelayList := signNostrEvent(t, authorSecret, nostrx.KindRelayListMetadata, "", [][]string{
+		{"r", "wss://author.example", "write"},
+	})
+	followList := signedMutationEvent(t, nostrx.KindFollowList, "", [][]string{
+		{"p", authorRelayList.PubKey, "wss://relay.primal.net"},
+	})
 	if err := st.SaveEvent(context.Background(), event); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.SaveEvent(context.Background(), followList); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveEvent(context.Background(), authorRelayList); err != nil {
+		t.Fatal(err)
+	}
 	req := httptest.NewRequest(http.MethodGet, "/api/relay-insight?pubkey="+event.PubKey, nil)
+	req.Header.Set("X-Ptxt-Relays", "wss://session.example")
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
 	var response struct {
-		PubKey          string `json:"pubkey"`
-		PublishedRelays []struct {
+		PubKey            string   `json:"pubkey"`
+		SessionRelays     []string `json:"session_relays"`
+		EffectiveDefaults []string `json:"effective_default_relays"`
+		PublishedRelays   []struct {
 			URL   string `json:"url"`
 			Usage string `json:"usage"`
 		} `json:"published_relays"`
+		ActiveOutboxRelays    []string `json:"active_outbox_relays"`
+		CachedHintAuthorCount int      `json:"cached_hint_author_count"`
+		FeedAuthorCount       int      `json:"feed_author_count"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("response JSON decode failed: %v", err)
@@ -465,96 +430,44 @@ func TestHandleRelayInsightAPIReturnsPublishedRelayHints(t *testing.T) {
 	if len(response.PublishedRelays) == 0 {
 		t.Fatal("expected published relay hints in insight payload")
 	}
+	if len(response.SessionRelays) != 1 || response.SessionRelays[0] != "wss://session.example" {
+		t.Fatalf("session relays = %#v", response.SessionRelays)
+	}
+	if len(response.EffectiveDefaults) == 0 {
+		t.Fatal("expected effective defaults in insight payload")
+	}
+	if response.ActiveOutboxRelays == nil {
+		t.Fatal("expected active outbox relays field in insight payload")
+	}
+	if response.CachedHintAuthorCount < 0 || response.FeedAuthorCount < 0 {
+		t.Fatalf("hint/feed counts should be non-negative: %d/%d", response.CachedHintAuthorCount, response.FeedAuthorCount)
+	}
 }
 
-func TestHandleBookmarksAPIReturnsBookmarkEntries(t *testing.T) {
+func TestHandleRelayInsightAPIUsesLoggedOutSeedFallback(t *testing.T) {
 	srv, st := mutationTestServer(t)
-	eventID := strings.Repeat("a", 64)
-	bookmark := signedMutationEvent(t, nostrx.KindBookmarkList, "", [][]string{
-		{"e", eventID, "wss://relay.example"},
-		{"e", eventID, "wss://relay.example"},
+	seedSecret := fnostr.Generate()
+	event := signNostrEvent(t, seedSecret, nostrx.KindRelayListMetadata, "", [][]string{
+		{"r", "wss://seed.example", "write"},
 	})
-	if err := st.SaveEvent(context.Background(), bookmark); err != nil {
+	if err := st.SaveEvent(context.Background(), event); err != nil {
 		t.Fatal(err)
 	}
-	req := httptest.NewRequest(http.MethodGet, "/api/bookmarks?pubkey="+bookmark.PubKey, nil)
-	rec := httptest.NewRecorder()
-
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200", rec.Code)
-	}
-	var response struct {
-		Count   int      `json:"count"`
-		IDs     []string `json:"ids"`
-		Entries []struct {
-			ID    string `json:"id"`
-			Relay string `json:"relay"`
-		} `json:"entries"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-		t.Fatalf("response JSON decode failed: %v", err)
-	}
-	if response.Count != 1 || len(response.IDs) != 1 || response.IDs[0] != eventID {
-		t.Fatalf("bookmark ids = %#v, want [%s]", response.IDs, eventID)
-	}
-	if len(response.Entries) != 1 || response.Entries[0].Relay != "wss://relay.example" {
-		t.Fatalf("bookmark entries = %#v", response.Entries)
-	}
-}
-
-func TestHandleMentionsAPIReturnsContactAndThreadCandidates(t *testing.T) {
-	srv, st := mutationTestServer(t)
-	viewerFollowed := "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
-	followList := signedMutationEvent(t, nostrx.KindFollowList, "", [][]string{
-		{"p", viewerFollowed, "wss://relay.primal.net"},
-	})
-	root := signedMutationEvent(t, nostrx.KindTextNote, "root", nil)
-	reply := signedMutationEvent(t, nostrx.KindTextNote, "reply", [][]string{
-		{"e", root.ID, "wss://relay.primal.net"},
-		{"e", root.ID, "wss://relay.primal.net", "root"},
-	})
-	for _, event := range []nostrx.Event{followList, root, reply} {
-		if err := st.SaveEvent(context.Background(), event); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/mentions?pubkey="+followList.PubKey+"&root_id="+root.ID, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/relay-insight", nil)
+	req.Header.Set("X-Ptxt-Wot-Seed", event.PubKey)
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 	var response struct {
-		Candidates []struct {
-			PubKey string `json:"pubkey"`
-			NPub   string `json:"npub"`
-			NRef   string `json:"nref"`
-			Source string `json:"source"`
-		} `json:"candidates"`
+		PubKey string `json:"pubkey"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("response JSON decode failed: %v", err)
 	}
-	if len(response.Candidates) == 0 {
-		t.Fatal("expected mention candidates")
-	}
-	var foundContact bool
-	var foundThread bool
-	for _, candidate := range response.Candidates {
-		if candidate.PubKey == viewerFollowed && candidate.Source == "contact" {
-			foundContact = strings.HasPrefix(candidate.NRef, "nprofile") || strings.HasPrefix(candidate.NRef, "npub")
-		}
-		if candidate.PubKey == root.PubKey && candidate.Source == "thread" {
-			foundThread = candidate.NPub != ""
-		}
-	}
-	if !foundContact {
-		t.Fatalf("contact candidate missing from response: %#v", response.Candidates)
-	}
-	if !foundThread {
-		t.Fatalf("thread candidate missing from response: %#v", response.Candidates)
+	if response.PubKey != event.PubKey {
+		t.Fatalf("pubkey = %q, want %q", response.PubKey, event.PubKey)
 	}
 }
 
@@ -565,97 +478,6 @@ func mutationTestServer(t *testing.T) (*Server, *store.Store) {
 		requestTimeout: 2 * time.Second,
 		relayTimeout:   2 * time.Second,
 	})
-}
-
-func assertMuteListPrivateNoStore(t *testing.T, rec *httptest.ResponseRecorder) {
-	t.Helper()
-	cc := rec.Header().Get("Cache-Control")
-	if !strings.Contains(cc, "no-store") || !strings.Contains(cc, "private") {
-		t.Fatalf("Cache-Control = %q, want private and no-store", cc)
-	}
-}
-
-func TestHandleMuteListAPI_BadRequestWithoutViewer(t *testing.T) {
-	srv, _ := mutationTestServer(t)
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/api/mute-list", nil)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
-	}
-	assertMuteListPrivateNoStore(t, rec)
-}
-
-func TestHandleMuteListAPI_OKMutedPubkeysOnly(t *testing.T) {
-	srv, st := mutationTestServer(t)
-	ctx := context.Background()
-	secret := fnostr.Generate()
-	target := strings.Repeat("d", 64)
-	muteEv := signNostrEvent(t, secret, nostrx.KindMuteList, "privdata", [][]string{{"p", target}})
-	url := "http://example.com/api/mute-list?pubkey=" + muteEv.PubKey
-	if err := st.SaveEvent(ctx, muteEv); err != nil {
-		t.Fatalf("SaveEvent: %v", err)
-	}
-	req := httptest.NewRequest(http.MethodGet, url, nil)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
-	}
-	assertMuteListPrivateNoStore(t, rec)
-	if strings.Contains(rec.Body.String(), "privdata") {
-		t.Fatal("response must not include mute list event content")
-	}
-	var payload struct {
-		Pubkey        string   `json:"pubkey"`
-		MutedPubkeys  []string `json:"muted_pubkeys"`
-		Tags          [][]string
-		Content       string
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatal(err)
-	}
-	if payload.Pubkey != muteEv.PubKey {
-		t.Fatalf("pubkey %q want %q", payload.Pubkey, muteEv.PubKey)
-	}
-	if len(payload.MutedPubkeys) != 1 || payload.MutedPubkeys[0] != target {
-		t.Fatalf("muted_pubkeys = %#v, want [%q]", payload.MutedPubkeys, target)
-	}
-	if len(payload.Tags) != 0 || payload.Content != "" {
-		t.Fatalf("unexpected tags/content in response: tags=%#v content=%q", payload.Tags, payload.Content)
-	}
-}
-
-func TestHandleMuteListAPI_OKWithViewerHeader(t *testing.T) {
-	srv, st := mutationTestServer(t)
-	ctx := context.Background()
-	secret := fnostr.Generate()
-	target := strings.Repeat("c", 64)
-	muteEv := signNostrEvent(t, secret, nostrx.KindMuteList, "privdata", [][]string{{"p", target}})
-	if err := st.SaveEvent(ctx, muteEv); err != nil {
-		t.Fatalf("SaveEvent: %v", err)
-	}
-	req := httptest.NewRequest(http.MethodGet, "http://example.com/api/mute-list", nil)
-	req.Header.Set(headerViewerPubkey, muteEv.PubKey)
-	rec := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
-	}
-	assertMuteListPrivateNoStore(t, rec)
-	var payload struct {
-		Pubkey       string   `json:"pubkey"`
-		MutedPubkeys []string `json:"muted_pubkeys"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-		t.Fatal(err)
-	}
-	if payload.Pubkey != muteEv.PubKey {
-		t.Fatalf("pubkey %q want %q", payload.Pubkey, muteEv.PubKey)
-	}
-	if len(payload.MutedPubkeys) != 1 || payload.MutedPubkeys[0] != target {
-		t.Fatalf("muted_pubkeys = %#v, want [%q]", payload.MutedPubkeys, target)
-	}
 }
 
 func signNostrEvent(t *testing.T, secret fnostr.SecretKey, kind int, content string, tags [][]string) nostrx.Event {

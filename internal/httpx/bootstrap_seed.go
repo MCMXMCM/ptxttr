@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	defaultLoggedOutSeedBootstrapKey = "logged-out-seed-jack"
+	defaultLoggedOutSeedBootstrapKey = "logged-out-seed-gigi"
 	defaultLoggedOutSeedBootstrapTTL = 15 * time.Minute
 
 	seedBootstrapAttemptTimeout = 90 * time.Second
@@ -26,6 +26,16 @@ func (s *Server) runDefaultSeedPrewarmLoop() {
 	if s == nil {
 		return
 	}
+	// Materialize the request-path caches from the local follow graph even when
+	// the relay bootstrap fetch log is still fresh. In particular, this creates
+	// the thread-specific three-hop cache immediately after an upgrade without
+	// making the first guest request traverse the graph.
+	refreshCtx, refreshCancel := context.WithTimeout(s.ctx, seedBootstrapAttemptTimeout)
+	if err := s.refreshDefaultLoggedOutAuthorMemberships(refreshCtx); err != nil {
+		slog.Warn("initial logged-out author membership refresh failed", "err", err)
+	}
+	refreshCancel()
+
 	delay := seedBootstrapRetryInitial
 	for {
 		var lastErr error
@@ -93,7 +103,7 @@ func (s *Server) prewarmDefaultLoggedOutSeed(ctx context.Context) error {
 
 // prewarmBootstrapLoggedOutSeed runs the logged-out seed bootstrap for the
 // given npub/hex seed and WoT depth, then marks the shared bootstrap fetch_log
-// key on full success only. Used for the default Jack seed in production and
+// key on full success only. Used for the default Gigi seed in production and
 // for tests with a synthetic relay-backed seed.
 func bootstrapFetchLogKey(seed string) string {
 	pk, err := nostrx.DecodeIdentifier(seed)
@@ -130,24 +140,24 @@ func (s *Server) prewarmBootstrapLoggedOutSeed(ctx context.Context, seed string,
 // in the store (graph-backed projection or kind-3 tags).
 func (s *Server) seedFollowListMaterialized(ctx context.Context, seedPubkey string) error {
 	if s == nil || s.store == nil {
-		return fmt.Errorf("jack seed bootstrap: missing store")
+		return fmt.Errorf("gigi seed bootstrap: missing store")
 	}
 	follows, err := s.store.FollowingPubkeys(ctx, seedPubkey, 1)
 	if err != nil {
-		return fmt.Errorf("jack seed bootstrap: following query: %w", err)
+		return fmt.Errorf("gigi seed bootstrap: following query: %w", err)
 	}
 	if len(follows) > 0 {
 		return nil
 	}
 	ev, err := s.store.LatestReplaceable(ctx, seedPubkey, nostrx.KindFollowList)
 	if err != nil {
-		return fmt.Errorf("jack seed bootstrap: latest kind-3: %w", err)
+		return fmt.Errorf("gigi seed bootstrap: latest kind-3: %w", err)
 	}
 	if ev == nil {
-		return fmt.Errorf("jack seed bootstrap: follow list not in store for seed")
+		return fmt.Errorf("gigi seed bootstrap: follow list not in store for seed")
 	}
 	if len(nostrx.FollowPubkeys(ev)) == 0 {
-		return fmt.Errorf("jack seed bootstrap: empty follow list for seed")
+		return fmt.Errorf("gigi seed bootstrap: empty follow list for seed")
 	}
 	return nil
 }
@@ -254,7 +264,7 @@ func (s *Server) prewarmLoggedOutSeedNow(ctx context.Context, seed string, _ int
 		return err
 	}
 	if seedPubkey == "" {
-		return fmt.Errorf("jack seed bootstrap: empty seed pubkey")
+		return fmt.Errorf("gigi seed bootstrap: empty seed pubkey")
 	}
 
 	s.refreshAuthor(ctx, seedPubkey, nil)
@@ -267,20 +277,61 @@ func (s *Server) prewarmLoggedOutSeedNow(ctx context.Context, seed string, _ int
 	if !skipEnqueue {
 		enqueued, err = s.enqueueSeedContactFrontierCapped(ctx, seedPubkey, 3, pageSize, maxTotal)
 		if err != nil {
-			return fmt.Errorf("jack seed bootstrap: enqueue seed contacts: %w", err)
+			return fmt.Errorf("guest seed bootstrap: enqueue seed contacts: %w", err)
 		}
 	}
 	if isDefaultLoggedOutSeed(seed) && enqueued == 0 {
-		return fmt.Errorf("jack seed bootstrap: no follows to enqueue for seed frontier")
+		return fmt.Errorf("guest seed bootstrap: no follows to enqueue for seed frontier")
+	}
+	if isDefaultLoggedOutSeed(seed) {
+		if err := s.store.TouchSeedContactFrontier(ctx, defaultLoggedOutPinnedPubkeys(), 4); err != nil {
+			return fmt.Errorf("guest seed bootstrap: enqueue pinned contacts: %w", err)
+		}
 	}
 	s.setLoggedOutSeedCenterHex(seedPubkey)
 	if isDefaultLoggedOutSeed(seed) || s.seedCrawlViewerPubkey() == "" {
 		s.setSeedCrawlViewerHex(seedPubkey)
 	}
 	s.invalidateResolvedSeedAuthors(seedPubkey)
+	if isDefaultLoggedOutSeed(seed) {
+		if err := s.refreshDefaultLoggedOutAuthorMemberships(ctx); err != nil {
+			return fmt.Errorf("guest seed bootstrap: cache guest memberships: %w", err)
+		}
+	}
 	return nil
 }
 
 func (s *Server) invalidateResolvedSeedAuthors(seedPubkey string) {
 	s.invalidateResolvedViewerAuthors(seedPubkey)
+}
+
+func loggedOutWOTSeedNPubs() []string {
+	return []string{
+		defaultLoggedOutWOTSeedNPub,
+	}
+}
+
+// runClientModeSeedGraphBootstrap one-shot fetches kind-0/kind-3 for default
+// logged-out WoT seeds without enqueueing note crawlers or guest feed warms.
+func (s *Server) runClientModeSeedGraphBootstrap() {
+	if s == nil || s.store == nil || s.nostr == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(s.ctx, 2*time.Minute)
+	defer cancel()
+	seeds := loggedOutWOTSeedNPubs()
+	for _, npub := range seeds {
+		pk, err := nostrx.DecodeIdentifier(npub)
+		if err != nil || pk == "" {
+			continue
+		}
+		s.refreshAuthor(ctx, pk, nil)
+	}
+	if pk, err := nostrx.DecodeIdentifier(defaultLoggedOutWOTSeedNPub); err == nil && pk != "" {
+		s.setLoggedOutSeedCenterHex(pk)
+		if err := s.refreshDefaultLoggedOutAuthorMemberships(ctx); err != nil {
+			slog.Warn("client-mode guest membership cache refresh failed", "err", err)
+		}
+	}
+	slog.Info("client-mode seed graph bootstrap complete", "seeds", len(seeds))
 }

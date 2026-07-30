@@ -64,7 +64,7 @@ func replyMentionLink(profiles map[string]nostrx.Profile, pubkey string) string 
 		label = short(pk)
 	}
 	escaped := html.EscapeString("@" + label)
-	href := "/u/" + html.EscapeString(pk)
+	href := html.EscapeString(profileHref(pk))
 	return `<a href="` + href + `" data-relay-aware>` + escaped + `</a>`
 }
 

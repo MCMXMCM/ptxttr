@@ -48,8 +48,11 @@ func tryNip19Redirect(segment string) (string, bool) {
 	if ref, err := nostrx.DecodeNIP27Reference(code); err == nil {
 		switch ref.Kind {
 		case nostrx.NIP27KindNPub, nostrx.NIP27KindNProfile:
+			if ref.Code != "" {
+				return "/u/" + ref.Code, true
+			}
 			if ref.PubKey != "" {
-				return "/u/" + ref.PubKey, true
+				return profileHref(ref.PubKey), true
 			}
 		case nostrx.NIP27KindNote, nostrx.NIP27KindNEvent:
 			if ref.Event != "" {

@@ -1,11 +1,12 @@
 {{define "thread"}}
 {{template "document_start" .}}
-<div class="app-shell">
-  {{template "left_rail" .}}
+<div>
   {{template "thread_shell_content" .}}
 </div>
-<script type="module" src="/static/js/thread.js"></script>
-<script type="module" src="/static/js/layout.js"></script>
+<script id="ptxt-route-context" type="application/json">{{.RouteContextJSON}}</script>
+<script id="ptxt-app-bootstrap" type="application/json">{{.AppBootstrapJSON}}</script>
+{{if not .GuestSliceV2}}<script type="module" src="{{assetPath .AssetBasePath "/static/js/thread.js"}}"></script>
+<script type="module" src="{{assetPath .AssetBasePath "/static/js/layout.js"}}"></script>{{end}}
 {{template "document_end" .}}
 {{end}}
 
@@ -20,27 +21,9 @@
 
 {{define "thread_summary"}}
   {{if .Thread.Root}}
-    {{$selected := .Thread.Selected}}
-    {{if not $selected}}{{$selected = .Thread.Root}}{{end}}
-    {{$rootHref := printf "#note-%s" .Thread.Root.ID}}
-    {{if .FocusedView}}{{$rootHref = printf "/thread/%s" .Thread.Root.ID}}{{end}}
-    {{$onRoot := eq $selected.ID .Thread.Root.ID}}
-    <div class="thread-toolbar-slot" aria-hidden="true"></div>
-    <section class="thread-header">
-      <div class="thread-header-top">
-        <p class="thread-back thread-back-primary"><a href="/" data-relay-aware data-feed-home>&lt;-- Back</a></p>
-        <p class="thread-header-op">
-          {{if $onRoot}}
-            <span class="thread-op-label">[OP]</span>
-          {{else}}
-            <a class="thread-op-link" href="{{$rootHref}}" data-relay-aware>[OP]</a><span class="thread-header-op-trail muted"><span class="thread-header-op-sep" aria-hidden="true"> -&gt; </span><span class="thread-header-op-depth">{{.SelectedDepth}}</span></span>
-          {{end}}
-        </p>
-        <div class="thread-header-actions">
-          <button class="link-button" type="button" data-thread-tree-toggle data-collapsed-label="tree view" data-expanded-label="thread view">tree view</button>
-        </div>
-      </div>
-    </section>
+    <p class="thread-view-toggle-desktop" data-thread-view-mode aria-label="Thread view mode">
+      <button type="button" class="link-button thread-view-toggle" data-thread-view-toggle data-thread-view-current="thread" aria-label="Viewing thread. Tap to switch to tree.">thread</button>
+    </p>
     {{template "thread_back_secondary_links" .}}
     {{if .TraversalPath}}
     <div class="thread-summary">
@@ -50,22 +33,21 @@
             {{$display := displayName $.Profiles $event.PubKey}}
             {{$age := relTime $event.CreatedAt}}
             {{$avatar := avatarSrc $.Profiles $event.PubKey}}
+            {{$avatarRetry := avatarURL $.Profiles $event.PubKey}}
             {{$content := threadTreeMainBodyText $event $.Profiles}}
             {{$media := treeMediaFields $content $event.Tags}}
             <div class="hn-comtr hn-comtr-summary{{if eq $event.ID $.SelectedID}} is-selected{{end}}" data-thread-tree-note="note-{{$event.ID}}" data-thread-focus-id="{{$event.ID}}" data-thread-tree-source="{{$content}}" data-thread-tree-display-source="{{$media.DisplaySource}}"{{if $media.ItemsJSON}} data-thread-tree-media="{{$media.ItemsJSON}}"{{end}}{{template "thread_tree_ref_data_attrs" dict "Event" $event "ReferencedEvents" $.ReferencedEvents "ReplyCounts" $.ReplyCounts "AsciiWidth" $.AsciiWidth "Profiles" $.Profiles}}>
               <div class="hn-comtr-inner">
                 <div class="hn-ind" aria-hidden="true" style="width:{{hnPathIndentPx $index}}px"></div>
-                <a class="hn-tree-avatar" href="/u/{{$event.PubKey}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img class="thread-tree-avatar" src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{else}}<span class="thread-tree-avatar thread-tree-avatar-fallback" aria-hidden="true">@</span>{{end}}</a>
+                <a class="hn-tree-avatar" href="{{profileHref $event.PubKey $event.RelayURL}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img class="thread-tree-avatar" src="{{$avatar}}" data-ptxt-avatar-retry-src="{{$avatarRetry}}" alt="" loading="lazy" decoding="async">{{else}}<span class="thread-tree-avatar thread-tree-avatar-fallback" aria-hidden="true">@</span>{{end}}</a>
                 <div class="hn-default">
                   <div class="hn-comhead">
-                    <a href="/u/{{$event.PubKey}}" data-relay-aware>{{$display}}</a>
-                    <span class="hn-age muted"> <a href="/thread/{{$pathRoot}}#note-{{$event.ID}}" data-relay-aware>{{$age}}</a></span>
+                    <a href="{{profileHref $event.PubKey $event.RelayURL}}" data-relay-aware>{{$display}}</a>
+                    <span class="hn-age muted"> <a href="{{threadSelectHrefForRoot $pathRoot $event.ID}}" data-relay-aware>{{$age}}</a></span>
                   </div>
-                  <div class="hn-commtext thread-tree-text">{{range asciiTextLines $content (replyTextWidth $.AsciiWidth)}}<span class="thread-tree-text-line">{{.}}</span>{{end}}</div>
-                  {{if $media.Label}}
-                    <p class="thread-tree-media hn-media" data-thread-tree-media-wrap hidden><button class="link-button thread-tree-media-toggle" type="button" data-thread-tree-media-toggle>{{$media.Label}}</button></p>
-                    <div class="thread-tree-media-preview" data-thread-tree-media-mount hidden></div>
-                  {{end}}
+                  {{template "ssr_thread_tree_text" dict "Source" $content "Media" $media "Width" (threadTreeTextWidth $.AsciiWidth)}}
+                  {{template "ssr_thread_tree_media" $media}}
+                  {{template "thread_tree_ref_preview" dict "Event" $event "ReferencedEvents" $.ReferencedEvents "Profiles" $.Profiles "AsciiWidth" $.AsciiWidth "TextWidth" (threadTreeTextWidth $.AsciiWidth)}}
                 </div>
               </div>
               {{template "thread_tree_ref_source_template" dict "Event" $event "ReferencedEvents" $.ReferencedEvents "Profiles" $.Profiles}}
@@ -75,10 +57,6 @@
     </div>
     {{end}}
   {{else}}
-    <div class="thread-toolbar-slot" aria-hidden="true"></div>
-    <section class="thread-header">
-      <p class="thread-back thread-back-primary"><a href="/" data-relay-aware data-feed-home>&lt;-- Back</a></p>
-    </section>
     {{template "thread_back_secondary_links" .}}
   {{end}}
 {{end}}
@@ -91,7 +69,7 @@
 {{- $hasReference := ne $ref.ID "" -}}
 {{- if isSimpleRepost $ev}} data-ascii-ref-mode="repost"{{- else if isQuotePost $ev}} data-ascii-ref-mode="quote"{{- end -}}
 {{- if or (isSimpleRepost $ev) (isQuotePost $ev) }}
- data-ascii-ref-author="{{if $hasReference}}{{asciiAuthor .AsciiWidth $profiles $ref.PubKey}}{{else if $refID}}{{short $refID}}{{end}}" data-ascii-ref-age="{{if $hasReference}}{{relTime $ref.CreatedAt}}{{else}}?{{end}}" data-ascii-ref-thread-href="{{if $hasReference}}/thread/{{$ref.ID}}{{else if $refID}}/thread/{{$refID}}{{end}}" data-ascii-ref-reply-label="{{if $hasReference}}{{replyBadgeText (replyCountFor .ReplyCounts $ref.ID)}}{{end}}"{{- with asciiMentionsJSONFor $profiles (noteMainBodySourceText $ev) (or $ref.Content "")}} data-ascii-mentions="{{.}}"{{end}}
+ data-ascii-ref-author="{{if $hasReference}}{{asciiAuthor .AsciiWidth $profiles $ref.PubKey}}{{else if $refID}}{{short $refID}}{{end}}" data-ascii-ref-age="{{if $hasReference}}{{relTime $ref.CreatedAt}}{{else}}?{{end}}" data-ascii-ref-thread-href="{{if $hasReference}}/thread/{{$ref.ID}}{{else if $refID}}/thread/{{$refID}}{{end}}" data-ascii-ref-relay="{{if $hasReference}}{{$ref.RelayURL}}{{end}}" data-ascii-ref-reply-label="{{if $hasReference}}{{replyBadgeText (replyCountFor .ReplyCounts $ref.ID)}}{{end}}"{{- with asciiMentionsJSONFor $profiles (noteMainBodySourceText $ev) (or $ref.Content "")}} data-ascii-mentions="{{.}}"{{end}}{{- if $hasReference}}{{with imetaMediaItemsJSON $ref.Tags}} data-ascii-ref-imeta-media="{{.}}"{{end}}{{end}}
 {{- end -}}
 {{end}}
 
@@ -105,6 +83,18 @@
 {{- end -}}
 {{end}}
 
+{{define "thread_tree_ref_preview"}}
+{{- if or (isSimpleRepost .Event) (isQuotePost .Event) -}}
+{{- $ref := referenceEvent .ReferencedEvents (referencedEventID .Event) -}}
+{{- if ne $ref.ID "" -}}
+{{- $source := asciiMentionContent $ref.Content .Profiles -}}
+{{- $media := treeMediaFields $ref.Content $ref.Tags -}}
+{{- $displaySource := $source -}}{{- if ne $media.ItemsJSON "" -}}{{- $displaySource = asciiMentionContent $media.DisplaySource .Profiles -}}{{- end -}}
+<div class="thread-tree-quote"><div class="thread-tree-quote-attrib muted"><a href="/thread/{{$ref.ID}}" data-relay-aware>{{asciiAuthor .AsciiWidth .Profiles $ref.PubKey}} {{relTime $ref.CreatedAt}}</a></div><span class="ascii-ssr-media-mode ascii-ssr-media-on">{{range asciiTextLines $displaySource .TextWidth}}<span class="thread-tree-text-line">{{.}}</span>{{end}}{{if $media.Items}}<div class="thread-tree-quote-media">{{template "ssr_media_grid_div" $media}}</div>{{end}}</span><span class="ascii-ssr-media-mode ascii-ssr-media-off">{{range asciiTextLines $source .TextWidth}}<span class="thread-tree-text-line">{{.}}</span>{{end}}</span></div>
+{{- end -}}
+{{- end -}}
+{{end}}
+
 {{define "hn_tree_ul"}}
 <ul class="hn-tree-ul">
   {{range .Nodes}}
@@ -113,22 +103,21 @@
     {{$display := displayName $.Profiles .Event.PubKey}}
     {{$age := relTime .Event.CreatedAt}}
     {{$avatar := avatarSrc $.Profiles .Event.PubKey}}
+    {{$avatarRetry := avatarURL $.Profiles .Event.PubKey}}
     <li class="hn-comtr thread-tree-item{{if eq .Event.ID $.TreeSelectedID}} is-selected{{end}}" data-thread-tree-note="note-{{.Event.ID}}" data-thread-focus-id="{{.Event.ID}}" data-thread-tree-source="{{$content}}" data-thread-tree-display-source="{{$media.DisplaySource}}" data-reply-root-id="{{$.RootID}}" data-reply-target-id="{{.Event.ID}}" data-reply-pubkey="{{.Event.PubKey}}" data-ascii-relay="{{.Event.RelayURL}}"{{if $media.ItemsJSON}} data-thread-tree-media="{{$media.ItemsJSON}}"{{end}}{{template "thread_tree_ref_data_attrs" dict "Event" .Event "ReferencedEvents" $.ReferencedEvents "ReplyCounts" $.ReplyCounts "AsciiWidth" $.AsciiWidth "Profiles" $.Profiles}}>
       <div class="hn-li-body">
-        <a class="hn-tree-avatar" href="/u/{{.Event.PubKey}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img class="thread-tree-avatar" src="{{$avatar}}" alt="" loading="lazy" decoding="async">{{else}}<span class="thread-tree-avatar thread-tree-avatar-fallback" aria-hidden="true">@</span>{{end}}</a>
+        <a class="hn-tree-avatar" href="{{profileHref .Event.PubKey .Event.RelayURL}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $avatar}}<img class="thread-tree-avatar" src="{{$avatar}}" data-ptxt-avatar-retry-src="{{$avatarRetry}}" alt="" loading="lazy" decoding="async">{{else}}<span class="thread-tree-avatar thread-tree-avatar-fallback" aria-hidden="true">@</span>{{end}}</a>
         <div class="hn-default">
           <div class="hn-comhead">
-            <a href="/u/{{.Event.PubKey}}" data-relay-aware>{{$display}}</a>
-            <span class="hn-age muted"> <a href="/thread/{{$.RootID}}#note-{{.Event.ID}}" data-relay-aware>{{$age}}</a></span>
+            <a href="{{profileHref .Event.PubKey .Event.RelayURL}}" data-relay-aware>{{$display}}</a>
+            <span class="hn-age muted"> <a href="{{threadSelectHrefForRoot $.RootID .Event.ID}}" data-relay-aware>{{$age}}</a></span>
             <span class="hn-navs hn-collapse-nav"> <button class="link-button" type="button" data-thread-tree-collapse="{{.Event.ID}}" aria-expanded="true">[-]</button></span>
           </div>
           <div class="hn-tree-collapsible" data-thread-tree-collapsible="{{.Event.ID}}">
-            <div class="hn-commtext thread-tree-text">{{range asciiTextLines $content (replyTextWidth $.AsciiWidth)}}<span class="thread-tree-text-line">{{.}}</span>{{end}}</div>
-            {{if $media.Label}}
-              <p class="thread-tree-media hn-media" data-thread-tree-media-wrap hidden><button class="link-button thread-tree-media-toggle" type="button" data-thread-tree-media-toggle>{{$media.Label}}</button></p>
-              <div class="thread-tree-media-preview" data-thread-tree-media-mount hidden></div>
-            {{end}}
-            <div class="hn-reply"><font class="hn-reply-font"><u><a href="/thread/{{$.RootID}}#note-{{.Event.ID}}" data-relay-aware>reply</a></u></font></div>
+            {{template "ssr_thread_tree_text" dict "Source" $content "Media" $media "Width" (threadTreeTextWidth $.AsciiWidth)}}
+            {{template "ssr_thread_tree_media" $media}}
+            {{template "thread_tree_ref_preview" dict "Event" .Event "ReferencedEvents" $.ReferencedEvents "Profiles" $.Profiles "AsciiWidth" $.AsciiWidth "TextWidth" (threadTreeTextWidth $.AsciiWidth)}}
+            <div class="hn-reply"><font class="hn-reply-font"><u><a href="{{threadSelectHrefForRoot $.RootID .Event.ID}}" data-relay-aware>reply</a></u></font></div>
             <template class="ascii-source">{{$content}}</template>
           </div>
         </div>
@@ -150,23 +139,22 @@
   {{$rootDisplay := displayName $.Profiles $root.PubKey}}
   {{$rootAge := relTime $root.CreatedAt}}
   {{$rootAvatar := avatarSrc $.Profiles $root.PubKey}}
+  {{$rootAvatarRetry := avatarURL $.Profiles $root.PubKey}}
   {{$rootAsciiAuthor := asciiAuthor $.AsciiWidth $.Profiles $root.PubKey}}
-  <section class="thread-tree-mode hn-thread-tree-mode" data-thread-tree-view data-thread-tree-root-id="{{$treeRootID}}">
+  <section class="thread-tree-mode hn-thread-tree-mode" data-thread-tree-view data-thread-tree-root-id="{{$treeRootID}}" data-thread-selected-id="{{.SelectedID}}"{{if and .WebOfTrustEnabled (gt .WebOfTrustFiltered 0)}} data-thread-wot-active="1" data-thread-wot-filtered="{{.WebOfTrustFiltered}}"{{end}}>
     <div class="hn-story thread-tree-root-note{{if eq $treeRootID $.TreeSelectedID}} is-selected{{end}}" data-thread-tree-note="note-{{$treeRootID}}" data-thread-focus-id="{{$treeRootID}}" data-thread-tree-source="{{$rootContent}}" data-thread-tree-display-source="{{$rootMedia.DisplaySource}}" data-reply-root-id="{{$rootID}}" data-reply-target-id="{{$treeRootID}}" data-reply-pubkey="{{$root.PubKey}}" data-ascii-author="{{$rootAsciiAuthor}}" data-ascii-relay="{{$root.RelayURL}}"{{if $rootMedia.ItemsJSON}} data-thread-tree-media="{{$rootMedia.ItemsJSON}}"{{end}}{{template "thread_tree_ref_data_attrs" dict "Event" $root "ReferencedEvents" .ReferencedEvents "ReplyCounts" .ReplyCounts "AsciiWidth" .AsciiWidth "Profiles" .Profiles}}>
-      <a class="hn-tree-avatar" href="/u/{{$root.PubKey}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $rootAvatar}}<img class="thread-tree-avatar" src="{{$rootAvatar}}" alt="" loading="lazy" decoding="async">{{else}}<span class="thread-tree-avatar thread-tree-avatar-fallback" aria-hidden="true">@</span>{{end}}</a>
+      <a class="hn-tree-avatar" href="{{profileHref $root.PubKey $root.RelayURL}}" data-relay-aware aria-hidden="true" tabindex="-1">{{if $rootAvatar}}<img class="thread-tree-avatar" src="{{$rootAvatar}}" data-ptxt-avatar-retry-src="{{$rootAvatarRetry}}" alt="" loading="lazy" decoding="async">{{else}}<span class="thread-tree-avatar thread-tree-avatar-fallback" aria-hidden="true">@</span>{{end}}</a>
       <div class="hn-root-stack">
       <div class="hn-comhead hn-story-comhead">
-        <a href="/u/{{$root.PubKey}}" data-relay-aware>{{$rootDisplay}}</a>
-        <span class="hn-age muted"> <a href="/thread/{{$rootID}}#note-{{$treeRootID}}" data-relay-aware>{{$rootAge}}</a></span>
+        <a href="{{profileHref $root.PubKey $root.RelayURL}}" data-relay-aware>{{$rootDisplay}}</a>
+        <span class="hn-age muted"> <a href="{{threadSelectHrefForRoot $rootID $treeRootID}}" data-relay-aware>{{$rootAge}}</a></span>
         <span class="hn-navs hn-collapse-nav"> <button class="link-button" type="button" data-thread-tree-collapse="{{$treeRootID}}" aria-expanded="true">[-]</button></span>
       </div>
       <div class="hn-tree-collapsible" data-thread-tree-collapsible="{{$treeRootID}}">
-      <div class="hn-commtext thread-tree-text">{{range asciiTextLines $rootContent (replyTextWidth $.AsciiWidth)}}<span class="thread-tree-text-line">{{.}}</span>{{end}}</div>
-      {{if $rootMedia.Label}}
-        <p class="thread-tree-media hn-media" data-thread-tree-media-wrap hidden><button class="link-button thread-tree-media-toggle" type="button" data-thread-tree-media-toggle>{{$rootMedia.Label}}</button></p>
-        <div class="thread-tree-media-preview" data-thread-tree-media-mount hidden></div>
-      {{end}}
-      <div class="hn-reply"><font class="hn-reply-font"><u><a href="/thread/{{$rootID}}#note-{{$treeRootID}}" data-relay-aware>reply</a></u></font></div>
+      {{template "ssr_thread_tree_text" dict "Source" $rootContent "Media" $rootMedia "Width" (threadTreeTextWidth $.AsciiWidth)}}
+      {{template "ssr_thread_tree_media" $rootMedia}}
+      {{template "thread_tree_ref_preview" dict "Event" $root "ReferencedEvents" .ReferencedEvents "Profiles" .Profiles "AsciiWidth" .AsciiWidth "TextWidth" (threadTreeTextWidth .AsciiWidth)}}
+      <div class="hn-reply"><font class="hn-reply-font"><u><a href="{{threadSelectHrefForRoot $rootID $treeRootID}}" data-relay-aware>reply</a></u></font></div>
       <template class="ascii-source">{{$rootContent}}</template>
       </div>
       </div>
@@ -176,6 +164,14 @@
       <div class="hn-comment-tree thread-tree">
         {{template "hn_tree_ul" dict "Nodes" .Tree.Nodes "RootID" .RootID "TreeSelectedID" .TreeSelectedID "Profiles" .Profiles "AsciiWidth" .AsciiWidth "ReferencedEvents" .ReferencedEvents "ReplyCounts" .ReplyCounts}}
       </div>
+    {{end}}
+    {{if and .WebOfTrustEnabled (gt .WebOfTrustFiltered 0)}}
+      <div class="hn-comment-tree thread-tree thread-tree-filtered-replies" data-thread-tree-filtered-replies hidden>
+        {{template "hn_tree_ul" dict "Nodes" .FilteredReplyNodes "RootID" .RootID "TreeSelectedID" .TreeSelectedID "Profiles" .Profiles "AsciiWidth" .AsciiWidth "ReferencedEvents" .ReferencedEvents "ReplyCounts" .ReplyCounts}}
+      </div>
+      <p class="thread-filtered-replies-toggle thread-tree-filtered-replies-toggle">
+        <button class="link-button" type="button" data-thread-tree-filtered-replies-toggle data-collapsed-label="{{filteredRepliesToggleLabel .WebOfTrustFiltered}}" data-expanded-label="hide" aria-expanded="false">{{filteredRepliesToggleLabel .WebOfTrustFiltered}}</button>
+      </p>
     {{end}}
   </section>
 {{end}}
@@ -188,11 +184,11 @@
   {{$parentNode := .Thread.ParentNode}}
   <section class="thread-focus">
     {{if $parentNode}}
-      {{template "thread_focus_parent" dict "Event" $parentNode.Event "Profiles" $.Profiles "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "Width" $.AsciiWidth "RootID" $rootID "ReplyCount" $parentNode.ReplyCount}}
+      {{template "thread_focus_parent" dict "Event" $parentNode.Event "Profiles" $.Profiles "ReferencedEvents" $.ReferencedEvents "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "Width" $.AsciiWidth "RootID" $rootID "ReplyCount" $parentNode.ReplyCount}}
     {{else}}
-      {{template "thread_focus_parent" dict "Event" $.Thread.Root "Profiles" $.Profiles "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "Width" $.AsciiWidth "RootID" $rootID "ReplyCount" $.Thread.ReplyCount}}
+      {{template "thread_focus_parent" dict "Event" $.Thread.Root "Profiles" $.Profiles "ReferencedEvents" $.ReferencedEvents "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "Width" $.AsciiWidth "RootID" $rootID "ReplyCount" $.Thread.ReplyCount}}
     {{end}}
-    {{template "thread_focus_selected" dict "Event" $selectedNode.Event "Profiles" $.Profiles "RootID" $rootID "Width" $.AsciiWidth "ReplyCount" (index $.ReplyCounts $selectedNode.Event.ID) "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers}}
+    {{template "thread_focus_selected" dict "Event" $selectedNode.Event "Profiles" $.Profiles "ReferencedEvents" $.ReferencedEvents "ReplyCounts" $.ReplyCounts "RootID" $rootID "Width" $.AsciiWidth "ReplyCount" (index $.ReplyCounts $selectedNode.Event.ID) "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers}}
   </section>
 {{else if .Thread.Root}}
   {{template "note" dict "Event" .Thread.Root "Profiles" .Profiles "SelectedID" .SelectedID "RootID" .Thread.Root.ID "Width" .AsciiWidth "ReplyCount" (index .ReplyCounts .Thread.Root.ID) "ReplyCounts" .ReplyCounts "ReactionTotals" .ReactionTotals "ReactionViewers" .ReactionViewers "ReferencedEvents" .ReferencedEvents}}
@@ -203,7 +199,7 @@
 {{if and .FocusedView (gt .HiddenReplies 0)}}
   <div class="thread-hidden-ancestors" data-focused-hidden hidden>
     {{range $index, $ancestor := .Thread.HiddenAncestors}}
-      {{template "comment" dict "Node" $ancestor "Profiles" $.Profiles "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "SelectedID" $.SelectedID "RootID" $.Thread.Root.ID "Width" $.AsciiWidth "IsLast" false}}
+      {{template "comment" dict "Node" $ancestor "Profiles" $.Profiles "ReferencedEvents" $.ReferencedEvents "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "SelectedID" $.SelectedID "RootID" $.Thread.Root.ID "Width" $.AsciiWidth "IsLast" false}}
     {{end}}
   </div>
   <p class="thread-hidden-toggle">
@@ -212,20 +208,26 @@
 {{end}}
 {{end}}
 
+{{define "thread_filtered_reply_items"}}
+{{range $index, $node := .FilteredReplyNodes}}
+  {{template "comment" dict "Node" $node "Profiles" $.Profiles "ReferencedEvents" $.ReferencedEvents "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "SelectedID" $.SelectedID "RootID" $.Thread.Root.ID "Width" $.AsciiWidth "IsLast" (isLastIndex $index (len $.FilteredReplyNodes))}}
+{{end}}
+{{end}}
+
 {{define "thread_reply_items"}}
 {{range $index, $node := .LinearReplyNodes}}
-  {{template "comment" dict "Node" $node "Profiles" $.Profiles "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "SelectedID" $.SelectedID "RootID" $.Thread.Root.ID "Width" $.AsciiWidth "IsLast" (isLastIndex $index (len $.LinearReplyNodes))}}
+  {{template "comment" dict "Node" $node "Profiles" $.Profiles "ReferencedEvents" $.ReferencedEvents "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "SelectedID" $.SelectedID "RootID" $.Thread.Root.ID "Width" $.AsciiWidth "IsLast" (isLastIndex $index (len $.LinearReplyNodes))}}
 {{end}}
 {{end}}
 
 {{define "thread_focus_other_reply_items"}}
 {{range $index, $node := .FocusOtherReplyNodes}}
-  {{template "comment" dict "Node" $node "Profiles" $.Profiles "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "SelectedID" $.SelectedID "RootID" $.Thread.Root.ID "Width" $.AsciiWidth "IsLast" (isLastIndex $index (len $.FocusOtherReplyNodes))}}
+  {{template "comment" dict "Node" $node "Profiles" $.Profiles "ReferencedEvents" $.ReferencedEvents "ReplyCounts" $.ReplyCounts "ReactionTotals" $.ReactionTotals "ReactionViewers" $.ReactionViewers "SelectedID" $.SelectedID "RootID" $.Thread.Root.ID "Width" $.AsciiWidth "IsLast" (isLastIndex $index (len $.FocusOtherReplyNodes))}}
 {{end}}
 {{end}}
 
 {{define "thread_shell_content"}}
-<section class="feed-column"{{if .SelectedExpectsFocus}} data-thread-expects-focus="1"{{end}}>
+<section class="feed-column"{{if .SelectedExpectsFocus}} data-thread-expects-focus="1"{{end}}{{if .WebOfTrustDeferred}} data-thread-wot-deferred="1"{{end}} data-thread-root-id="{{.RootID}}" data-thread-selected-id="{{.SelectedID}}">
   <section id="thread-summary" data-thread-fragment="summary">
     {{template "thread_summary" .}}
   </section>
@@ -242,6 +244,14 @@
     <div class="comments" id="thread-replies" data-thread-fragment="replies">
       {{template "thread_reply_items" .}}
     </div>
+    {{if and .WebOfTrustEnabled (gt .WebOfTrustFiltered 0)}}
+      <div class="comments thread-filtered-replies" data-thread-filtered-replies data-thread-root-id="{{.RootID}}" data-thread-selected-id="{{.SelectedID}}" hidden>
+        {{template "thread_filtered_reply_items" .}}
+      </div>
+      <p class="thread-filtered-replies-toggle">
+        <button class="link-button" type="button" data-thread-filtered-replies-toggle data-collapsed-label="{{filteredRepliesToggleLabel .WebOfTrustFiltered}}" data-expanded-label="hide">show {{if eq .WebOfTrustFiltered 1}}1{{else}}{{.WebOfTrustFiltered}}{{end}} more</button>
+      </p>
+    {{end}}
     {{if and .FocusedView .FocusOtherReplyNodes}}
       <p class="thread-other-replies-toggle">
         <button class="link-button" type="button" data-thread-other-replies-toggle data-collapsed-label="view more replies to OP" data-expanded-label="hide replies to OP">view more replies to OP</button>

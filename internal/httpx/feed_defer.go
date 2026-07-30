@@ -9,8 +9,8 @@ import (
 )
 
 // deferGuestLoggedOutFeedFirstPage is true for logged-out first pages using
-// the default WoT seed (or WoT off) for recent, trend24h, and trend7d so SSR
-// and fragments can skip expensive work until durable snapshots or async warm.
+// the default WoT seed (or WoT off) for recent, trend24h, and trend7d so the
+// initial shell can skip expensive work until durable snapshots or async warm.
 func deferGuestLoggedOutFeedFirstPage(req feedRequest) bool {
 	pub := strings.TrimSpace(req.Pubkey)
 	if pub != "" {
@@ -36,13 +36,13 @@ func deferGuestLoggedOutFeedFirstPage(req feedRequest) bool {
 // and profiles from trending. The feed body is filled only from the in-memory guest
 // TTL cache when WoT is off (firehose path); WoT-on canonical default-seed shells
 // intentionally omit persisted SQLite snapshot notes here so SSR never blocks on large
-// snapshot JSON—notes load via ?fragment=1 / async warmers. For WoT-enabled guests we
+// snapshot JSON—notes load later via client hydration / async warmers. For WoT-enabled guests we
 // avoid cohort resolution on this path; first paint stays bounded.
 func (s *Server) homeFeedShellPageData(ctx context.Context, req feedRequest) FeedPageData {
 	data := s.feedHeadingData(req)
 	tf := normalizeTrendingTimeframe(req.Timeframe)
-	resolved := s.resolveRequestAuthors(ctx, req.Pubkey, req.SeedPubkey, req.Relays, req.WoT)
-	trendCohort, trendAuthors := resolved.trendingScope()
+	var trendCohort string
+	var trendAuthors []string
 	trending := s.trendingData(ctx, tf, trendCohort, trendAuthors, req.Relays, true)
 	profEvents := make([]nostrx.Event, 0, len(trending))
 	for _, item := range trending {
@@ -60,6 +60,11 @@ func (s *Server) homeFeedShellPageData(ctx context.Context, req feedRequest) Fee
 	data.Cursor = 0
 	data.CursorID = ""
 
+	// For deferred guest shells we use the global cached trending sidebar on
+	// this path. The feed itself still hydrates later with the real viewer/seed
+	// context, but the shell avoids resolving the default-seed WoT cohort just
+	// to paint first HTML.
+	//
 	// For logged-out firehose (WoT off) the guest TTL cache is cheap to query
 	// because it does not require cohort resolution. For WoT-enabled guest flows
 	// we skip guestFeedCache here and rely on durable snapshots so the shell
@@ -89,22 +94,21 @@ func (s *Server) homeFeedShellPageData(ctx context.Context, req feedRequest) Fee
 			}
 		}
 	}
-	// mergePersistedDefaultSeedGuestFeedIntoShell only applies to the canonical
-	// default-seed shape; skip calling it here so the SSR shell never blocks on
-	// snapshot JSON (notes still load via scheduleGuestFeedFragmentWarm / ?fragment=1).
-	if len(data.Feed) == 0 && s.isCanonicalDefaultLoggedOutGuestFeedRequest(req) {
-		// Expected when deferring snapshot notes to fragments, not an error signal for dashboards.
-		s.metrics.Add("feed.guest_shell_snapshot_skip_canonical", 1)
+	// Durable canonical snapshots are bounded first-page payloads built by the
+	// hot loop, so restoring one here gives anonymous SSR useful feed HTML
+	// without resolving the WoT cohort or touching relays on the request path.
+	if len(data.Feed) == 0 {
+		s.mergeGuestCanonicalSnapshotIntoShell(ctx, &data, req)
 	}
-	if len(data.Feed) == 0 && normalizeFeedSort(req.SortMode) != feedSortRecent {
-		s.mergeGuestCanonicalTrendSnapshotIntoShell(ctx, &data, req)
+	if len(data.Feed) == 0 && s.isCanonicalDefaultLoggedOutGuestFeedRequest(req) {
+		s.metrics.Add("feed.guest_shell_snapshot_miss_canonical", 1)
 	}
 	return data
 }
 
-// mergeGuestCanonicalTrendSnapshotIntoShell fills the feed from durable
-// canonical guest snapshots for trend24h/trend7d (see feed_default_seed_hot).
-func (s *Server) mergeGuestCanonicalTrendSnapshotIntoShell(ctx context.Context, data *FeedPageData, req feedRequest) {
+// mergeGuestCanonicalSnapshotIntoShell fills the feed from durable canonical
+// guest snapshots for recent/trend24h/trend7d (see feed_default_seed_hot).
+func (s *Server) mergeGuestCanonicalSnapshotIntoShell(ctx context.Context, data *FeedPageData, req feedRequest) {
 	if s == nil || s.store == nil || data == nil || len(data.Feed) > 0 {
 		return
 	}
@@ -112,9 +116,6 @@ func (s *Server) mergeGuestCanonicalTrendSnapshotIntoShell(ctx context.Context, 
 		return
 	}
 	sm := normalizeFeedSort(req.SortMode)
-	if sm != feedSortTrend24h && sm != feedSortTrend7d {
-		return
-	}
 	key := guestCanonicalFeedSnapshotKey(sm, req.Relays)
 	rec, ok, err := s.store.GetFeedSnapshot(ctx, key)
 	if err != nil || !ok || rec == nil || len(rec.Feed) == 0 {
@@ -123,15 +124,28 @@ func (s *Server) mergeGuestCanonicalTrendSnapshotIntoShell(ctx context.Context, 
 	if rec.RelaysHash != "" && rec.RelaysHash != hashStringSlice(req.Relays) {
 		return
 	}
-	mergeFeedSnapshotRecordIntoFeedPageData(data, rec, false)
+	mergeFeedSnapshotRecordIntoFeedPageData(data, rec, true)
 	data.FeedSort = sm
+	if sm == feedSortTrend24h || sm == feedSortTrend7d {
+		s.hydrateFeedStats(ctx, data, data.UserPubKey)
+	}
+}
+
+// mergeGuestCanonicalTrendSnapshotIntoShell is kept for existing call sites
+// that only want ranked snapshot loads.
+func (s *Server) mergeGuestCanonicalTrendSnapshotIntoShell(ctx context.Context, data *FeedPageData, req feedRequest) {
+	sm := normalizeFeedSort(req.SortMode)
+	if sm != feedSortTrend24h && sm != feedSortTrend7d {
+		return
+	}
+	s.mergeGuestCanonicalSnapshotIntoShell(ctx, data, req)
 }
 
 // scheduleGuestFeedFragmentWarm precomputes the logged-out first feed fragment
 // in the background so the browser's ?fragment=1 request often hits the guest
 // TTL cache. Deduplicated per cache key via beginRefresh.
 func (s *Server) scheduleGuestFeedFragmentWarm(req feedRequest) {
-	if s == nil || !deferGuestLoggedOutFeedFirstPage(req) {
+	if s == nil || !deferGuestLoggedOutFeedFirstPage(req) || !s.allowLegacyWarmers() {
 		return
 	}
 	s.runBackgroundUserAsync(func() {

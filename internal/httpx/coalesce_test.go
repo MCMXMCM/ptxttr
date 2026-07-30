@@ -160,14 +160,14 @@ func TestNewCoalesceMiddlewareDifferentPathsRunInParallel(t *testing.T) {
 
 func TestShouldCoalesceSkipsBypassPrefixes(t *testing.T) {
 	cases := map[string]bool{
-		"/static/foo.css":   false,
-		"/avatar/abc":       false,
-		"/api/profile":      false,
-		"/debug/cache":      false,
-		"/thread/abc":       true,
-		"/u/abc":            true,
-		"/":                 true,
-		"/anything-else":    true,
+		"/static/foo.css":    false,
+		"/avatar/abc":        false,
+		"/api/relay-insight": false,
+		"/debug/cache":       false,
+		"/thread/abc":        true,
+		"/u/abc":             true,
+		"/":                  true,
+		"/anything-else":     true,
 	}
 	for path, want := range cases {
 		r := httptest.NewRequest("GET", path, nil)

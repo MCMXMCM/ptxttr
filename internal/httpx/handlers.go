@@ -2,6 +2,9 @@ package httpx
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"html/template"
 	"log/slog"
 	"net/http"
@@ -18,6 +21,7 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 	identifier := strings.TrimPrefix(r.URL.Path, "/u/")
 	pubkey, err := nostrx.DecodeIdentifier(identifier)
 	if err != nil {
+		w.Header().Set("X-Ptxt-Route-Status", string(ThreadRenderNotFound))
 		s.renderNotFound(w, "error_shell", ErrorPageData{
 			BasePageData: s.userBasePageData(r, "User", "feed", "feed-shell"),
 			ErrorPanelCopy: ErrorPanelCopy{
@@ -30,215 +34,50 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	relays := s.requestRelays(r)
-	viewerPub, loggedOut := s.resolveViewer(viewerFromRequest(r), relays)
-	allowUserRelayWork := allowSyncRelayWork(viewerPub, loggedOut)
-	if event, err := s.store.LatestReplaceable(r.Context(), pubkey, nostrx.KindProfileMetadata); err == nil && event == nil {
-		if allowUserRelayWork && s.store.ShouldRefresh(r.Context(), "author", pubkey, 10*time.Minute) {
-			// Explicit user profile lookup: fetch metadata only when cache is missing/stale.
-			s.refreshAuthor(r.Context(), pubkey, relays)
-		}
+	guestRequest := anonymousRequestFromHTTP(r)
+	if guestRequest && !s.anonymousProfileAllowed(r.Context(), pubkey) {
+		w.Header().Set("X-Ptxt-Route-Status", string(ThreadRenderNotFound))
+		s.renderAnonymousScopeNotFound(w, r, "User", "User not found", "This profile is not available in the cached guest slice.")
+		return
 	}
-	userBase := s.userBasePageData(r, "User", "feed", "feed-shell")
-	fragment := r.URL.Query().Get("fragment")
-	cursor, _ := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
-	cursorID := r.URL.Query().Get("cursor_id")
-	followingQuery, followingPage := followListParams(r, "following")
-	followersQuery, followersPage := followListParams(r, "followers")
-	loadFollowStats := func() (FollowListView, FollowListView) {
-		return s.followingList(r.Context(), pubkey, "", 1), s.followersList(r.Context(), pubkey, "", 1)
+	if guestRequest {
+		w.Header().Set("Cache-Control", cacheControlContentAddressed)
+	} else {
+		w.Header().Set("Cache-Control", "private, no-store")
 	}
-	loadNotes := func() ([]nostrx.Event, bool, int64, string) {
-		notes, hasMore := s.fetchAuthorsPage(r.Context(), viewerPub, []string{pubkey}, cursor, cursorID, 30, relays, "profile", pubkey, nil, false)
-		if len(notes) > 30 {
-			notes = notes[:30]
-		}
-		var next int64
-		var nextID string
-		if len(notes) > 0 {
-			last := notes[len(notes)-1]
-			next = last.CreatedAt
-			nextID = last.ID
-		}
-		return notes, hasMore, next, nextID
+	fragment := strings.TrimSpace(r.URL.Query().Get("fragment"))
+	if fragment == "header" {
+		s.render(w, "user_header", s.userHeaderPageData(r.Context(), r, pubkey))
+		return
 	}
-	hydrateUserFeed := func(events []nostrx.Event) (map[string]nostrx.Event, []nostrx.Event) {
-		if allowUserRelayWork {
-			s.warmFeedEntities(events, relays)
-			return s.referencedHydration(r.Context(), events, relays)
-		}
-		return s.referencedHydrationFromStore(r.Context(), events)
-	}
+	data := s.userPageData(r.Context(), r, pubkey, fragment)
 	switch fragment {
-	case "header":
-		profile := s.profile(r.Context(), pubkey)
-		if applyUserFragmentCache(w, r, profile) {
-			return
-		}
-		followingStats, followersStats := loadFollowStats()
-		s.render(w, "user_header", UserPageData{
-			BasePageData:  userBase,
-			Profile:       profile,
-			FollowingList: followingStats,
-			FollowersList: followersStats,
-		})
-		return
 	case "stats":
-		profile := s.profile(r.Context(), pubkey)
-		if applyUserFragmentCache(w, r, profile) {
-			return
-		}
-		followingStats, followersStats := loadFollowStats()
-		data := UserPageData{
-			BasePageData:  userBase,
-			Profile:       profile,
-			FollowingList: followingStats,
-			FollowersList: followersStats,
-		}
 		s.render(w, "user_stats", data)
-		return
-	case "identifiers":
-		profile := s.profile(r.Context(), pubkey)
-		if applyUserFragmentCache(w, r, profile) {
+	case "posts", "":
+		if fragment == "posts" {
+			setPaginationHeaders(w, data.Cursor, data.CursorID, data.HasMore)
+			s.render(w, "user_posts_items", data)
 			return
 		}
-		s.render(w, "user_identifiers", UserPageData{
-			BasePageData: userBase,
-			Profile:      profile,
-		})
-		return
-	case "following":
-		followingList := s.followingList(r.Context(), pubkey, followingQuery, followingPage)
-		s.render(w, "user_following", UserPageData{
-			BasePageData:    userBase,
-			Profile:         s.profile(r.Context(), pubkey),
-			FollowingList:   followingList,
-			ContactProfiles: s.contactProfiles(r.Context(), followingList.Items),
-		})
-		return
-	case "followers":
-		followersList := s.followersList(r.Context(), pubkey, followersQuery, followersPage)
-		s.render(w, "user_followers", UserPageData{
-			BasePageData:    userBase,
-			Profile:         s.profile(r.Context(), pubkey),
-			FollowersList:   followersList,
-			ContactProfiles: s.contactProfiles(r.Context(), followersList.Items),
-		})
-		return
-	case "relays":
-		s.render(w, "user_relays", UserPageData{
-			BasePageData: userBase,
-			Profile:      s.profile(r.Context(), pubkey),
-			UserRelays:   s.userRelays(r.Context(), pubkey),
-		})
-		return
-	case "posts-newer":
-		since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
-		sinceID := r.URL.Query().Get("since_id")
-		summaries, _ := s.store.NewerSummariesByAuthorsCursor(r.Context(), []string{pubkey}, noteTimelineKinds, since, sinceID, profilePostsNewerLimit)
-		count := len(summaries)
-		w.Header().Set("X-Ptxt-New-Count", strconv.Itoa(count))
-		if r.URL.Query().Get("body") != "1" || count == 0 {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		data := s.profilePostsNewerFeedPageDataFromSummaries(r.Context(), r, pubkey, summaries)
-		s.render(w, "user_posts_items", data)
-		return
-	case "posts", "notes":
-		notes, hasMore, next, nextID := loadNotes()
-		referenced, combined := hydrateUserFeed(notes)
-		rt, rv := s.viewerReactionMaps(r, relays, combined)
-		data := FeedPageData{
-			BasePageData:     userBase,
-			Feed:             notes,
-			ReferencedEvents: referenced,
-			ReplyCounts:      s.replyCounts(r.Context(), combined),
-			ReactionTotals:   rt,
-			ReactionViewers:  rv,
-			Profiles:         s.profilesFor(r.Context(), combined),
-			Cursor:           next,
-			CursorID:         nextID,
-			HasMore:          hasMore,
-			Relays:           relays,
-		}
-		setFeedPaginationHeaders(w, data)
-		s.render(w, "user_posts_items", data)
-		return
+		s.render(w, "user", data)
 	case "replies":
-		notes, _, _, _ := loadNotes()
-		replies, _ := splitUserTimeline(notes)
-		referenced, combined := hydrateUserFeed(replies)
-		rt, rv := s.viewerReactionMaps(r, relays, combined)
-		s.render(w, "user_replies_items", FeedPageData{
-			BasePageData:     userBase,
-			Feed:             replies,
-			ReferencedEvents: referenced,
-			ReplyCounts:      s.replyCounts(r.Context(), combined),
-			ReactionTotals:   rt,
-			ReactionViewers:  rv,
-			Profiles:         s.profilesFor(r.Context(), combined),
-			Relays:           relays,
-		})
-		return
+		setPaginationHeaders(w, data.Cursor, data.CursorID, data.HasMore)
+		s.render(w, "user_replies_items", data)
 	case "media":
-		notes, _, _, _ := loadNotes()
-		_, media := splitUserTimeline(notes)
-		referenced, combined := hydrateUserFeed(media)
-		rt, rv := s.viewerReactionMaps(r, relays, combined)
-		s.render(w, "user_media_items", FeedPageData{
-			BasePageData:     userBase,
-			Feed:             media,
-			ReferencedEvents: referenced,
-			ReplyCounts:      s.replyCounts(r.Context(), combined),
-			ReactionTotals:   rt,
-			ReactionViewers:  rv,
-			Profiles:         s.profilesFor(r.Context(), combined),
-			Relays:           relays,
-		})
-		return
+		setPaginationHeaders(w, data.Cursor, data.CursorID, data.HasMore)
+		s.render(w, "user_media_items", data)
+	case "following":
+		s.render(w, "user_following", data)
+	case "followers":
+		s.render(w, "user_followers", data)
+	case "identifiers":
+		s.render(w, "user_identifiers", data)
+	case "relays":
+		s.render(w, "user_relays", data)
+	default:
+		s.render(w, "user", data)
 	}
-
-	notes, hasMore, next, nextID := loadNotes()
-	replies, media := splitUserTimeline(notes)
-	followingList := s.followingList(r.Context(), pubkey, followingQuery, followingPage)
-	followersList := s.followersList(r.Context(), pubkey, followersQuery, followersPage)
-	contactKeys := uniqueNonEmptyStrings(append(append([]string{}, followingList.Items...), followersList.Items...))
-	warmContacts := limitedStrings(uniqueNonEmptyStable(append([]string{pubkey}, contactKeys...)), maxWarmUserContactAuthors)
-	if allowUserRelayWork {
-		s.warmAuthors(warmContacts, relays)
-	}
-	contactProfiles := s.contactProfiles(r.Context(), contactKeys)
-	referenced, combined := hydrateUserFeed(notes)
-	rt, rv := s.viewerReactionMaps(r, relays, combined)
-	profile := s.profile(r.Context(), pubkey)
-	userBase.OG = userOG(r, pubkey, profile)
-	data := UserPageData{
-		BasePageData:     userBase,
-		Profile:          profile,
-		FollowingList:    followingList,
-		FollowersList:    followersList,
-		UserRelays:       s.userRelays(r.Context(), pubkey),
-		Feed:             notes,
-		Replies:          replies,
-		Media:            media,
-		ReferencedEvents: referenced,
-		ReplyCounts:      s.replyCounts(r.Context(), combined),
-		ReactionTotals:   rt,
-		ReactionViewers:  rv,
-		Profiles:         s.profilesFor(r.Context(), combined),
-		ContactProfiles:  contactProfiles,
-		Relays:           relays,
-		Cursor:           next,
-		CursorID:         nextID,
-		HasMore:          hasMore,
-	}
-	s.render(w, "user", data)
-}
-
-func (s *Server) viewerReactionMaps(r *http.Request, relays []string, combined []nostrx.Event) (map[string]int, map[string]string) {
-	viewerPub, _ := s.resolveViewer(viewerFromRequest(r), relays)
-	return s.reactionMapsForEvents(r.Context(), combined, viewerPub)
 }
 
 // threadLongFormShouldOpenAsRead reports whether a NIP-23 long-form note
@@ -272,44 +111,136 @@ func (s *Server) handleEvent(w http.ResponseWriter, r *http.Request) {
 
 func threadFragmentUsesRelayFetch(fragment string) bool {
 	switch fragment {
-	case "", "hydrate", "focus", "summary", "ancestors":
+	case "", "hydrate", "focus", "summary", "ancestors", "tree":
 		return true
 	default:
 		return false
 	}
 }
 
+func cacheableAnonymousThreadDocument(r *http.Request) bool {
+	if appShellRequestIsPersonalized(r) {
+		return false
+	}
+	if r == nil || r.URL == nil {
+		return false
+	}
+	q := r.URL.Query()
+	for _, key := range []string{
+		"selected",
+		"tree_note",
+		"back",
+		"back_note",
+		"back_read",
+		"cursor",
+		"cursor_id",
+		"tgiv",
+	} {
+		if q.Has(key) {
+			return false
+		}
+	}
+	return true
+}
+
+const anonymousThreadPreviewReplyLimit = 12
+
 func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	defer s.observe("handler.thread", time.Now())
-	id := strings.TrimPrefix(r.URL.Path, "/thread/")
+	telemetryID := threadTelemetryIDFromRequest(r)
+	telemetryDone := false
+	publishTelemetry := func(stage, message string, percent int) {
+		s.publishThreadTelemetry(telemetryID, stage, message, percent)
+	}
+	completeTelemetry := func(message string) {
+		if telemetryDone {
+			return
+		}
+		telemetryDone = true
+		s.completeThreadTelemetry(telemetryID, message)
+	}
+	defer completeTelemetry("thread response ready")
+	id := thread.NormalizeHexEventID(strings.TrimPrefix(r.URL.Path, "/thread/"))
+	selectedID := thread.NormalizeHexEventID(strings.TrimSpace(r.URL.Query().Get("selected")))
+	if selectedID == "" {
+		selectedID = id
+	}
+	publishTelemetry("start", "received thread request", 5)
+	base := s.basePageData(r, "Thread", "thread", "feed-shell")
+	if selectedID != "" {
+		base.Title = "Thread"
+	}
 	fragment := r.URL.Query().Get("fragment")
+	// Anonymous browser documents are authoritative SSR. A previous app-shell
+	// handoff required a second fragment request and could strand mobile Safari
+	// on a permanent loader when the fragment failed. Viewer-scoped fetches may
+	// still request the shell explicitly by carrying the viewer header.
+	if fragment == "" && threadAppShellDocumentRequest(r) && strings.TrimSpace(viewerFromRequest(r)) != "" {
+		emitOEmbedDiscoveryHeaders(w, r)
+		s.renderAppShellWithBase(w, r, base)
+		return
+	}
 	relays := s.requestRelays(r)
 	viewerPub, loggedOut := s.resolveViewer(viewerFromRequest(r), relays)
+	anonymousMembership := authorMembership{}
+	if loggedOut {
+		anonymousMembership = s.defaultLoggedOutThreadAuthorMembership(r.Context())
+	}
 	// UI fragments use relays for missing ancestry; fragment=replies alone stays
 	// store-first (selected, resolveEvent, and reply paging bodies).
-	allowThreadRelayFetch := allowSyncRelayWork(viewerPub, loggedOut) || threadFragmentUsesRelayFetch(fragment)
+	allowThreadRelayFetch := s.allowThreadRelayFetch(viewerPub, loggedOut, fragment)
 	repliesPaginationFragment := fragment == "replies"
 	var selected *nostrx.Event
 	if repliesPaginationFragment {
-		selected = s.eventFromStore(r.Context(), id)
+		publishTelemetry("cache", "checking local cache for selected note", 10)
+		selected = s.eventFromStore(r.Context(), selectedID)
 	}
 	if selected == nil {
-		selected = s.eventByIDEx(r.Context(), id, relays, allowThreadRelayFetch)
+		if cached := s.eventFromStore(r.Context(), selectedID); cached != nil {
+			publishTelemetry("cache", "selected note found in local cache", 18)
+			selected = cached
+		}
 	}
 	if selected == nil {
+		if allowThreadRelayFetch {
+			publishTelemetry("relay_fetch", "selected note missing locally; asking relays", 18)
+		} else {
+			publishTelemetry("cache_miss", "selected note is not in local cache", 18)
+		}
+		selected = s.eventByIDEx(r.Context(), selectedID, relays, allowThreadRelayFetch)
+	}
+	if selected == nil {
+		if fragment == "" && !loggedOut && !allowThreadRelayFetch {
+			completeTelemetry("thread shell rendered without foreground relay fetch")
+			emitOEmbedDiscoveryHeaders(w, r)
+			s.renderAppShellWithBase(w, r, base)
+			return
+		}
+		completeTelemetry("thread note was not found")
+		w.Header().Set("X-Ptxt-Thread-Status", "not_found")
+		w.Header().Set("X-Ptxt-Route-Status", string(ThreadRenderNotFound))
+		if fragment == "" {
+			setThreadNegativeCache(w)
+		} else {
+			w.Header().Set("Cache-Control", "private, no-store")
+		}
 		s.renderNotFound(w, "error_shell", ThreadErrorShellData{
 			ThreadPageData: ThreadPageData{
 				BasePageData: s.basePageData(r, "Thread", "thread", "feed-shell"),
 				Profiles:     map[string]nostrx.Profile{},
 			},
 			ErrorPanelCopy: ErrorPanelCopy{
-				Heading:    "Note not found",
-				Message:    "No note with this id was found in the local cache or on the relays you selected.",
-				ThreadRail: true,
+				Heading:       "Note not found",
+				Message:       "No note with this id was found in the local cache or on the relays you selected.",
+				ShowLoginHint: true,
+				ThreadRail:    true,
 			},
 		})
 		return
 	}
+	// The explicitly requested note is thread context, not a candidate reply.
+	// Guests may open any locally cached root/selected note; WoT applies below
+	// to reply ordering and disclosure. This remains store-only for guests.
 	if threadLongFormShouldOpenAsRead(r, selected) {
 		readPath := "/reads/" + selected.ID
 		if fragment != "" {
@@ -330,8 +261,20 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	treeNoteID := thread.NormalizeHexEventID(r.URL.Query().Get("tree_note"))
 	var hydrateStoreFirst bool
 	threadRelays := s.threadHydrationRelays(r.Context(), viewerPub, nil, selected, relays)
+	publishTelemetry("relays", fmt.Sprintf("using %d relay hints for thread context", len(threadRelays)), 26)
 	resolvedByID := map[string]*nostrx.Event{selected.ID: selected}
 	missingByID := map[string]bool{}
+	var pathRoot *nostrx.Event
+	if id != "" && id != selected.ID {
+		if repliesPaginationFragment {
+			pathRoot = s.eventFromStore(r.Context(), id)
+		} else {
+			pathRoot = s.threadContextEventByIDEx(r.Context(), id, threadRelays, allowThreadRelayFetch)
+		}
+		if pathRoot != nil {
+			resolvedByID[pathRoot.ID] = pathRoot
+		}
+	}
 	resolveEvent := func(id string) *nostrx.Event {
 		id = thread.NormalizeHexEventID(id)
 		if id == "" {
@@ -347,7 +290,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		if repliesPaginationFragment {
 			event = s.eventFromStore(r.Context(), id)
 		} else {
-			event = s.eventByIDEx(r.Context(), id, threadRelays, allowThreadRelayFetch)
+			event = s.threadContextEventByIDEx(r.Context(), id, threadRelays, allowThreadRelayFetch)
 		}
 		if event == nil {
 			missingByID[id] = true
@@ -363,6 +306,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		!s.threadHydrateStoreFirst(r.Context(), fragment, probableThreadRootID(*selected)) {
 		earlyCandidates := collectThreadChainCandidates("", *selected, nil)
 		if len(earlyCandidates) > 0 {
+			publishTelemetry("ancestry", fmt.Sprintf("fetching %d tagged ancestor notes", len(earlyCandidates)), 34)
 			for id, event := range s.eventsByIDEx(r.Context(), earlyCandidates, threadRelays, true) {
 				if event != nil {
 					resolvedByID[id] = event
@@ -371,11 +315,22 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	root, parentID := applyThreadRootAnchor(*selected, resolveEvent)
+	if pathRoot != nil {
+		root = pathRoot
+		parentID = thread.ParentID(root.ID, *selected)
+		if parentID != "" && parentID != root.ID && parentID != selected.ID {
+			_ = resolveEvent(parentID)
+		}
+	}
 	if fragment == "hydrate" {
 		hydrateStoreFirst = s.threadHydrateStoreFirst(r.Context(), fragment, root.ID)
 		if hydrateStoreFirst {
 			s.metrics.Add("thread.hydrate.store_first", 1)
 		}
+	}
+	if fragment == "" && cacheableAnonymousThreadDocument(r) {
+		s.renderAnonymousThreadDocument(w, r, base, *root, *selected, parentID, relays, resolveEvent, anonymousMembership)
+		return
 	}
 	threadRelays = s.threadHydrationRelays(r.Context(), viewerPub, root, selected, relays)
 	refreshIDs := []string{root.ID, selected.ID}
@@ -383,15 +338,21 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		refreshIDs = append(refreshIDs, parentID)
 	}
 	if allowThreadRelayFetch && !hydrateStoreFirst {
+		publishTelemetry("warm", "warming root and selected note in the background", 42)
 		s.warmThreadForViewer(viewerPub, refreshIDs, threadRelays)
 	}
 	cursor, _ := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
 	cursorID := r.URL.Query().Get("cursor_id")
-	// Initial thread renders (including SPA hydrate) assemble the selected branch
+	// Initial thread renders and hydrate requests assemble the selected branch
 	// first, then a bounded OP-rooted context, so deep reply navigations do not
 	// depend on a shallow root/selected direct-reply page.
 	fullReplyWalk := !repliesPaginationFragment && cursor == 0 && cursorID == ""
-	threadRepliesStoreOnly := repliesPaginationFragment || hydrateStoreFirst
+	// Guest threads are strictly cache-only. A public hydrate request must not
+	// turn into synchronous relay reads or enqueue relay context work.
+	threadRepliesStoreOnly := loggedOut || repliesPaginationFragment || hydrateStoreFirst
+	if loggedOut && fragment == "hydrate" {
+		s.metrics.Add("thread.anonymous_hydrate.store_only", 1)
+	}
 	var replies []nostrx.Event
 	var fullReplies []nostrx.Event
 	parentByID := map[string]string{}
@@ -400,16 +361,15 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	var hasMore bool
 	hydrateRootChildrenIncomplete := false
 	if fullReplyWalk {
-		assembly := s.assembleThread(r.Context(), *root, *selected, threadRepliesStoreOnly, threadRelays, resolveEvent)
-		if fragment == "hydrate" && hydrateStoreFirst && assembly.Incomplete {
-			assembly = s.assembleThread(r.Context(), *root, *selected, false, threadRelays, resolveEvent)
-		}
+		publishTelemetry("replies", "loading cached reply tree", 52)
+		assembly := s.loadThreadAssembly(r.Context(), *root, *selected, threadRepliesStoreOnly, threadRelays, resolveEvent, fragment == "hydrate" && hydrateStoreFirst)
 		fullReplies = assembly.TreeReplies
 		replies = assembly.TreeReplies
 		parentByID = assembly.ParentByID
 		nextCursor, nextID, hasMore = assembly.NextCursor, assembly.NextCursorID, assembly.HasMore
 		hydrateRootChildrenIncomplete = assembly.Incomplete
 	} else {
+		publishTelemetry("replies", "loading direct replies", 52)
 		// Always load direct replies to the thread root so BuildSelected can place
 		// the URL-selected note in the tree. When selected != root, we also need
 		// direct replies to selected (focus descendants); merging both avoids an
@@ -452,6 +412,49 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	wot := webOfTrustOptionsFromRequest(r)
+	var resolvedWoT requestAuthors
+	if loggedOut {
+		seed, _ := nostrx.DecodeIdentifier(defaultLoggedOutWOTSeedNPub)
+		authors := anonymousMembership.Authors()
+		resolvedWoT = requestAuthors{
+			allAuthors:      authors,
+			authors:         clampAuthorsWithLimit(authors, s.resolvedAuthorLimit(webOfTrustOptions{Enabled: true, Depth: defaultLoggedOutThreadWOTDepth})),
+			userPubkey:      viewerPub,
+			wotViewerPubkey: seed,
+			loggedOut:       true,
+			wotEnabled:      true,
+			seedWOTEnabled:  true,
+		}
+	} else if threadRequestDefersWoT(r, fragment) {
+		if wot.Enabled {
+			publishTelemetry("authors", "deferring trust filtering until after thread render", 62)
+		} else {
+			publishTelemetry("authors", "skipping trust filtering for this thread", 62)
+		}
+		resolvedWoT = requestAuthors{
+			userPubkey: viewerPub,
+			loggedOut:  loggedOut,
+			wotEnabled: wot.Enabled,
+		}
+	} else {
+		publishTelemetry("authors", "checking optional trust metadata", 62)
+		resolvedWoT = s.resolveRequestAuthors(r.Context(), viewerPub, seedPubkeyFromRequest(r), relays, wot)
+	}
+	wotMembership := newAuthorMembership(resolvedWoT.allAuthors)
+	woTApply := s.applyThreadWoT(
+		r, fragment, resolvedWoT.wotEnabled,
+		replies, fullReplies, fullReplyWalk,
+		root, selected, parentID, parentByID,
+		wotMembership, resolveEvent,
+	)
+	replies = woTApply.Replies
+	fullReplies = woTApply.FullReplies
+	filteredReplies := woTApply.FilteredReplies
+	parentByID = woTApply.ParentByID
+	wotEnabled := woTApply.Enabled
+	wotDeferred := woTApply.Deferred
+	var filteredReplyNodes []thread.Node
 	skipStoreThreadReplyStatsMerge := mutedLoadErr == nil && len(mutedForThread) > 0
 	// When mutes hide replies, store reply stats still count muted authors; skip that merge only (direct counts stay from buildThreadDirectReplyCounts).
 
@@ -463,8 +466,9 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	}
 	var referenced map[string]nostrx.Event
 	var allWithRefs []nostrx.Event
+	publishTelemetry("references", "hydrating quoted and reposted notes", 70)
 	referenced, allWithRefs = s.threadReferencedHydration(r.Context(), all, threadRelays, threadRepliesStoreOnly, allowThreadRelayFetch)
-	if fragment == "hydrate" && !hydrateStoreFirst {
+	if fragment == "hydrate" && !hydrateStoreFirst && allowThreadRelayFetch {
 		warmReplies := replies
 		if fullReplyWalk {
 			warmReplies = fullReplies
@@ -511,10 +515,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		root, parentID = applyThreadRootAnchor(*selected, resolveEvent)
 		if root.ID != prevRootID {
 			if fullReplyWalk {
-				assembly := s.assembleThread(r.Context(), *root, *selected, threadRepliesStoreOnly, threadRelays, resolveEvent)
-				if fragment == "hydrate" && hydrateStoreFirst && assembly.Incomplete {
-					assembly = s.assembleThread(r.Context(), *root, *selected, false, threadRelays, resolveEvent)
-				}
+				assembly := s.loadThreadAssembly(r.Context(), *root, *selected, threadRepliesStoreOnly, threadRelays, resolveEvent, fragment == "hydrate" && hydrateStoreFirst)
 				fullReplies = assembly.TreeReplies
 				replies = assembly.TreeReplies
 				parentByID = assembly.ParentByID
@@ -540,6 +541,18 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 					fullReplies = s.filterEventsByViewerMutedSet(fullReplies, mutedForThread)
 				}
 			}
+			woTApply = s.applyThreadWoT(
+				r, fragment, resolvedWoT.wotEnabled,
+				replies, fullReplies, fullReplyWalk,
+				root, selected, parentID, parentByID,
+				wotMembership, resolveEvent,
+			)
+			replies = woTApply.Replies
+			fullReplies = woTApply.FullReplies
+			filteredReplies = woTApply.FilteredReplies
+			parentByID = woTApply.ParentByID
+			wotEnabled = woTApply.Enabled
+			wotDeferred = woTApply.Deferred
 			all = append([]nostrx.Event(nil), *root, *selected)
 			if fullReplyWalk {
 				all = append(all, fullReplies...)
@@ -554,7 +567,46 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if loggedOut && len(anonymousMembership.exact) > 0 {
+		// Logged-out scope filtering must retain every ancestor needed to attach
+		// an in-scope reply to the note it actually answers. Author-only filtering
+		// drops those bridge notes and repairThreadParentMap then promotes their
+		// children to the root, flattening and misrepresenting the conversation.
+		replySource := replies
+		if fullReplyWalk {
+			replySource = fullReplies
+		}
+		var parent *nostrx.Event
+		if parentID != "" && root != nil && parentID != root.ID {
+			parent = resolveEvent(parentID)
+		}
+		anonymousPartition := partitionThreadRepliesByWoT(
+			replySource,
+			root.ID,
+			root,
+			selected,
+			parent,
+			repairThreadParentMap(root.ID, replySource, parentByID),
+			anonymousMembership,
+			resolveEvent,
+		)
+		replies = anonymousPartition.TreeReplies
+		if fullReplyWalk {
+			fullReplies = anonymousPartition.TreeReplies
+		}
+		filteredReplies = mergeUniqueThreadEvents(filteredReplies, anonymousPartition.FilteredReplies)
+		parentByID = repairThreadParentMap(root.ID, replies, parentByID)
+		woTApply.Replies = replies
+		woTApply.FullReplies = fullReplies
+		woTApply.FilteredReplies = filteredReplies
+		woTApply.ParentByID = parentByID
+		woTApply.Enabled = true
+		woTApply.Deferred = false
+		wotEnabled = true
+		wotDeferred = false
+	}
 	if needsView {
+		publishTelemetry("view", "building focused thread view", 78)
 		// mutedForThread is nil on load error (fail-open) and when the set is empty.
 		viewReplyEvents := replies
 		if fullReplyWalk {
@@ -597,6 +649,13 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		view.ReplyCount = totalReplyCount
+		if wotEnabled && len(filteredReplies) > 0 {
+			filteredReplyNodes = woTApply.buildFilteredReplyNodes(view, selectedDepth, root.ID)
+			profileEvents = appendUniqueThreadEvents(profileEvents, filteredReplies)
+		}
+	}
+	if needsParticipants && len(filteredReplies) > 0 {
+		profileEvents = appendUniqueThreadEvents(profileEvents, filteredReplies)
 	}
 	focusOtherReplyNodes := []thread.Node(nil)
 	if needsView && view.FocusMode && fragment != "replies" {
@@ -609,10 +668,16 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	if allowThreadRelayFetch {
 		s.warmAuthors(limitedStrings(extractPubkeys(profileEvents), maxWarmThreadProfileAuthors), threadRelays)
 	}
+	publishTelemetry("profiles", "loading display names and avatars", 88)
 	profiles := s.profilesFor(r.Context(), profileEvents)
 	participants := []ThreadParticipant(nil)
+	expandedParticipants := []ThreadParticipant(nil)
 	if needsParticipants {
 		participants = threadParticipants(all, profiles, 8)
+		if len(filteredReplies) > 0 {
+			expandedEvents := appendUniqueThreadEvents(append([]nostrx.Event(nil), all...), filteredReplies)
+			expandedParticipants = threadParticipants(expandedEvents, profiles, 8)
+		}
 	}
 	if len(referenced) > 0 {
 		for id, count := range s.replyCounts(r.Context(), mapEvents(referenced)) {
@@ -623,15 +688,36 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	reactionEvents := collectThreadNotesForReactions(view, all)
+	publishTelemetry("render", "rendering thread HTML", 94)
 	// Thread SSR is publicly cached keyed by URL only, so we must never bake
 	// viewer-specific reactions in here. The client refills viewer state from
 	// /api/reaction-stats in thread.js initThreadPage().
 	reactionTotals, reactionViewers := s.reactionMapsForEvents(r.Context(), reactionEvents, "")
 
 	selectedExpectsFocus := threadSelectedExpectsFocusView(*selected)
+	threadResponseStatus := ThreadRenderReady
+	if (selectedExpectsFocus && !view.FocusMode) || hydrateRootChildrenIncomplete {
+		threadResponseStatus = ThreadRenderPartial
+	}
+	renderResult := ThreadRenderResult{
+		Status:         threadResponseStatus,
+		Root:           root,
+		Selected:       selected,
+		Ancestors:      traversalPath,
+		VisibleReplies: append([]nostrx.Event(nil), replies...),
+		HiddenReplies:  append([]nostrx.Event(nil), filteredReplies...),
+		Cursor:         nextCursor,
+		CursorID:       nextID,
+		HasMore:        hasMore,
+		Generation:     s.currentGuestGeneration(r.Context()),
+	}
+	w.Header().Set("X-Ptxt-Thread-Status", string(renderResult.Status))
+	w.Header().Set("X-Ptxt-Route-Status", string(renderResult.Status))
 
 	data := ThreadPageData{
 		BasePageData:         s.basePageData(r, "Thread", "thread", "feed-shell"),
+		RouteContextJSON:     appShellRouteContextJSON(r),
+		AppBootstrapJSON:     s.appShellBootstrapJSON(r, base),
 		Thread:               view,
 		Tree:                 treeData,
 		ReferencedEvents:     referenced,
@@ -640,6 +726,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		ReactionViewers:      reactionViewers,
 		Profiles:             profiles,
 		Participants:         participants,
+		ExpandedParticipants: expandedParticipants,
 		SelectedID:           selected.ID,
 		TreeSelectedID:       treeSelectedID,
 		SelectedDepth:        selectedDepth,
@@ -657,6 +744,11 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		ReplyCursor:          nextCursor,
 		ReplyCursorID:        nextID,
 		HasMore:              hasMore,
+		FilteredReplies:      filteredReplies,
+		FilteredReplyNodes:   filteredReplyNodes,
+		WebOfTrustEnabled:    wotEnabled,
+		WebOfTrustFiltered:   len(filteredReplies),
+		WebOfTrustDeferred:   wotDeferred,
 	}
 	switch fragment {
 	case "hydrate":
@@ -686,19 +778,189 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		s.render(w, "thread_right_rail", data)
 		return
 	}
-	threadETag := threadPageETag(selected.ID, totalReplyCount)
-	if matchesETag(r, threadETag) {
-		writeNotModified(w, threadETag)
-		return
-	}
-	setContentAddressedCache(w, threadETag)
-	emitOEmbedDiscoveryHeaders(w, r)
 	data.OG = threadOG(r, *selected, profiles)
+	threadETag := threadPageETag(selected.ID, totalReplyCount, threadRenderCacheIDs(data)...)
+	cacheableThreadDocument := cacheableAnonymousThreadDocument(r)
+	if cacheableThreadDocument {
+		if matchesETag(r, threadETag) {
+			writeThreadPageNotModified(w, threadETag)
+			return
+		}
+		setThreadPageCache(w, threadETag)
+	} else {
+		w.Header().Set("Cache-Control", "private, no-store")
+	}
+	emitOEmbedDiscoveryHeaders(w, r)
 	if shouldRenderInstantView(r, selected.Content, selected.Kind) {
 		s.render(w, "telegram_instant_view", buildInstantViewData(r, *selected, profiles, data.OG))
 		return
 	}
 	s.render(w, "thread", data)
+}
+
+func (s *Server) renderAnonymousThreadDocument(
+	w http.ResponseWriter,
+	r *http.Request,
+	base BasePageData,
+	root nostrx.Event,
+	selected nostrx.Event,
+	parentID string,
+	threadRelays []string,
+	resolveEvent func(string) *nostrx.Event,
+	membership authorMembership,
+) {
+	cacheKey := anonymousHTMLCacheKey(r)
+	if cached, hit := s.anonymousHTMLCache.get(cacheKey, time.Now()); hit {
+		s.metrics.Add("thread.anonymous_html_cache_hit", 1)
+		if matchesETag(r, cached.ETag) {
+			writeThreadPageNotModified(w, cached.ETag)
+			return
+		}
+		writeAnonymousHTMLDocument(w, cached)
+		return
+	}
+	s.metrics.Add("thread.anonymous_html_cache_miss", 1)
+
+	replies, nextCursor, nextID, hasMore := s.threadRepliesPage(
+		r.Context(), 0, "", anonymousThreadPreviewReplyLimit, true, threadRelays, root.ID,
+	)
+	if selected.ID != root.ID {
+		subReplies, subNext, subNextID, subHasMore := s.threadRepliesPage(
+			r.Context(), 0, "", anonymousThreadPreviewReplyLimit, true, threadRelays, selected.ID,
+		)
+		replies = mergeThreadReplyPages(replies, subReplies)
+		if !hasMore && subHasMore {
+			nextCursor, nextID = subNext, subNextID
+		}
+		hasMore = hasMore || subHasMore
+	}
+	parentByID := repairThreadParentMap(root.ID, replies, nil)
+	filteredReplies := []nostrx.Event(nil)
+	if len(membership.exact) > 0 {
+		var parent *nostrx.Event
+		if parentID != "" && parentID != root.ID {
+			parent = resolveEvent(parentID)
+		}
+		partition := partitionThreadRepliesByWoT(
+			replies,
+			root.ID,
+			&root,
+			&selected,
+			parent,
+			parentByID,
+			membership,
+			resolveEvent,
+		)
+		replies = partition.TreeReplies
+		filteredReplies = partition.FilteredReplies
+		parentByID = repairThreadParentMap(root.ID, replies, parentByID)
+	}
+
+	viewReplies := buildThreadViewReplies(root, selected, replies, resolveEvent, nil)
+	view := thread.BuildSelectedWithParents(root, selected, viewReplies, parentByID)
+	selectedDepth := selectedDepthFromRoot(root, selected, view, resolveEvent)
+	traversalPath := buildTraversalPath(root, selected, view, resolveEvent)
+
+	visibleEvents := append([]nostrx.Event{root, selected}, replies...)
+	all := append([]nostrx.Event(nil), visibleEvents...)
+	all = append(all, filteredReplies...)
+	referenced, allWithRefs := s.threadReferencedHydration(r.Context(), all, threadRelays, true, false)
+	profileEvents := append([]nostrx.Event(nil), allWithRefs...)
+	profileEvents = appendThreadProfileEvents(profileEvents, view, traversalPath)
+	profiles := s.profilesFor(r.Context(), profileEvents)
+
+	replyCounts := buildThreadDirectReplyCounts(view, all)
+	totalReplyCount := view.ReplyCount
+	if stats, err := s.store.ReplyStatsByNoteIDs(r.Context(), extractEventIDs(all)); err == nil {
+		for id, stat := range stats {
+			replyCounts[id] = stat.DirectReplies
+			if id == root.ID {
+				if stat.DirectReplies > totalReplyCount {
+					totalReplyCount = stat.DirectReplies
+				}
+				if stat.DescendantReplies > totalReplyCount {
+					totalReplyCount = stat.DescendantReplies
+				}
+			}
+		}
+	}
+	view.ReplyCount = totalReplyCount
+	filteredReplyNodes := buildFilteredReplyNodes(
+		filteredReplies,
+		filteredReplyRailDepth(view.FocusMode, selectedDepth, selected.ID == root.ID),
+		selected.ID,
+	)
+	participants := threadParticipants(visibleEvents, profiles, 8)
+	expandedParticipants := []ThreadParticipant(nil)
+	if len(filteredReplies) > 0 {
+		expandedParticipants = threadParticipants(all, profiles, 8)
+	}
+
+	data := ThreadPageData{
+		BasePageData:         s.basePageData(r, "Thread", "thread", "feed-shell"),
+		RouteContextJSON:     appShellRouteContextJSON(r),
+		AppBootstrapJSON:     s.appShellBootstrapJSON(r, base),
+		Thread:               view,
+		ReferencedEvents:     referenced,
+		ReplyCounts:          replyCounts,
+		ReactionTotals:       map[string]int{},
+		ReactionViewers:      map[string]string{},
+		Profiles:             profiles,
+		Participants:         participants,
+		ExpandedParticipants: expandedParticipants,
+		SelectedID:           selected.ID,
+		TreeSelectedID:       selected.ID,
+		SelectedDepth:        selectedDepth,
+		TraversalPath:        traversalPath,
+		LinearReplyNodes:     linearThreadReplyNodes(view),
+		RootID:               root.ID,
+		ParentID:             parentID,
+		FocusedView:          view.FocusMode,
+		SelectedExpectsFocus: threadSelectedExpectsFocusView(selected),
+		HiddenReplies:        len(view.HiddenAncestors),
+		ReplyCursor:          nextCursor,
+		ReplyCursorID:        nextID,
+		HasMore:              hasMore,
+		FilteredReplies:      filteredReplies,
+		FilteredReplyNodes:   filteredReplyNodes,
+		WebOfTrustEnabled:    true,
+		WebOfTrustFiltered:   len(filteredReplies),
+		WebOfTrustDeferred:   false,
+	}
+	if data.FocusedView {
+		data.FocusOtherReplyNodes = linearThreadOtherReplyNodes(view)
+	}
+	data.OG = threadOG(r, selected, profiles)
+	threadETag := threadPageETag(selected.ID, totalReplyCount, threadRenderCacheIDs(data)...)
+	if matchesETag(r, threadETag) {
+		writeThreadPageNotModified(w, threadETag)
+		return
+	}
+	headers := http.Header{}
+	headers.Set("X-Ptxt-Thread-Status", "ready")
+	headers.Set("X-Ptxt-Route-Status", string(ThreadRenderReady))
+	emitOEmbedDiscoveryHeaders(headerCapture{HeaderMap: headers}, r)
+	if shouldRenderInstantView(r, selected.Content, selected.Kind) {
+		body, err := s.renderTemplateBytes("telegram_instant_view", buildInstantViewData(r, selected, profiles, data.OG))
+		if err != nil {
+			slog.Error("template render failed", "template", "telegram_instant_view", "err", err)
+			http.Error(w, "template error", http.StatusInternalServerError)
+			return
+		}
+		doc := anonymousHTMLDocument{Body: body, ETag: threadETag, ContentType: "text/html; charset=utf-8", Headers: headers}
+		s.anonymousHTMLCache.put(cacheKey, doc, time.Now())
+		writeAnonymousHTMLDocument(w, doc)
+		return
+	}
+	body, err := s.renderTemplateBytes("thread", data)
+	if err != nil {
+		slog.Error("template render failed", "template", "thread", "err", err)
+		http.Error(w, "template error", http.StatusInternalServerError)
+		return
+	}
+	doc := anonymousHTMLDocument{Body: body, ETag: threadETag, ContentType: "text/html; charset=utf-8", Headers: headers}
+	s.anonymousHTMLCache.put(cacheKey, doc, time.Now())
+	writeAnonymousHTMLDocument(w, doc)
 }
 
 func (s *Server) scheduleThreadHydrateContextWarm(rootID string, selected nostrx.Event, replies []nostrx.Event, relays []string) {
@@ -777,52 +1039,45 @@ func buildInstantViewData(r *http.Request, selected nostrx.Event, profiles map[s
 	}
 }
 
-// userOG builds the OpenGraph meta for a /u/<pubkey> page from the resolved
-// profile. We use the display/short name as title, the about text as
-// description, and the proxied avatar (or the site default) as image.
-func userOG(r *http.Request, pubkey string, profile nostrx.Profile) OpenGraphMeta {
-	name := nostrx.DisplayName(profile)
-	if name == "" {
-		name = short(pubkey)
-	}
-	title := name + " on " + ogSiteName
-	description := shortenForOG(profile.About, ogDescriptionMax)
-	if description == "" {
-		description = "Profile on " + ogSiteName
-	}
-	return OpenGraphMeta{
-		Type:        ogTypeProfile,
-		Title:       title,
-		Description: description,
-		URL:         canonicalRequestURL(r),
-		Image:       ogImageForProfile(r, pubkey, profile),
-		SiteName:    ogSiteName,
-		Author:      name,
-	}
-}
-
 // threadOG builds the OpenGraph meta for a thread page using the selected
 // event's author profile (image), display name (title), and content
 // (description). Falls back gracefully when the author profile is missing.
-// The og:image always points at /og/<id>.png for a content-rendered card;
-// social platforms that fail to fetch it gracefully fall through to the
-// platform-default behavior.
+// Notes with exactly one image use the image itself for og:image; notes without
+// image media point at /og/<id>.png for a content-rendered card.
 func threadOG(r *http.Request, selected nostrx.Event, profiles map[string]nostrx.Profile) OpenGraphMeta {
-	authorName := authorLabel(profiles, selected.PubKey)
-	if authorName == "" {
-		authorName = short(selected.PubKey)
+	authorName := ""
+	if profile, ok := profiles[selected.PubKey]; ok && (profile.Display != "" || profile.Name != "") {
+		authorName = nostrx.DisplayName(profile)
 	}
-	description := shortenForOG(selected.Content, ogDescriptionMax)
+	if authorName == "" {
+		if len(selected.PubKey) >= 12 {
+			authorName = selected.PubKey[:12]
+		} else {
+			authorName = short(selected.PubKey)
+		}
+	}
+	image, visibleText, hasSingleImage := ogSingleImageNote(selected.Content, selected.Tags)
+	descriptionSource := selected.Content
+	if hasSingleImage && visibleText != "" {
+		descriptionSource = visibleText
+	}
+	description := shortenForOG(descriptionSource, ogDescriptionMax)
 	title := authorName
-	if excerpt := shortenForOG(selected.Content, ogTitleMax-len(authorName)-3); excerpt != "" {
+	if excerpt := shortenForOG(descriptionSource, ogTitleMax-len(authorName)-3); excerpt != "" {
 		title = authorName + ": " + excerpt
+	}
+	if hasSingleImage && visibleText == "" {
+		title = authorName + " shared an image"
+		description = "Image shared on " + ogSiteName
 	}
 	if title == "" {
 		title = "Note on Plain Text Nostr"
 	}
-	image := absoluteURL(r, "/og/"+selected.ID+".png")
 	if image == "" {
-		image = ogImageForProfile(r, selected.PubKey, profiles[selected.PubKey])
+		image = absoluteURL(r, "/og/"+selected.ID+".png")
+		if image == "" {
+			image = ogImageForProfile(r, selected.PubKey, profiles[selected.PubKey])
+		}
 	}
 	return OpenGraphMeta{
 		Type:        ogTypeArticle,
@@ -835,33 +1090,69 @@ func threadOG(r *http.Request, selected nostrx.Event, profiles map[string]nostrx
 	}
 }
 
-const threadRenderCacheVersion = "thread-render-v2"
+const threadRenderCacheVersion = "thread-render-v4"
 
 // threadPageETag returns a stable identifier for the rendered /thread/<id>
-// page. We mix in the render version and total reply count so template changes
-// and new replies both force caches to revalidate instead of serving stale HTML
-// for the full stale-while-revalidate window.
-func threadPageETag(selectedID string, replyCount int) string {
+// page. We mix in the render version, total reply count, and rendered thread
+// shape so newly discovered ancestors invalidate stale flattened HTML.
+func threadPageETag(selectedID string, replyCount int, renderIDs ...string) string {
 	if selectedID == "" {
 		return ""
 	}
-	return selectedID + "-" + threadRenderCacheVersion + "-r" + strconv.Itoa(replyCount)
+	shape := "empty"
+	if len(renderIDs) > 0 {
+		h := sha256.New()
+		for _, id := range renderIDs {
+			if id == "" {
+				continue
+			}
+			_, _ = h.Write([]byte(id))
+			_, _ = h.Write([]byte{0})
+		}
+		shape = hex.EncodeToString(h.Sum(nil))[:16]
+	}
+	return selectedID + "-" + threadRenderCacheVersion + "-r" + strconv.Itoa(replyCount) + "-s" + shape
 }
 
-// applyUserFragmentCache attaches content-addressed cache headers to a profile
-// fragment response when the underlying kind-0 event is known. Returns true
-// when a 304 was written and the caller must NOT render a body.
-func applyUserFragmentCache(w http.ResponseWriter, r *http.Request, profile nostrx.Profile) bool {
-	if profile.Event == nil || profile.Event.ID == "" {
-		return false
+func threadRenderCacheIDs(data ThreadPageData) []string {
+	ids := make([]string, 0, 2+len(data.TraversalPath)+len(data.LinearReplyNodes)+len(data.FocusOtherReplyNodes)+16)
+	appendID := func(id string) {
+		if id != "" {
+			ids = append(ids, id)
+		}
 	}
-	etag := profile.Event.ID
-	if matchesETag(r, etag) {
-		writeNotModified(w, etag)
-		return true
+	appendID(data.RootID)
+	appendID(data.ParentID)
+	appendID("ascii-w-" + strconv.Itoa(data.AsciiWidth))
+	for _, event := range data.TraversalPath {
+		appendID(event.ID)
 	}
-	setContentAddressedCache(w, etag)
-	return false
+	if data.Thread.ParentNode != nil {
+		appendID(data.Thread.ParentNode.Event.ID)
+	}
+	if data.Thread.SelectedNode != nil {
+		appendThreadNodeCacheIDs(&ids, *data.Thread.SelectedNode)
+	}
+	if data.Tree.Root.ID != "" {
+		appendID(data.Tree.Root.ID)
+	}
+	appendThreadNodesCacheIDs(&ids, data.Tree.Nodes)
+	appendThreadNodesCacheIDs(&ids, data.LinearReplyNodes)
+	appendThreadNodesCacheIDs(&ids, data.FocusOtherReplyNodes)
+	return ids
+}
+
+func appendThreadNodesCacheIDs(ids *[]string, nodes []thread.Node) {
+	for _, node := range nodes {
+		appendThreadNodeCacheIDs(ids, node)
+	}
+}
+
+func appendThreadNodeCacheIDs(ids *[]string, node thread.Node) {
+	if node.Event.ID != "" {
+		*ids = append(*ids, node.Event.ID)
+	}
+	appendThreadNodesCacheIDs(ids, node.Children)
 }
 
 // explicitRootIsAboveResolvedRoot reports whether explicitID names an event
@@ -1234,6 +1525,29 @@ func appendThreadProfileNodeEvents(out *[]nostrx.Event, seen map[string]bool, no
 	}
 }
 
+func appendUniqueThreadEvents(base []nostrx.Event, events []nostrx.Event) []nostrx.Event {
+	if len(events) == 0 {
+		return base
+	}
+	seen := make(map[string]bool, len(base)+len(events))
+	out := make([]nostrx.Event, 0, len(base)+len(events))
+	for _, event := range base {
+		if event.ID == "" || seen[event.ID] {
+			continue
+		}
+		seen[event.ID] = true
+		out = append(out, event)
+	}
+	for _, event := range events {
+		if event.ID == "" || seen[event.ID] {
+			continue
+		}
+		seen[event.ID] = true
+		out = append(out, event)
+	}
+	return out
+}
+
 func extractPubkeys(events []nostrx.Event) []string {
 	pubkeys := make([]string, 0, len(events))
 	seen := make(map[string]bool, len(events))
@@ -1341,7 +1655,7 @@ func applyThreadRootAnchor(selected nostrx.Event, resolveEvent func(string) *nos
 // threadSelectedExpectsFocusView reports whether the selected note is a thread
 // reply and should render in focus mode with a parent above it.
 func threadSelectedExpectsFocusView(selected nostrx.Event) bool {
-	if selected.Kind != nostrx.KindTextNote {
+	if selected.Kind != nostrx.KindTextNote && selected.Kind != nostrx.KindComment {
 		return false
 	}
 	if isQuotePost(selected) {
@@ -1447,20 +1761,6 @@ func accumulateNodeDirectCounts(counts map[string]int, nodes []thread.Node) {
 	}
 }
 
-func splitUserTimeline(events []nostrx.Event) (replies []nostrx.Event, media []nostrx.Event) {
-	replies = make([]nostrx.Event, 0, len(events))
-	media = make([]nostrx.Event, 0, len(events))
-	for _, event := range events {
-		if isReplyEvent(event) {
-			replies = append(replies, event)
-		}
-		if hasMediaContent(event.Content) {
-			media = append(media, event)
-		}
-	}
-	return replies, media
-}
-
 func isReplyEvent(event nostrx.Event) bool {
 	if event.Kind != nostrx.KindTextNote {
 		return false
@@ -1494,14 +1794,4 @@ func hasMediaContent(content string) bool {
 		}
 	}
 	return false
-}
-
-func followListParams(r *http.Request, list string) (string, int) {
-	query := strings.TrimSpace(r.URL.Query().Get(list + "_q"))
-	pageRaw := r.URL.Query().Get(list + "_page")
-	page, _ := strconv.Atoi(pageRaw)
-	if page < 1 {
-		page = 1
-	}
-	return query, page
 }

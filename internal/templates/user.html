@@ -1,50 +1,108 @@
 {{define "user"}}
 {{template "document_start" .}}
-<div class="app-shell">
-  {{template "left_rail" .}}
-  <section class="feed-column user-profile-column">
+<div>
+  <section class="feed-column user-profile-column" data-profile-shell="1" data-profile-pubkey="{{.Profile.PubKey}}" data-profile-relays="{{joinCSV .UserRelays}}">
     <section id="user-header" data-user-fragment="header">{{template "user_header" .}}</section>
     <section id="user-stats" class="stats profile-stats-row" data-user-fragment="stats">{{template "user_stats" .}}</section>
 
     <div class="user-tabs profile-tabs">
       <nav class="user-tab-nav" aria-label="Profile timeline">
-        <label class="user-tab-label" for="user-tab-posts">Posts <span class="muted">({{len .Feed}})</span></label>
+        <label class="user-tab-label" for="user-tab-posts">Posts</label>
         <span class="user-tab-sep" aria-hidden="true">·</span>
-        <label class="user-tab-label" for="user-tab-replies">Replies <span class="muted">({{len .Replies}})</span></label>
+        <label class="user-tab-label" for="user-tab-replies">Replies</label>
         <span class="user-tab-sep" aria-hidden="true">·</span>
-        <label class="user-tab-label" for="user-tab-media">Media <span class="muted">({{len .Media}})</span></label>
+        <label class="user-tab-label" for="user-tab-media">Media</label>
       </nav>
 
       <input type="radio" name="user-tab" id="user-tab-posts" class="user-tab-state" checked>
       <section class="user-tab-panel" aria-label="Posts" id="user-panel-posts" data-user-fragment="posts">
         <button class="feed-new-notes" type="button" data-profile-new-notes hidden>Show <span data-profile-new-notes-count>0</span> newer posts</button>
-        <div class="feed" data-feed>
-          {{template "user_posts_items" .}}
+        <div class="feed" data-feed data-profile-feed="posts">
+          {{if .Feed}}
+            {{template "user_posts_items" .}}
+          {{else if .ProfileTimelineTerminal}}
+            {{template "user_posts_items" .}}
+          {{else}}
+          <div data-feed-loader>
+            <div class="retro-loader-block" data-retro-loader data-retro-loader-type="profile-posts" data-retro-loader-title="loading posts" data-retro-loader-statuses="showing cached profile identity...||loading profile details...||reading cached posts...||checking for newer relay notes...||assembling profile timeline..." data-retro-loader-complete="posts incoming..." data-retro-loader-progress-width="30" data-retro-loader-status-window="4">
+              <p class="retro-loader-title" data-retro-loader-title>loading posts</p>
+              <p class="muted retro-loader-summary" data-retro-loader-summary>collecting profile posts from cache and relays.</p>
+              <div class="retro-loader-progress-block">
+                <pre class="retro-loader-progress" data-retro-loader-progress aria-live="polite"></pre>
+              </div>
+              <div class="retro-loader-activity-block">
+                <pre class="retro-loader-activity" data-retro-loader-activity aria-live="polite"></pre>
+              </div>
+            </div>
+          </div>
+          {{end}}
         </div>
-        {{if .HasMore}}
-          <button class="load-more" data-load-more data-feed-url="/u/{{.Profile.PubKey}}" data-fragment="posts" data-cursor="{{.Cursor}}" data-cursor-id="{{.CursorID}}" type="button">Load more</button>
-        {{end}}
+        <button class="load-more" data-load-more data-feed-url="/u/{{.Profile.PubKey}}" data-fragment="posts" data-cursor="{{.Cursor}}" data-cursor-id="{{.CursorID}}" type="button"{{if not .HasMore}} hidden{{end}} data-has-more="{{if .HasMore}}1{{else}}0{{end}}">Load more</button>
       </section>
 
       <input type="radio" name="user-tab" id="user-tab-replies" class="user-tab-state">
       <section class="user-tab-panel" aria-label="Replies" id="user-panel-replies" data-user-fragment="replies">
-        <div class="feed">
-          {{template "user_event_items" dict "Events" .Replies "Profiles" .Profiles "ReplyCounts" .ReplyCounts "AsciiWidth" .AsciiWidth "EmptyMessage" "No replies found in cached notes yet."}}
+        <div class="feed" data-profile-feed="replies">
+          <div data-feed-loader>
+            <div class="retro-loader-block" data-retro-loader data-retro-loader-type="profile-replies" data-retro-loader-title="loading replies" data-retro-loader-statuses="reading cached profile...||loading reply history...||checking relay replies...||assembling reply timeline..." data-retro-loader-complete="replies incoming..." data-retro-loader-progress-width="30" data-retro-loader-status-window="4">
+              <p class="retro-loader-title" data-retro-loader-title>loading replies</p>
+              <p class="muted retro-loader-summary" data-retro-loader-summary>collecting reply history from cache and relays.</p>
+              <div class="retro-loader-progress-block">
+                <pre class="retro-loader-progress" data-retro-loader-progress aria-live="polite"></pre>
+              </div>
+              <div class="retro-loader-activity-block">
+                <pre class="retro-loader-activity" data-retro-loader-activity aria-live="polite"></pre>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
       <input type="radio" name="user-tab" id="user-tab-media" class="user-tab-state">
       <section class="user-tab-panel" aria-label="Media" id="user-panel-media" data-user-fragment="media">
-        <div class="feed">
-          {{template "user_event_items" dict "Events" .Media "Profiles" .Profiles "ReplyCounts" .ReplyCounts "AsciiWidth" .AsciiWidth "EmptyMessage" "No media posts found in cached notes yet."}}
+        <div class="feed" data-profile-feed="media">
+          <div data-feed-loader>
+            <div class="retro-loader-block" data-retro-loader data-retro-loader-type="profile-media" data-retro-loader-title="loading media" data-retro-loader-statuses="reading cached profile...||loading media posts...||checking media relays...||assembling media timeline..." data-retro-loader-complete="media incoming..." data-retro-loader-progress-width="30" data-retro-loader-status-window="4">
+              <p class="retro-loader-title" data-retro-loader-title>loading media</p>
+              <p class="muted retro-loader-summary" data-retro-loader-summary>collecting media notes from cache and relays.</p>
+              <div class="retro-loader-progress-block">
+                <pre class="retro-loader-progress" data-retro-loader-progress aria-live="polite"></pre>
+              </div>
+              <div class="retro-loader-activity-block">
+                <pre class="retro-loader-activity" data-retro-loader-activity aria-live="polite"></pre>
+              </div>
+            </div>
+          </div>
         </div>
       </section>
 
       <input type="radio" name="user-tab" id="user-tab-following" class="user-tab-state">
-      <section class="user-tab-panel" aria-label="Following" id="user-panel-following" data-user-fragment="following">{{template "user_following" .}}</section>
+      <section class="user-tab-panel" aria-label="Following" id="user-panel-following" data-user-fragment="following">
+        <div class="retro-loader-block retro-loader--compact" data-retro-loader data-retro-loader-type="profile-following" data-retro-loader-title="loading following" data-retro-loader-statuses="retrieving current following count...||reading cached contacts...||checking relay follows...||assembling profile cards..." data-retro-loader-complete="follows incoming..." data-retro-loader-progress-width="30" data-retro-loader-status-window="4">
+          <p class="retro-loader-title" data-retro-loader-title>loading following</p>
+          <p class="muted retro-loader-summary" data-retro-loader-summary>retrieving current following count and profile cards from relays.</p>
+          <div class="retro-loader-progress-block">
+            <pre class="retro-loader-progress" data-retro-loader-progress aria-live="polite"></pre>
+          </div>
+          <div class="retro-loader-activity-block">
+            <pre class="retro-loader-activity" data-retro-loader-activity aria-live="polite"></pre>
+          </div>
+        </div>
+      </section>
 
       <input type="radio" name="user-tab" id="user-tab-followers" class="user-tab-state">
-      <section class="user-tab-panel" aria-label="Followed by" id="user-panel-followers" data-user-fragment="followers">{{template "user_followers" .}}</section>
+      <section class="user-tab-panel" aria-label="Followed by" id="user-panel-followers" data-user-fragment="followers">
+        <div class="retro-loader-block retro-loader--compact" data-retro-loader data-retro-loader-type="profile-followers" data-retro-loader-title="loading followed-by" data-retro-loader-statuses="retrieving current followed count...||reading cached followers...||checking relay followers...||assembling profile cards..." data-retro-loader-complete="followers incoming..." data-retro-loader-progress-width="30" data-retro-loader-status-window="4">
+          <p class="retro-loader-title" data-retro-loader-title>loading followed-by</p>
+          <p class="muted retro-loader-summary" data-retro-loader-summary>retrieving current followed count and profile cards from relays.</p>
+          <div class="retro-loader-progress-block">
+            <pre class="retro-loader-progress" data-retro-loader-progress aria-live="polite"></pre>
+          </div>
+          <div class="retro-loader-activity-block">
+            <pre class="retro-loader-activity" data-retro-loader-activity aria-live="polite"></pre>
+          </div>
+        </div>
+      </section>
 
       <input type="radio" name="user-tab" id="user-tab-identifiers" class="user-tab-state">
       <section class="user-tab-panel" aria-label="Identifiers" id="user-panel-identifiers" data-user-fragment="identifiers">{{template "user_identifiers" .}}</section>
@@ -55,8 +113,8 @@
   </section>
   {{template "user_right_rail" .}}
 </div>
-<script type="module" src="/static/js/layout.js"></script>
-<script type="module" src="/static/js/relays.js"></script>
+{{if not .GuestSliceV2}}<script type="module" src="{{assetPath .AssetBasePath "/static/js/layout.js"}}"></script>
+<script type="module" src="{{assetPath .AssetBasePath "/static/js/relays.js"}}"></script>{{end}}
 {{template "document_end" .}}
 {{end}}
 
@@ -65,11 +123,11 @@
 {{end}}
 
 {{define "user_stats"}}
-<a href="#user-panel-following" class="profile-stat-link" data-profile-tab="user-tab-following">Following <span class="muted">({{if .FollowingList.CachedExact}}{{.FollowingList.CachedTotal}}{{else}}{{len .FollowingList.Items}}+{{end}})</span></a>
+<button type="button" class="link-button profile-stat-link" data-profile-tab="user-tab-following">Following <span class="muted">({{if .ClientShellStats}}<span data-profile-following-count>...</span>{{else if .FollowingList.CachedExact}}{{.FollowingList.CachedTotal}}{{else}}{{len .FollowingList.Items}}+{{end}})</span></button>
 <span class="muted profile-stats-sep" aria-hidden="true">•</span>
-<a href="#user-panel-followers" class="profile-stat-link" data-profile-tab="user-tab-followers">Followed <span class="muted">({{if .FollowersList.CachedExact}}{{.FollowersList.CachedTotal}}{{else}}{{len .FollowersList.Items}}+{{end}})</span></a>
-<span class="muted profile-stats-sep" aria-hidden="true">•</span>
-<a href="#user-panel-relays" class="profile-stat-link" data-profile-tab="user-tab-relays">Relays</a>
+<button type="button" class="link-button profile-stat-link" data-profile-tab="user-tab-followers">Followed <span class="muted">({{if .ClientShellStats}}<span data-profile-followers-count>...</span>{{else if .FollowersList.CachedExact}}{{.FollowersList.CachedTotal}}{{else}}{{len .FollowersList.Items}}+{{end}})</span></button>
+<span class="muted profile-stats-sep profile-relays-shortcut-sep" aria-hidden="true">•</span>
+<button type="button" class="link-button profile-stat-link profile-relays-shortcut" data-profile-tab="user-tab-relays">Relays</button>
 {{end}}
 
 {{define "user_identifiers"}}
@@ -103,81 +161,105 @@
 {{end}}
 
 {{define "user_following"}}
-<p class="muted">
-  {{if .FollowingList.CachedExact}}
-    {{.FollowingList.CachedTotal}} cached follows discovered for this profile. Nostr does not provide a reliable network-wide total.
-  {{else}}
-    Cached follow data is partial for this profile, so this count is not exact. Nostr does not provide a reliable network-wide total.
-  {{end}}
-</p>
-<form method="get" action="/u/{{.Profile.PubKey}}" data-follow-fragment-form data-follow-fragment="following" class="profile-search-form">
-  <input type="search" name="following_q" value="{{.FollowingList.Query}}" placeholder="Search cached following" aria-label="Search cached following">
-  <button type="submit">Search</button>
-</form>
-<p class="muted">Page {{.FollowingList.Page}} · Showing up to {{.FollowingList.PageSize}} per page.</p>
-<ul class="columns">
-  {{range .FollowingList.Items}}
-    <li><a href="/u/{{.}}" data-relay-aware>{{displayName $.ContactProfiles .}}</a> <span class="muted">{{short .}}</span></li>
-  {{else}}
-    {{if .FollowingList.Query}}
-      <li class="muted">No cached follows matched this search.</li>
+<div class="profile-follow-panel">
+  <p class="muted">
+    {{if .FollowingList.CachedExact}}
+      {{.FollowingList.CachedTotal}} cached follows discovered for this profile. Nostr does not provide a reliable network-wide total.
     {{else}}
-      <li class="muted">No cached follows yet.</li>
+      Cached follow data is partial for this profile, so this count is not exact. Nostr does not provide a reliable network-wide total.
     {{end}}
-  {{end}}
-</ul>
-<p class="muted profile-follow-pager">
-  {{if .FollowingList.HasPrev}}
-    <a href="/u/{{.Profile.PubKey}}?following_q={{.FollowingList.Query}}&following_page={{.FollowingList.PrevPage}}" data-follow-fragment-link="following">Newer</a>
-  {{else}}
-    <span>Newer</span>
-  {{end}}
-  ·
-  {{if .FollowingList.HasNext}}
-    <a href="/u/{{.Profile.PubKey}}?following_q={{.FollowingList.Query}}&following_page={{.FollowingList.NextPage}}" data-follow-fragment-link="following">Older</a>
-  {{else}}
-    <span>Older</span>
-  {{end}}
-</p>
+  </p>
+  <form method="get" action="{{profileHref .Profile.PubKey}}" data-follow-fragment-form data-follow-fragment="following" class="profile-search-form">
+    <input type="search" name="following_q" value="{{.FollowingList.Query}}" placeholder="Search cached following" aria-label="Search cached following">
+    <button type="submit">Search</button>
+    {{if .FollowingList.Query}}<button type="button" data-follow-clear data-follow-fragment="following" data-follow-clear-url="{{profileHref .Profile.PubKey}}">Clear</button>{{end}}
+    <span class="muted profile-follow-search-status" data-follow-search-status hidden>Searching...</span>
+  </form>
+  <p class="muted">Showing up to {{.FollowingList.PageSize}} per page.</p>
+  <div class="profile-follow-results">
+    <ul class="profile-follow-list" data-profile-follow-list>
+      {{if eq .FollowingList.Page 1}}{{range .FollowingList.Hashtags}}
+        <li class="profile-follow-item profile-follow-hashtag"><a class="profile-follow-link" href="/tag/{{.}}" data-relay-aware><span class="profile-follow-avatar"><span class="profile-follow-avatar-fallback" aria-hidden="true">#</span></span><span class="profile-follow-copy"><span class="profile-follow-display">#{{.}}</span><span class="muted profile-follow-secondary">hashtag</span></span></a></li>
+      {{end}}{{end}}
+      {{range .FollowingList.Items}}
+        {{template "user_follow_item" dict "Pubkey" . "Profiles" $.ContactProfiles}}
+      {{else}}
+        {{if not .FollowingList.Hashtags}}
+        {{if .FollowingList.Query}}
+          <li class="muted profile-follow-empty-item">No cached follows matched this search.</li>
+        {{else}}
+          <li class="muted profile-follow-empty-item">No cached follows yet.</li>
+        {{end}}
+        {{end}}
+      {{end}}
+    </ul>
+  </div>
+  <p class="muted profile-follow-pager" data-profile-follow-load-more-wrap>
+    {{if .FollowingList.HasNext}}
+      <button type="button" class="load-more" data-follow-load-more data-follow-fragment="following" data-follow-next-url="{{profileHref .Profile.PubKey}}?following_q={{urlquery .FollowingList.Query}}&following_page={{.FollowingList.NextPage}}">Load more</button>
+    {{end}}
+  </p>
+</div>
 {{end}}
 
 {{define "user_followers"}}
-<p class="muted">
-  {{if .FollowersList.CachedExact}}
-    {{.FollowersList.CachedTotal}} cached followers discovered from kind 3 events. Nostr does not provide a reliable network-wide follower total.
-  {{else}}
-    Cached follower data is partial for this profile, so this count is not exact. Nostr does not provide a reliable network-wide follower total.
-  {{end}}
-</p>
-<form method="get" action="/u/{{.Profile.PubKey}}" data-follow-fragment-form data-follow-fragment="followers" class="profile-search-form">
-  <input type="search" name="followers_q" value="{{.FollowersList.Query}}" placeholder="Search cached followers" aria-label="Search cached followers">
-  <button type="submit">Search</button>
-</form>
-<p class="muted">Page {{.FollowersList.Page}} · Showing up to {{.FollowersList.PageSize}} per page.</p>
-<ul class="columns">
-  {{range .FollowersList.Items}}
-    <li><a href="/u/{{.}}" data-relay-aware>{{displayName $.ContactProfiles .}}</a> <span class="muted">{{short .}}</span></li>
-  {{else}}
-    {{if .FollowersList.Query}}
-      <li class="muted">No cached followers matched this search.</li>
+<div class="profile-follow-panel">
+  <p class="muted">
+    {{if .FollowersList.CachedExact}}
+      {{.FollowersList.CachedTotal}} cached followers discovered from kind 3 events. Nostr does not provide a reliable network-wide follower total.
     {{else}}
-      <li class="muted">No cached followers yet.</li>
+      Cached follower data is partial for this profile, so this count is not exact. Nostr does not provide a reliable network-wide follower total.
     {{end}}
-  {{end}}
-</ul>
-<p class="muted profile-follow-pager">
-  {{if .FollowersList.HasPrev}}
-    <a href="/u/{{.Profile.PubKey}}?followers_q={{.FollowersList.Query}}&followers_page={{.FollowersList.PrevPage}}" data-follow-fragment-link="followers">Newer</a>
-  {{else}}
-    <span>Newer</span>
-  {{end}}
-  ·
-  {{if .FollowersList.HasNext}}
-    <a href="/u/{{.Profile.PubKey}}?followers_q={{.FollowersList.Query}}&followers_page={{.FollowersList.NextPage}}" data-follow-fragment-link="followers">Older</a>
-  {{else}}
-    <span>Older</span>
-  {{end}}
-</p>
+  </p>
+  <form method="get" action="{{profileHref .Profile.PubKey}}" data-follow-fragment-form data-follow-fragment="followers" class="profile-search-form">
+    <input type="search" name="followers_q" value="{{.FollowersList.Query}}" placeholder="Search cached followers" aria-label="Search cached followers">
+    <button type="submit">Search</button>
+    {{if .FollowersList.Query}}<button type="button" data-follow-clear data-follow-fragment="followers" data-follow-clear-url="{{profileHref .Profile.PubKey}}">Clear</button>{{end}}
+    <span class="muted profile-follow-search-status" data-follow-search-status hidden>Searching...</span>
+  </form>
+  <p class="muted">Showing up to {{.FollowersList.PageSize}} per page.</p>
+  <div class="profile-follow-results">
+    <ul class="profile-follow-list" data-profile-follow-list>
+      {{range .FollowersList.Items}}
+        {{template "user_follow_item" dict "Pubkey" . "Profiles" $.ContactProfiles}}
+      {{else}}
+        {{if .FollowersList.Query}}
+          <li class="muted profile-follow-empty-item">No cached followers matched this search.</li>
+        {{else}}
+          <li class="muted profile-follow-empty-item">No cached followers yet.</li>
+        {{end}}
+      {{end}}
+    </ul>
+  </div>
+  <p class="muted profile-follow-pager" data-profile-follow-load-more-wrap>
+    {{if .FollowersList.HasNext}}
+      <button type="button" class="load-more" data-follow-load-more data-follow-fragment="followers" data-follow-next-url="{{profileHref .Profile.PubKey}}?followers_q={{urlquery .FollowersList.Query}}&followers_page={{.FollowersList.NextPage}}">Load more</button>
+    {{end}}
+  </p>
+</div>
+{{end}}
+
+{{define "user_follow_item"}}
+{{$pubkey := .Pubkey}}
+{{$profiles := .Profiles}}
+{{$avatar := avatarSrc $profiles $pubkey}}
+{{$avatarRetry := avatarURL $profiles $pubkey}}
+{{$profile := index $profiles $pubkey}}
+{{$nip05 := $profile.NIP05}}
+{{$nip05Display := nip05Display $nip05}}
+<li class="profile-follow-item" data-profile-follow-item data-pubkey="{{$pubkey}}">
+  <a href="{{profileHref $pubkey}}" class="profile-follow-link" data-relay-aware>
+    <span class="profile-follow-avatar">{{if $avatar}}<img class="profile-follow-avatar-image" src="{{$avatar}}" data-ptxt-avatar-retry-src="{{$avatarRetry}}" alt="" loading="lazy" decoding="async">{{else}}<span class="profile-follow-avatar-fallback" aria-hidden="true">@</span>{{end}}</span>
+    <span class="profile-follow-copy">
+      <span class="profile-follow-display">{{displayName $profiles $pubkey}}</span>
+      <span class="muted profile-follow-secondary{{if not $nip05}} profile-follow-secondary--empty{{end}}"{{if $nip05}} data-nip05-verify data-nip05="{{$nip05}}" data-pubkey="{{$pubkey}}"{{end}}>
+        <span>{{$nip05Display}}{{if not $nip05}}no nip-05 published{{end}}</span>
+        {{if $nip05}}<span class="profile-nip05-status" data-nip05-status data-nip05-status-kind="checking" aria-label="Checking NIP-5 verification" aria-expanded="false" role="button" tabindex="0" hidden></span>{{end}}
+      </span>
+      <span class="muted profile-follow-npub mono">{{npub $pubkey}}</span>
+    </span>
+  </a>
+</li>
 {{end}}
 
 {{define "user_relays"}}
@@ -215,6 +297,6 @@
 
 {{define "user_right_rail"}}
 <aside class="right-rail profile-right-rail">
-  <section class="profile-card profile-right-panel" id="user-right-relays" data-user-fragment="relays">{{template "user_relays" .}}</section>
+  <section class="profile-card profile-right-panel" id="user-right-relays" data-user-fragment="relays" data-profile-relays="{{joinCSV .UserRelays}}">{{template "user_relays" .}}</section>
 </aside>
 {{end}}

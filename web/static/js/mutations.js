@@ -5,19 +5,25 @@ import {
   normalizedPubkey,
   normalizePubkey,
   normalizeRelayURL,
-  saveSelectedRelays,
-  selectedRelays,
   sessionAuthorLabelFromMetadata,
   setSession,
   shortPubkey,
   syncProfileFollowGuestAria,
+  syncNIP07RelayConfigFromExtension,
   withRelayParams,
 } from "./session.js";
 import { activeSignerState, signEventDraft } from "./signer.js";
 import { initBookmarks, publishSignedEvent } from "./bookmarks.js";
+import { planPublishTargets } from "./publish.js";
+import { fetchMentions, fetchMuteList, fetchViewerProfile, fetchViewerRelayPreferences } from "./relay-reads.js";
+import { pendingPublishStatus, showPublishStatusSheet } from "./publish-status.js";
 import { blossomUploadBlob } from "./blossom.js";
 import { getBlossomServerURLs } from "./sort-prefs.js";
+import { DEFAULT_LOGGED_OUT_WOT_SEED_NPUB } from "./viewer-defaults.js";
 import { MENTION_TOKEN_RE, mentionPubKey } from "./nip27.js";
+import { DEFAULT_RELAYS } from "./relay-config.js";
+import { effectiveReadRelays, effectiveWriteRelays, loadRelayConfig, saveRelayConfig } from "./relay-state.js";
+import { hydrateRelayInfoCards, relayHostLabel } from "./relays.js";
 
 const MENTION_LIMIT = 12;
 const MENTION_CACHE_LIMIT = 24;
@@ -25,6 +31,7 @@ const MENTION_MENU_DEBOUNCE_MS = 30;
 const FOLLOW_CONTACT_LIMIT = 600;
 // Must match nostrx.MaxMuteListTagRows (Go publish + store cap).
 const MUTE_TAG_LIMIT = 2000;
+const MUTE_P_TAG_LIMIT = MUTE_TAG_LIMIT - 1;
 const MENTION_MENU_GAP_PX = 6;
 /** Must match `THREAD_INLINE_REPLY_PENDING_KEY` in web/static/js/thread.js */
 const THREAD_INLINE_REPLY_PENDING_KEY = "ptxt-inline-reply-v1";
@@ -191,7 +198,7 @@ function renderComposerAttachments(state) {
 }
 
 function buildReferenceTags(kind, targetID, targetPubKey, targetRelay) {
-  const relayHint = targetRelay || selectedRelays()[0] || "";
+  const relayHint = targetRelay || effectiveReadRelays(loadRelayConfig())[0] || "";
   const tags = [];
   if (targetID) {
     tags.push(kind === "quote"
@@ -225,7 +232,7 @@ function normalizeFollowCandidate(raw) {
 
 function setFollowButtonState(button, following) {
   button.setAttribute("aria-pressed", following ? "true" : "false");
-  button.textContent = following ? "Following" : "Follow";
+  button.textContent = following ? "Unfollow" : "Follow";
 }
 
 let loginRequiredFollowPopover = null;
@@ -284,10 +291,8 @@ async function loadFollowState(viewer) {
     if (state.loading) await state.loading;
     return state;
   }
-  state.loading = fetchWithSession(`/api/mentions`)
-    .then(async (response) => {
-      if (!response.ok) return;
-      const payload = await response.json();
+  state.loading = fetchMentions(viewer)
+    .then(async (payload) => {
       const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
       state.following.clear();
       state.relayHints.clear();
@@ -300,7 +305,7 @@ async function loadFollowState(viewer) {
       });
     })
     .catch((error) => {
-      console.warn("follow: /api/mentions request failed", error);
+      console.warn("follow: mention candidates request failed", error);
     })
     .finally(() => {
       state.loaded = true;
@@ -405,10 +410,10 @@ function muteStateFor(viewer) {
   return state;
 }
 
-/** Kind-10000 `p` tags from the muted set (sorted hex). Over-cap uses the first MUTE_TAG_LIMIT pubkeys in sort order. */
+/** Kind-10000 `p` tags from the muted set (sorted hex). Reserve one tag for client metadata. */
 function tagsFromMutedPubkeys(mutedSet) {
   const keys = [...mutedSet].sort();
-  const sliced = keys.slice(0, MUTE_TAG_LIMIT);
+  const sliced = keys.slice(0, MUTE_P_TAG_LIMIT);
   return sliced.map((pk) => ["p", pk]);
 }
 
@@ -437,22 +442,16 @@ async function loadMuteState(viewer) {
   }
   state.loading = (async () => {
     try {
-      const response = await fetchWithSession("/api/mute-list");
-      if (!response.ok) {
-        console.warn("mute: /api/mute-list HTTP", response.status);
-        muteStateCache.delete(viewer);
-        return;
-      }
-      const payload = await response.json();
+      const payload = await fetchMuteList(viewer);
       if (!Array.isArray(payload?.muted_pubkeys)) {
-        console.warn("mute: /api/mute-list missing or invalid muted_pubkeys");
+        console.warn("mute: mute list missing or invalid muted_pubkeys");
         muteStateCache.delete(viewer);
         return;
       }
       const respHex = normalizePubkey(payload?.pubkey);
       const viewerHex = normalizePubkey(viewer);
       if (!respHex || !viewerHex || respHex !== viewerHex) {
-        console.warn("mute: /api/mute-list pubkey mismatch");
+        console.warn("mute: mute list pubkey mismatch");
         muteStateCache.delete(viewer);
         return;
       }
@@ -464,7 +463,7 @@ async function loadMuteState(viewer) {
       }
       state.loaded = true;
     } catch (error) {
-      console.warn("mute: /api/mute-list request failed", error);
+      console.warn("mute: mute list request failed", error);
       muteStateCache.delete(viewer);
     } finally {
       state.loading = null;
@@ -510,7 +509,7 @@ async function publishMuteList(tags, content) {
   const draft = {
     kind: 10000,
     created_at: Math.floor(Date.now() / 1000),
-    tags: tagRows.length > MUTE_TAG_LIMIT ? tagRows.slice(0, MUTE_TAG_LIMIT) : tagRows,
+    tags: tagRows.length > MUTE_P_TAG_LIMIT ? tagRows.slice(0, MUTE_P_TAG_LIMIT) : tagRows,
     content: String(content ?? ""),
   };
   const signed = await signEventDraft(draft, getSession());
@@ -545,7 +544,7 @@ function bindMuteActions(root) {
     if (!target || !currentViewer || target === currentViewer) return;
     const signer = activeSignerState();
     if (!signer.isLoggedIn) {
-      window.dispatchEvent(new CustomEvent("ptxt:navigate", { detail: { href: "/login" } }));
+      window.location.assign(withRelayParams("/login"));
       return;
     }
     if (!signer.canSign) {
@@ -561,7 +560,7 @@ function bindMuteActions(root) {
         const shouldMute = !state.muted.has(target);
         const nextMuted = new Set(state.muted);
         if (shouldMute) {
-          if (nextMuted.size >= MUTE_TAG_LIMIT) {
+          if (nextMuted.size >= MUTE_P_TAG_LIMIT) {
             throw new Error("mute list exceeds tag limit");
           }
           nextMuted.add(target);
@@ -684,24 +683,15 @@ async function loadMentionCandidates(root, state, rootID) {
     setMentionCandidates(state, mentionCandidateCache.get(contextKey));
     return;
   }
-  const params = new URLSearchParams();
-  if (rootID) params.set("root_id", rootID);
   let normalized = [];
   try {
-    const queryString = params.toString();
-    const url = queryString ? `/api/mentions?${queryString}` : "/api/mentions";
-    const response = await fetchWithSession(url);
-    if (response.ok) {
-      const payload = await response.json();
-      const rawCandidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
-      normalized = rawCandidates
-        .map((candidate) => normalizeMentionCandidate(candidate, candidate?.source))
-        .filter(Boolean);
-    } else {
-      console.warn("mentions: /api/mentions returned", response.status);
-    }
+    const payload = await fetchMentions(viewer, { rootID });
+    const rawCandidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
+    normalized = rawCandidates
+      .map((candidate) => normalizeMentionCandidate(candidate, candidate?.source))
+      .filter(Boolean);
   } catch (error) {
-    console.warn("mentions: /api/mentions request failed", error);
+    console.warn("mentions: request failed", error);
     normalized = [];
   }
   if (normalized.length === 0) {
@@ -716,9 +706,7 @@ async function loadMentionCandidates(root, state, rootID) {
 }
 
 function syncComposerScroll(state) {
-  if (!state.overlay || !state.content) return;
-  state.overlay.scrollTop = state.content.scrollTop;
-  state.overlay.scrollLeft = state.content.scrollLeft;
+  if (!state?.content) return;
   if (!state.mentionMenu?.hidden) positionMentionMenu(state);
 }
 
@@ -762,22 +750,10 @@ function findNamedMentionMatch(state, value, fromIndex) {
 }
 
 function renderComposerOverlay(state) {
-  if (!state.overlay || !state.content) return;
-  const value = state.content.value || "";
-  const parts = [];
-  let cursor = 0;
-  while (cursor <= value.length) {
-    const match = findNamedMentionMatch(state, value, cursor);
-    if (!match) {
-      parts.push(escapeHTML(value.slice(cursor)));
-      break;
-    }
-    parts.push(escapeHTML(value.slice(cursor, match.start)));
-    const visible = value.slice(match.start, match.end);
-    parts.push(`<span class="composer-overlay-mention">${escapeHTML(visible)}</span>`);
-    cursor = match.end;
+  if (state?.overlay instanceof HTMLElement) {
+    state.overlay.hidden = true;
+    state.overlay.textContent = "";
   }
-  state.overlay.innerHTML = parts.join("") || " ";
   syncComposerScroll(state);
 }
 
@@ -1082,7 +1058,11 @@ export async function openThreadInlineComposer(root, opts) {
   clearRepostContext(state);
   if (state.previewWrap) state.previewWrap.hidden = true;
   if (state.previewContent) state.previewContent.textContent = "";
-  await refreshComposerMentionsAndOverlay(root, state, state.rootID.value);
+  // Opening the composer must not wait on relay-backed contact/profile reads.
+  // Real signed-in accounts can take several seconds to hydrate mention
+  // candidates; build and focus the form first, then enrich it in place.
+  renderComposerOverlay(state);
+  closeMentionMenu(state);
   applyComposerReadyStatus(state, "reply");
   syncComposerControls(state);
   state.form.classList.add("composer-form--thread-inline");
@@ -1127,6 +1107,9 @@ export async function openThreadInlineComposer(root, opts) {
   if (state.content && focusSigner.isLoggedIn && focusSigner.canSign) {
     queueMicrotask(() => state.content.focus());
   }
+  void refreshComposerMentionsAndOverlay(root, state, state.rootID.value).catch((error) => {
+    console.warn("mentions: inline composer hydration failed", error);
+  });
 }
 
 function closeComposerDialogShell(state) {
@@ -1153,16 +1136,13 @@ function buildThreadInlineComposerHost(state, opts) {
   if (!Number.isFinite(anchorDepth)) {
     anchorDepth = anchorEl.matches?.("article.note") ? 0 : 1;
   }
-  /* Depth for `.thread-inline-reply` margin must match where the rail column sits:
-     - Focused selected note is an `article`, not `.comment`: it has no comment margins, but
-       still carries `data-depth="1"`. Using anchorDepth+1 would add a spurious 1ch indent.
-     - Real child comments nest in another `.comments`; the inline composer is a sibling after
-       the anchor, so for anchor depth ≥ 2 use anchorDepth (not +1) to stay under the same rail.
-     - Otherwise mirror a child comment: anchorDepth+1. */
+  /* The inline form is inserted as a sibling of its anchor, so its rail must
+     stay in the anchor's existing reply column. Root articles have no comment
+     depth and begin the reply rail at depth 1. */
   let composeDepth;
   if (anchorEl.matches?.("article.thread-focus-selected")) {
     composeDepth = 1;
-  } else if (anchorEl.classList?.contains?.("comment") && anchorDepth >= 2) {
+  } else if (anchorEl.classList?.contains?.("comment")) {
     composeDepth = Math.min(Math.max(anchorDepth, 1), 20);
   } else {
     composeDepth = Math.min(Math.max(anchorDepth + 1, 1), 20);
@@ -1235,7 +1215,7 @@ async function openComposer(root, state, mode, context = {}) {
   if (!state) return;
   if (mode === "reply") {
     const targetID = context.targetID || "";
-    const anchor = targetID ? document.getElementById(`note-${targetID}`) : null;
+    const anchor = context.anchorEl || visibleReplyAnchorForTarget(targetID);
     if (document.getElementById("thread-summary") && anchor) {
       await openThreadInlineComposer(root, {
         anchorEl: anchor,
@@ -1286,6 +1266,20 @@ async function openComposer(root, state, mode, context = {}) {
   }
 }
 
+function visibleReplyAnchorForTarget(targetID) {
+  if (!targetID) return null;
+  const selector = `#note-${CSS.escape(targetID)}`;
+  const candidates = [...document.querySelectorAll(selector)];
+  return candidates.find((node) => {
+    if (!(node instanceof HTMLElement)) return false;
+    if (node.hidden || node.closest("[hidden]")) return false;
+    const rect = node.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }) || (document.getElementById(`note-${targetID}`) instanceof HTMLElement
+    ? document.getElementById(`note-${targetID}`)
+    : null);
+}
+
 function closeComposer(state) {
   if (!state) return;
   closeMentionMenu(state);
@@ -1318,7 +1312,10 @@ function hrefForThreadInlineReplyNavigation(rootId, targetId) {
   const cur = new URL(window.location.href);
   const next = new URL(`/thread/${pathId}`, cur.origin);
   next.search = cur.search;
-  if (targetId) next.hash = `#note-${targetId}`;
+  if (targetId) {
+    next.searchParams.set("selected", targetId);
+    next.hash = `#note-${targetId}`;
+  }
   return next.toString();
 }
 
@@ -1328,9 +1325,11 @@ function bindReplyActions(root) {
   root.addEventListener("click", (event) => {
     const link = event.target.closest("a[data-reply-action],a[href^='/thread/'],button[data-reply-action],button[data-repost-action]");
     if (!link) return;
-    const inReplyContainer = link.closest("[data-reply-target-id]");
+    const inReplyContainer =
+      link.closest(".comment, article.note, [data-thread-tree-note]") ||
+      link.closest("[data-reply-target-id]");
     if (!inReplyContainer) return;
-    const state = composeState(root);
+    const state = composeState(root) || composeState(document);
     if (!state) return;
     if (link.hasAttribute("data-repost-action")) {
       event.preventDefault();
@@ -1365,11 +1364,13 @@ function bindReplyActions(root) {
       }
       const href = hrefForThreadInlineReplyNavigation(rootID, targetID);
       if (href) {
-        window.dispatchEvent(new CustomEvent("ptxt:navigate", { detail: { href } }));
+        window.location.assign(withRelayParams(href));
       }
       return;
     }
-    const anchor = targetID ? document.getElementById(`note-${targetID}`) : null;
+    const anchor = inReplyContainer instanceof HTMLElement
+      ? inReplyContainer
+      : visibleReplyAnchorForTarget(targetID);
     if (anchor) {
       void openThreadInlineComposer(root, {
         anchorEl: anchor,
@@ -1383,7 +1384,7 @@ function bindReplyActions(root) {
 }
 
 function bindComposer(root) {
-  const state = composeState(root);
+  const state = composeState(root) || composeState(document);
   if (!state || !state.form || !state.content) return;
   bindPostTriggers(root, state);
   bindReplyActions(root);
@@ -1559,7 +1560,21 @@ function bindComposer(root) {
     try {
       const signed = await signEventDraft(draft, getSession());
       setStatus(state, "Publishing event...");
-      await publishSignedEvent(signed);
+      const plannedRelays = await planPublishTargets(signed).catch(() => []);
+      const pendingState = pendingPublishStatus({
+        phaseTitle: "Broadcasting to relays",
+        statusMessage: "Preparing relay broadcast...",
+        plannedRelays,
+        statusMessages: [
+          "signing event...",
+          "preparing relay broadcast...",
+          "broadcasting to relays...",
+        ],
+        completionMessage: "publish complete.",
+      });
+      showPublishStatusSheet(null, { initialState: pendingState });
+      const payload = await publishSignedEvent(signed);
+      showPublishStatusSheet(payload, { initialState: pendingState });
       state.content.value = "";
       if (state.mentionByName) state.mentionByName.clear();
       renderComposerOverlay(state);
@@ -1567,7 +1582,7 @@ function bindComposer(root) {
       clearRepostContext(state);
       closeComposer(state);
       const href = withRelayParams(`/thread/${encodeURIComponent(signed.id)}`);
-      window.dispatchEvent(new CustomEvent("ptxt:navigate", { detail: { href } }));
+      window.location.assign(href);
     } catch (error) {
       setStatus(state, error instanceof Error ? error.message : "Failed to publish event.");
     } finally {
@@ -1590,15 +1605,14 @@ async function loadProfileMetadata(form, statusNode) {
     return;
   }
   try {
-    const response = await fetchWithSession(`/api/profile`);
-    if (!response.ok) throw new Error("profile metadata request failed");
-    const metadata = await response.json();
+    const metadata = await fetchViewerProfile(pubkey);
     assignIfEmpty(form, "display_name", metadata.display_name);
     assignIfEmpty(form, "name", metadata.name);
     assignIfEmpty(form, "about", metadata.about);
     assignIfEmpty(form, "picture", metadata.picture);
     assignIfEmpty(form, "website", metadata.website);
     assignIfEmpty(form, "nip05", metadata.nip05);
+    assignIfEmpty(form, "lud16", metadata.lud16);
     const pk = normalizedPubkey();
     if (pk) {
       const nextLabel = sessionAuthorLabelFromMetadata(metadata, pk);
@@ -1633,6 +1647,42 @@ function relayUsageLabel(usage) {
   return "read+write";
 }
 
+function relayUsageFromEntry(entry) {
+  if (entry?.read === true && entry?.write === false) return "read";
+  if (entry?.write === true && entry?.read === false) return "write";
+  return "any";
+}
+
+function relayFallbackGlyph(relay) {
+  const label = relayHostLabel(relay).replace(/^www\./, "");
+  const first = label.match(/[a-z0-9]/i)?.[0] || "r";
+  return first.toUpperCase();
+}
+
+function relayCardHTML(relay, {
+  meta = "",
+  actionHTML = "",
+  itemAttrs = "",
+  title = "",
+} = {}) {
+  const displayTitle = title || relayHostLabel(relay);
+  const metaHTML = meta ? `<span class="muted relay-card-meta">${escapeHTML(meta)}</span>` : "";
+  const actionsHTML = actionHTML ? `<span class="relay-card-actions">${actionHTML}</span>` : "";
+  return `<li class="relay-card" data-relay-info-card data-relay-url="${escapeHTML(relay)}"${itemAttrs ? ` ${itemAttrs}` : ""}>
+    <span class="relay-card-icon" data-relay-icon aria-hidden="true">${escapeHTML(relayFallbackGlyph(relay))}</span>
+    <span class="relay-card-main">
+      <span class="relay-card-header">
+        <strong class="relay-card-title" data-relay-title>${escapeHTML(displayTitle)}</strong>
+        ${metaHTML}
+      </span>
+      <code class="relay-card-url relay-url-popover" data-check-relay="${escapeHTML(relay)}" tabindex="0" role="button">${escapeHTML(relay)}</code>
+      <span class="muted relay-card-description" data-relay-description hidden></span>
+      <span class="relay-card-nips" data-relay-nips hidden></span>
+    </span>
+    ${actionsHTML}
+  </li>`;
+}
+
 function upsertRelayPreference(state, relay, usage) {
   const normalizedRelay = normalizeRelayURL(relay);
   if (!normalizedRelay) return false;
@@ -1646,6 +1696,23 @@ function upsertRelayPreference(state, relay, usage) {
   return true;
 }
 
+function relayEntriesFromPreferences(preferences = []) {
+  return preferences.map((item) => ({
+    url: item.url,
+    read: item.usage !== "write",
+    write: item.usage !== "read",
+  }));
+}
+
+function relayPreferencesFromEntries(entries = []) {
+  return (Array.isArray(entries) ? entries : [])
+    .map((entry) => ({
+      url: normalizeRelayURL(entry?.url || ""),
+      usage: relayUsageFromEntry(entry),
+    }))
+    .filter((entry) => entry.url);
+}
+
 function renderSimpleRelayList(node, relays, emptyMessage) {
   if (!node) return;
   if (!Array.isArray(relays) || relays.length === 0) {
@@ -1653,16 +1720,38 @@ function renderSimpleRelayList(node, relays, emptyMessage) {
     return;
   }
   node.innerHTML = relays
-    .map((relay) => `<li><code>${escapeHTML(relay)}</code></li>`)
+    .map((relay) => {
+      const normalized = normalizeRelayURL(relay);
+      return normalized ? relayCardHTML(normalized) : "";
+    })
+    .filter(Boolean)
     .join("");
+  hydrateRelayInfoCards(node);
 }
 
-function renderInsightRelayList(node, relays, emptyMessage) {
+function renderOutboxSummary(node, payload) {
+  if (!node) return;
+  const active = Array.isArray(payload?.active_outbox_relays) ? payload.active_outbox_relays : [];
+  const feedAuthorCount = Number(payload?.feed_author_count || 0);
+  const cachedHintAuthorCount = Number(payload?.cached_hint_author_count || 0);
+  if (feedAuthorCount <= 0) {
+    node.textContent = "Outbox routing activates once there are feed authors to route.";
+    return;
+  }
+  if (active.length === 0) {
+    node.textContent = `${cachedHintAuthorCount} of ${feedAuthorCount} feed authors have cached NIP-65 hints. Using effective defaults until outbox routes warm up.`;
+    return;
+  }
+  node.textContent = `${cachedHintAuthorCount} of ${feedAuthorCount} feed authors have cached NIP-65 hints. ${active.length} active outbox relay${active.length === 1 ? "" : "s"} currently cover those routes.`;
+}
+
+function renderInsightRelayList(node, relays, emptyMessage, options = {}) {
   if (!node) return;
   if (!Array.isArray(relays) || relays.length === 0) {
     node.innerHTML = `<li class="muted">${emptyMessage}</li>`;
     return;
   }
+  const showAdd = options.showAdd === true;
   node.innerHTML = relays.map((item) => {
     const relay = normalizeRelayURL(item?.url || "");
     if (!relay) return "";
@@ -1671,26 +1760,41 @@ function renderInsightRelayList(node, relays, emptyMessage) {
     const status = String(item?.status || "").trim();
     const confidence = String(item?.confidence || "").trim();
     const meta = [relayUsageLabel(usage), sources.join("+"), confidence, status].filter(Boolean).join(" | ");
-    return `<li>
-      <code>${escapeHTML(relay)}</code>
-      <span class="muted">${escapeHTML(meta)}</span>
-      <button type="button" data-relay-preference-suggested="${escapeHTML(relay)}" data-relay-preference-suggested-usage="${escapeHTML(usage)}">add</button>
-    </li>`;
+    const addButton = showAdd
+      ? `<button type="button" data-relay-preference-suggested="${escapeHTML(relay)}" data-relay-preference-suggested-usage="${escapeHTML(usage)}">add</button>`
+      : "";
+    return relayCardHTML(relay, { meta, actionHTML: addButton });
   }).filter(Boolean).join("");
+  hydrateRelayInfoCards(node);
 }
 
 function renderRelayPreferenceDraft(state) {
   if (!state.preferencesList) return;
   if (state.preferences.length === 0) {
-    state.preferencesList.innerHTML = `<li class="muted">Add relay preferences, then publish kind 10002.</li>`;
+    state.preferencesList.innerHTML = `<li class="muted">Add relay preferences here.</li>`;
     return;
   }
   state.preferences.sort((a, b) => a.url.localeCompare(b.url));
-  state.preferencesList.innerHTML = state.preferences.map((item) => `<li data-relay-preference="${escapeHTML(item.url)}">
-    <code>${escapeHTML(item.url)}</code>
-    <span class="muted">${escapeHTML(relayUsageLabel(item.usage))}</span>
-    <button type="button" data-relay-preference-remove="${escapeHTML(item.url)}">remove</button>
-  </li>`).join("");
+  state.preferencesList.innerHTML = state.preferences.map((item) => relayCardHTML(item.url, {
+    meta: relayUsageLabel(item.usage),
+    actionHTML: `<button type="button" data-relay-preference-remove="${escapeHTML(item.url)}">remove</button>`,
+    itemAttrs: `data-relay-preference="${escapeHTML(item.url)}"`,
+  })).join("");
+  hydrateRelayInfoCards(state.preferencesList);
+}
+
+function syncRelayEditVisibility(state, signer = activeSignerState()) {
+  const canPublish = Boolean(signer.isLoggedIn && signer.canSign);
+  state.canPublish = canPublish;
+  if (state.editSection instanceof HTMLElement) {
+    state.editSection.hidden = !canPublish;
+  }
+  if (state.publishActions instanceof HTMLElement) {
+    state.publishActions.hidden = !canPublish;
+  }
+  if (state.submit instanceof HTMLButtonElement) {
+    state.submit.hidden = !canPublish;
+  }
 }
 
 function relayTagsFromPreferences(preferences) {
@@ -1700,22 +1804,175 @@ function relayTagsFromPreferences(preferences) {
   });
 }
 
-async function loadRelayInsight(state) {
-  const pubkey = normalizedPubkey();
-  if (!pubkey) {
-    if (state.statusNode) state.statusNode.textContent = "Log in with a signing-capable method to inspect relay insight.";
-    return null;
+export function seedRelayPreferenceDraft({
+  publishedRelays = [],
+  sessionRelays = [],
+  userRelays = [],
+  effectiveDefaultRelays = [],
+} = {}) {
+  if (Array.isArray(publishedRelays) && publishedRelays.length > 0) {
+    return publishedRelays
+      .map((entry) => ({
+        url: normalizeRelayURL(entry?.url || ""),
+        usage: normalizeRelayUsage(entry?.usage || "any"),
+      }))
+      .filter((entry) => entry.url);
   }
+  const preferredUserRelays = relayPreferencesFromEntries(
+    Array.isArray(userRelays) && userRelays.length > 0
+      ? userRelays
+      : (Array.isArray(sessionRelays) ? sessionRelays.map((url) => ({ url, read: true, write: true })) : []),
+  );
+  if (preferredUserRelays.length > 0) {
+    return preferredUserRelays;
+  }
+  const fallbackRelays = Array.isArray(effectiveDefaultRelays) && effectiveDefaultRelays.length > 0
+    ? effectiveDefaultRelays
+    : DEFAULT_RELAYS;
+  return fallbackRelays
+    .map((relay) => normalizeRelayURL(relay))
+    .filter(Boolean)
+    .map((relay) => ({ url: relay, usage: "write" }));
+}
+
+function persistRelayPreferences(state, preferences, options = {}) {
+  state.preferences = [...preferences];
+  state.config = saveRelayConfig({
+    ...state.config,
+    useUserRelays: options.enableUserRelays === true ? true : state.config.useUserRelays,
+    userRelayMetadata: {
+      ...state.config.userRelayMetadata,
+      relays: relayEntriesFromPreferences(state.preferences),
+      updatedAt: options.updatedAt ?? state.config.userRelayMetadata.updatedAt,
+    },
+  });
+  renderRelayPreferenceDraft(state);
+}
+
+function syncRelayMetadataFromInsightPayload(state, payload) {
+  if (!normalizedPubkey()) return;
+  const publishedCreatedAt = Math.max(0, Number.parseInt(`${payload?.published_created_at ?? 0}`, 10) || 0);
+  if (publishedCreatedAt < 1) return;
+  const current = loadRelayConfig();
+  if (publishedCreatedAt <= current.userRelayMetadata.updatedAt) {
+    state.config = current;
+    return;
+  }
+  const publishedRelays = Array.isArray(payload?.published_relays) ? payload.published_relays : [];
+  const publishedPreferences = relayPreferencesFromEntries(publishedRelays);
+  const hadOwnRelays = relayPreferencesFromEntries(current.userRelayMetadata.relays).length > 0;
+  state.config = saveRelayConfig({
+    ...current,
+    useUserRelays: !hadOwnRelays && publishedPreferences.length > 0 ? true : current.useUserRelays,
+    userRelayMetadata: {
+      relays: relayEntriesFromPreferences(publishedPreferences),
+      updatedAt: publishedCreatedAt,
+    },
+  });
+}
+
+function directRelayPreferencesInsightPayload(direct) {
+  const relays = Array.isArray(direct?.relays) ? direct.relays : [];
+  if (!relays.length) return null;
+  return {
+    published_event_id: String(direct?.event_id || ""),
+    published_created_at: Number(direct?.created_at || 0) || 0,
+    published_relays: relays.map((entry) => ({
+      url: entry.url,
+      usage: normalizeRelayUsage(entry.usage),
+      sources: ["published_kind10002"],
+      confidence: "high",
+      status: "local",
+    })),
+  };
+}
+
+function mergeDirectRelayPreferencesPayload(payload, directPayload) {
+  if (!directPayload?.published_relays?.length) return payload;
+  const currentCreatedAt = Number(payload?.published_created_at || 0) || 0;
+  const directCreatedAt = Number(directPayload.published_created_at || 0) || 0;
+  const currentRelays = Array.isArray(payload?.published_relays) ? payload.published_relays : [];
+  if (currentRelays.length > 0 && currentCreatedAt > directCreatedAt) return payload;
+  return {
+    ...payload,
+    published_event_id: directPayload.published_event_id || payload?.published_event_id || "",
+    published_created_at: Math.max(currentCreatedAt, directCreatedAt),
+    published_relays: directPayload.published_relays,
+  };
+}
+
+async function hydrateDirectRelayPreferences(state, { payload = null, render = false } = {}) {
+  const viewer = normalizedPubkey();
+  if (!viewer) return payload;
   try {
-    const response = await fetchWithSession(`/api/relay-insight`);
+    const direct = await fetchViewerRelayPreferences(viewer, { forceRefresh: true });
+    const directPayload = directRelayPreferencesInsightPayload(direct);
+    const merged = mergeDirectRelayPreferencesPayload(payload || {}, directPayload);
+    if (!render || merged === payload) return merged;
+    syncRelayMetadataFromInsightPayload(state, merged);
+    state.config = loadRelayConfig();
+    renderInsightRelayList(state.publishedList, merged.published_relays, "No published relay preferences yet.", { showAdd: state.canPublish === true });
+    renderSimpleRelayList(state.effectiveList, effectiveReadRelays(state.config), "No effective read relays.");
+    if (state.preferences.length === 0) {
+      state.preferences = seedRelayPreferenceDraft({
+        publishedRelays: merged.published_relays,
+        userRelays: state.config.userRelayMetadata.relays,
+        effectiveDefaultRelays: state.defaultRelays,
+      });
+      renderRelayPreferenceDraft(state);
+    }
+    if (state.statusNode) state.statusNode.textContent = "Loaded published relay preferences from your relays.";
+    return merged;
+  } catch {
+    return payload;
+  }
+}
+
+async function loadRelayInsight(state) {
+  try {
+    const viewer = normalizedPubkey();
+    const params = new URLSearchParams();
+    if (!viewer) params.set("seed_pubkey", DEFAULT_LOGGED_OUT_WOT_SEED_NPUB);
+    const url = `/api/relay-insight${params.size ? `?${params}` : ""}`;
+    const response = await fetchWithSession(url, { headers: { Accept: "application/json" } });
     if (!response.ok) throw new Error("relay insight request failed");
-    const payload = await response.json();
-    renderInsightRelayList(state.publishedList, payload.published_relays, "No published relay preferences yet.");
-    renderInsightRelayList(state.discoveredList, payload.discovered_relays, "No discovered relay hints yet.");
-    renderInsightRelayList(state.recommendedList, payload.recommended_relays, "No recommendations available yet.");
-    renderSimpleRelayList(state.sessionList, selectedRelays(), "No selected session relays.");
+    let payload = await response.json();
+    payload = await hydrateDirectRelayPreferences(state, { payload });
+    syncRelayMetadataFromInsightPayload(state, payload);
+    const listOptions = { showAdd: state.canPublish === true };
+    renderInsightRelayList(state.publishedList, payload.published_relays, "No published relay preferences yet.", listOptions);
+    renderInsightRelayList(state.discoveredList, payload.discovered_relays, "No discovered relay hints yet.", listOptions);
+    renderInsightRelayList(state.recommendedList, payload.recommended_relays, "No recommendations available yet.", listOptions);
+    renderSimpleRelayList(state.effectiveList, effectiveReadRelays(state.config), "No effective read relays.");
+    renderSimpleRelayList(state.defaultList, payload.effective_default_relays, "No effective defaults available yet.");
+    renderSimpleRelayList(state.outboxList, payload.active_outbox_relays, "No active outbox relays yet.");
+    renderOutboxSummary(state.outboxSummary, payload);
     return payload;
   } catch {
+    const payload = {
+      published_created_at: Number(state.config?.userRelayMetadata?.updatedAt || 0),
+      published_relays: relayPreferencesFromEntries(state.config?.userRelayMetadata?.relays || []),
+      discovered_relays: [],
+      recommended_relays: DEFAULT_RELAYS.map((url) => ({
+        url,
+        usage: "any",
+        sources: ["default"],
+        confidence: "default",
+        status: "local",
+      })),
+      effective_default_relays: [...DEFAULT_RELAYS],
+      active_outbox_relays: effectiveWriteRelays(state.config),
+      feed_author_count: 0,
+      cached_hint_author_count: 0,
+    };
+    const listOptions = { showAdd: state.canPublish === true };
+    renderInsightRelayList(state.publishedList, payload.published_relays, "No published relay preferences yet.", listOptions);
+    renderInsightRelayList(state.discoveredList, payload.discovered_relays, "No discovered relay hints yet.", listOptions);
+    renderInsightRelayList(state.recommendedList, payload.recommended_relays, "No recommendations available yet.", listOptions);
+    renderSimpleRelayList(state.effectiveList, effectiveReadRelays(state.config), "No effective read relays.");
+    renderSimpleRelayList(state.defaultList, payload.effective_default_relays, "No effective defaults available yet.");
+    renderSimpleRelayList(state.outboxList, payload.active_outbox_relays, "No active outbox relays yet.");
+    renderOutboxSummary(state.outboxSummary, payload);
     if (state.statusNode) state.statusNode.textContent = "Could not load relay insight.";
     return null;
   }
@@ -1730,33 +1987,60 @@ function bindRelayPreferences(root) {
     input: form.querySelector("[data-relay-preference-input]"),
     usage: form.querySelector("[data-relay-preference-usage]"),
     submit: form.querySelector("[data-relay-preferences-submit]"),
+    publishActions: form.querySelector("[data-relay-preferences-publish-actions]"),
+    editSection: root.querySelector("[data-relay-edit-section]"),
     addButton: form.querySelector("[data-relay-preference-add]"),
-    useSession: form.querySelector("[data-relay-preference-use-session]"),
+    fetchButton: form.querySelector("[data-relay-preference-fetch]"),
+    useDefaults: form.querySelector("[data-relay-preference-use-defaults]"),
     useRecommended: form.querySelector("[data-relay-preference-use-recommended]"),
     preferencesList: form.querySelector("[data-relay-preferences-list]"),
     publishedList: root.querySelector("[data-relay-insight-published]"),
     discoveredList: root.querySelector("[data-relay-insight-discovered]"),
     recommendedList: root.querySelector("[data-relay-insight-recommended]"),
-    sessionList: root.querySelector("[data-relay-insight-session]"),
+    effectiveList: root.querySelector("[data-relay-insight-effective]"),
+    defaultList: root.querySelector("[data-relay-insight-defaults]"),
+    outboxList: root.querySelector("[data-relay-insight-outbox]"),
+    outboxSummary: root.querySelector("[data-relay-outbox-summary]"),
     statusNode: root.querySelector("[data-relay-insight-status]"),
-    preferences: [],
+    config: loadRelayConfig(),
+    preferences: relayPreferencesFromEntries(loadRelayConfig().userRelayMetadata.relays),
     latestRecommended: [],
+    defaultRelays: [...DEFAULT_RELAYS],
   };
-  renderSimpleRelayList(state.sessionList, selectedRelays(), "No selected session relays.");
+  syncRelayEditVisibility(state);
+  renderRelayPreferenceDraft(state);
+  renderSimpleRelayList(state.effectiveList, effectiveReadRelays(state.config), "No effective read relays.");
   if (state.statusNode) state.statusNode.textContent = "Loading relay insight...";
-  void loadRelayInsight(state).then((payload) => {
+  const relayConfigReady = getSession().method === "nip07"
+    ? syncNIP07RelayConfigFromExtension().catch(() => loadRelayConfig())
+    : Promise.resolve(loadRelayConfig());
+  void relayConfigReady.then((config) => {
+    state.config = config;
+    renderSimpleRelayList(state.effectiveList, effectiveReadRelays(state.config), "No effective read relays.");
+    return hydrateDirectRelayPreferences(state, { render: true });
+  }).then(() => loadRelayInsight(state)).then((payload) => {
     if (!payload) return;
     const published = Array.isArray(payload.published_relays) ? payload.published_relays : [];
     const recommended = Array.isArray(payload.recommended_relays) ? payload.recommended_relays : [];
+    const effectiveDefaults = Array.isArray(payload.effective_default_relays) ? payload.effective_default_relays : [];
     state.latestRecommended = recommended;
-    state.preferences = [];
-    if (published.length > 0) {
-      published.forEach((entry) => upsertRelayPreference(state, entry.url, entry.usage));
-    } else {
-      selectedRelays().forEach((relay) => upsertRelayPreference(state, relay, "write"));
+    state.defaultRelays = effectiveDefaults.length > 0 ? effectiveDefaults : [...DEFAULT_RELAYS];
+    state.config = loadRelayConfig();
+    state.preferences = relayPreferencesFromEntries(state.config.userRelayMetadata.relays);
+    if (state.preferences.length === 0) {
+      state.preferences = seedRelayPreferenceDraft({
+        publishedRelays: published,
+        userRelays: state.config.userRelayMetadata.relays,
+        effectiveDefaultRelays: effectiveDefaults,
+      });
     }
     renderRelayPreferenceDraft(state);
-    if (state.statusNode) state.statusNode.textContent = "Relay insight loaded.";
+    renderSimpleRelayList(state.effectiveList, effectiveReadRelays(state.config), "No effective read relays.");
+    if (state.statusNode) {
+      state.statusNode.textContent = normalizedPubkey()
+        ? "Relay insight loaded."
+        : "Showing relay insight for the fixed Gigi guest feed.";
+    }
   });
 
   state.addButton?.addEventListener("click", () => {
@@ -1768,22 +2052,62 @@ function bindRelayPreferences(root) {
     const usage = normalizeRelayUsage(state.usage?.value || "any");
     upsertRelayPreference(state, relay, usage);
     if (state.input instanceof HTMLInputElement) state.input.value = "";
-    renderRelayPreferenceDraft(state);
+    persistRelayPreferences(state, state.preferences, { enableUserRelays: true });
+    renderSimpleRelayList(state.effectiveList, effectiveReadRelays(state.config), "No effective read relays.");
     if (state.statusNode) state.statusNode.textContent = "Relay preference added.";
   });
 
-  state.useSession?.addEventListener("click", () => {
-    state.preferences = [];
-    selectedRelays().forEach((relay) => upsertRelayPreference(state, relay, "write"));
-    renderRelayPreferenceDraft(state);
-    if (state.statusNode) state.statusNode.textContent = "Draft replaced with current session relays.";
+  state.fetchButton?.addEventListener("click", async () => {
+    const viewer = normalizedPubkey();
+    if (!viewer) {
+      if (state.statusNode) state.statusNode.textContent = "Log in to fetch your relay list.";
+      return;
+    }
+    if (state.fetchButton instanceof HTMLButtonElement) state.fetchButton.disabled = true;
+    if (state.statusNode) state.statusNode.textContent = "Fetching relay list...";
+    try {
+      if (getSession().method === "nip07") {
+        state.config = await syncNIP07RelayConfigFromExtension({ pubkey: viewer, force: true });
+      } else {
+        state.config = loadRelayConfig();
+      }
+      await hydrateDirectRelayPreferences(state, { render: true });
+      const payload = await loadRelayInsight(state);
+      state.config = loadRelayConfig();
+      state.preferences = relayPreferencesFromEntries(state.config.userRelayMetadata.relays);
+      if (state.preferences.length === 0 && payload) {
+        state.preferences = seedRelayPreferenceDraft({
+          publishedRelays: payload.published_relays,
+          userRelays: state.config.userRelayMetadata.relays,
+          effectiveDefaultRelays: payload.effective_default_relays,
+        });
+      }
+      renderRelayPreferenceDraft(state);
+      renderSimpleRelayList(state.effectiveList, effectiveReadRelays(state.config), "No effective read relays.");
+      if (state.statusNode) state.statusNode.textContent = "Relay list fetched.";
+    } catch (error) {
+      if (state.statusNode) state.statusNode.textContent = error instanceof Error ? error.message : "Relay list fetch failed.";
+    } finally {
+      if (state.fetchButton instanceof HTMLButtonElement) state.fetchButton.disabled = false;
+    }
+  });
+
+  state.useDefaults?.addEventListener("click", () => {
+    const next = state.defaultRelays
+      .map((relay) => normalizeRelayURL(relay))
+      .filter(Boolean)
+      .map((relay) => ({ url: relay, usage: "write" }));
+    persistRelayPreferences(state, next, { enableUserRelays: true });
+    renderSimpleRelayList(state.effectiveList, effectiveReadRelays(state.config), "No effective read relays.");
+    if (state.statusNode) state.statusNode.textContent = "Your relay list replaced with effective defaults.";
   });
 
   state.useRecommended?.addEventListener("click", () => {
-    state.preferences = [];
-    state.latestRecommended.forEach((entry) => upsertRelayPreference(state, entry.url, entry.usage || "write"));
-    renderRelayPreferenceDraft(state);
-    if (state.statusNode) state.statusNode.textContent = "Draft replaced with backend recommendations.";
+    const next = [];
+    state.latestRecommended.forEach((entry) => upsertRelayPreference({ preferences: next }, entry.url, entry.usage || "write"));
+    persistRelayPreferences(state, next, { enableUserRelays: true });
+    renderSimpleRelayList(state.effectiveList, effectiveReadRelays(state.config), "No effective read relays.");
+    if (state.statusNode) state.statusNode.textContent = "Your relay list replaced with backend recommendations.";
   });
 
   form.addEventListener("click", (event) => {
@@ -1791,7 +2115,8 @@ function bindRelayPreferences(root) {
     if (remove) {
       const relay = normalizeRelayURL(remove.getAttribute("data-relay-preference-remove") || "");
       state.preferences = state.preferences.filter((item) => item.url !== relay);
-      renderRelayPreferenceDraft(state);
+      persistRelayPreferences(state, state.preferences);
+      renderSimpleRelayList(state.effectiveList, effectiveReadRelays(state.config), "No effective read relays.");
     }
   });
 
@@ -1804,7 +2129,8 @@ function bindRelayPreferences(root) {
       const usage = normalizeRelayUsage(suggested.getAttribute("data-relay-preference-suggested-usage") || "any");
       if (!relay) return;
       upsertRelayPreference(state, relay, usage);
-      renderRelayPreferenceDraft(state);
+      persistRelayPreferences(state, state.preferences, { enableUserRelays: true });
+      renderSimpleRelayList(state.effectiveList, effectiveReadRelays(state.config), "No effective read relays.");
       if (state.statusNode) state.statusNode.textContent = "Suggested relay added to draft.";
     });
   }
@@ -1832,11 +2158,10 @@ function bindRelayPreferences(root) {
       const signed = await signEventDraft(draft, getSession());
       if (state.statusNode) state.statusNode.textContent = "Publishing relay preferences...";
       await publishSignedEvent(signed);
-      const nextSessionRelays = state.preferences
-        .filter((item) => item.usage !== "read")
-        .map((item) => item.url)
-        .slice(0, 8);
-      if (nextSessionRelays.length > 0) saveSelectedRelays(nextSessionRelays);
+      persistRelayPreferences(state, state.preferences, {
+        enableUserRelays: true,
+        updatedAt: Number(signed.created_at) || Math.floor(Date.now() / 1000),
+      });
       await loadRelayInsight(state);
       renderRelayPreferenceDraft(state);
       if (state.statusNode) state.statusNode.textContent = "Relay preferences published as kind 10002.";

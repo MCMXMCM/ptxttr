@@ -9,7 +9,21 @@ import (
 	"ptxt-nstr/internal/store"
 )
 
-const signedInFeedSnapshotMaxAge = 10 * time.Minute
+const (
+	signedInFeedSnapshotMaxAge = 10 * time.Minute
+	guestFeedSnapshotMaxAge    = 15 * time.Minute
+)
+
+func feedSnapshotFresh(computedAtUnix int64, maxAge time.Duration) (time.Duration, bool) {
+	if computedAtUnix <= 0 || maxAge <= 0 {
+		return 0, false
+	}
+	age := time.Since(time.Unix(computedAtUnix, 0))
+	if age < -time.Minute || age > maxAge {
+		return age, false
+	}
+	return age, true
+}
 
 // tryLoadFeedPageFromDurableSnapshots serves signed-in first-page requests from
 // durable personalized snapshots, then canonical guest snapshots, then the
@@ -19,46 +33,52 @@ func (s *Server) tryLoadFeedPageFromDurableSnapshots(ctx context.Context, req fe
 		return FeedPageData{}, false
 	}
 	decoded, err := nostrx.DecodeIdentifier(req.Pubkey)
-	if err != nil || decoded == "" {
-		return FeedPageData{}, false
-	}
 	sortMode := normalizeFeedSort(req.SortMode)
 	tf := normalizeTrendingTimeframe(req.Timeframe)
-	key := signedInFeedSnapshotKey(decoded, sortMode, req.WoT, req.Relays)
-	if rec, ok, err := s.store.GetFeedSnapshot(ctx, key); err == nil && ok && rec != nil && len(rec.Feed) > 0 {
-		s.metrics.Add("feed.snapshot_hit", 1)
-		if ts := time.Unix(rec.ComputedAtUnix, 0); !ts.IsZero() {
-			age := time.Since(ts)
-			if age >= 0 {
-				s.metrics.Observe("feed.snapshot_age", age)
-			}
-			if age > signedInFeedSnapshotMaxAge {
+	if err == nil && decoded != "" {
+		key := signedInFeedSnapshotKey(decoded, sortMode, req.WoT, req.Relays)
+		if rec, ok, err := s.store.GetFeedSnapshot(ctx, key); err == nil && ok && rec != nil && len(rec.Feed) > 0 {
+			s.metrics.Add("feed.snapshot_hit", 1)
+			if age, fresh := feedSnapshotFresh(rec.ComputedAtUnix, signedInFeedSnapshotMaxAge); !fresh {
 				s.metrics.Add("feed.snapshot_stale_bypassed", 1)
 				return FeedPageData{}, false
+			} else {
+				s.metrics.Observe("feed.snapshot_age", age)
 			}
+			data := s.baseFeedPageFromSnapshotShell(ctx, req, decoded, tf, includeTrending)
+			beforeMute := len(rec.Feed)
+			s.mergeSnapshotFeedAndApplyViewerMutes(ctx, decoded, &data, rec, false)
+			if len(data.Feed) < min(req.Limit, beforeMute) || (len(data.Feed) < req.Limit && rec.HasMore) {
+				s.metrics.Add("feed.snapshot_after_mute_count", int64(len(data.Feed)))
+				s.topUpSnapshotFeedFromLive(ctx, req, includeTrending, &data)
+			}
+			data.FeedSort = sortMode
+			return data, true
 		}
-		data := s.baseFeedPageFromSnapshotShell(ctx, req, decoded, tf, includeTrending)
-		beforeMute := len(rec.Feed)
-		s.mergeSnapshotFeedAndApplyViewerMutes(ctx, decoded, &data, rec, false)
-		if len(data.Feed) < min(req.Limit, beforeMute) || (len(data.Feed) < req.Limit && rec.HasMore) {
-			s.metrics.Add("feed.snapshot_after_mute_count", int64(len(data.Feed)))
-			s.topUpSnapshotFeedFromLive(ctx, req, includeTrending, &data)
-		}
-		data.FeedSort = sortMode
-		return data, true
 	}
 	canonicalRelays := s.canonicalDefaultLoggedOutRelays()
 	guestKey := guestCanonicalFeedSnapshotKey(sortMode, canonicalRelays)
 	if rec, ok, err := s.store.GetFeedSnapshot(ctx, guestKey); err == nil && ok && rec != nil && len(rec.Feed) > 0 {
-		s.metrics.Add("feed.snapshot_starter_served", 1)
-		data := s.baseFeedPageFromSnapshotShell(ctx, req, decoded, tf, includeTrending)
-		s.mergeSnapshotFeedAndApplyViewerMutes(ctx, decoded, &data, rec, true)
-		data.FeedSort = sortMode
-		return data, true
+		if age, fresh := feedSnapshotFresh(rec.ComputedAtUnix, guestFeedSnapshotMaxAge); !fresh {
+			s.metrics.Add("feed.snapshot_guest_stale_bypassed", 1)
+		} else {
+			s.metrics.Observe("feed.snapshot_guest_age", age)
+			s.metrics.Add("feed.snapshot_starter_served", 1)
+			data := s.baseFeedPageFromSnapshotShell(ctx, req, decoded, tf, includeTrending)
+			s.mergeSnapshotFeedAndApplyViewerMutes(ctx, decoded, &data, rec, true)
+			data.FeedSort = sortMode
+			return data, true
+		}
 	}
 	if sortMode == feedSortRecent {
 		snap, ok, err := s.store.GetDefaultSeedGuestFeedSnapshot(ctx)
 		if err == nil && ok && snap != nil && len(snap.Feed) > 0 {
+			if age, fresh := feedSnapshotFresh(snap.ComputedAtUnix, guestFeedSnapshotMaxAge); !fresh {
+				s.metrics.Add("feed.snapshot_guest_stale_bypassed", 1)
+				return FeedPageData{}, false
+			} else {
+				s.metrics.Observe("feed.snapshot_guest_age", age)
+			}
 			s.metrics.Add("feed.snapshot_starter_served", 1)
 			data := s.baseFeedPageFromSnapshotShell(ctx, req, decoded, tf, includeTrending)
 			s.mergeSnapshotFeedAndApplyViewerMutes(ctx, decoded, &data, defaultSeedGuestSnapToFeedSnapshotRecord(snap), true)
@@ -193,14 +213,12 @@ func (s *Server) maybePersistFeedSnapshots(ctx context.Context, req feedRequest,
 	}
 	if resolved.loggedOut && s.isGuestCanonicalSnapshotTarget(req) {
 		sm := normalizeFeedSort(req.SortMode)
-		if sm != feedSortRecent {
-			key := guestCanonicalFeedSnapshotKey(sm, req.Relays)
-			rec := feedSnapshotRecordFromFeedPageData(req, data, false)
-			if rec != nil {
-				rec.Version = feedSnapshotRecordVersion
-				if err := s.store.SetFeedSnapshot(ctx, key, rec); err == nil {
-					s.metrics.Add("feed.snapshot_persist_guest_canonical", 1)
-				}
+		key := guestCanonicalFeedSnapshotKey(sm, req.Relays)
+		rec := feedSnapshotRecordFromFeedPageData(req, data, false)
+		if rec != nil {
+			rec.Version = feedSnapshotRecordVersion
+			if err := s.store.SetFeedSnapshot(ctx, key, rec); err == nil {
+				s.metrics.Add("feed.snapshot_persist_guest_canonical", 1)
 			}
 		}
 		return

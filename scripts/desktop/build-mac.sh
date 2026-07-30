@@ -15,8 +15,28 @@ fi
 
 PLATFORM="${PLATFORM:-darwin/universal}"
 LDFLAGS="${LDFLAGS:--s -w}"
+app_path="${project_dir}/build/bin/ptxt-nstr.app"
+stale_bundle_dir=""
+
+cleanup_stale_bundle() {
+  if [[ -n "${stale_bundle_dir}" && -d "${stale_bundle_dir}" ]]; then
+    chmod -RN "${stale_bundle_dir}" 2>/dev/null || true
+    xattr -cr "${stale_bundle_dir}" 2>/dev/null || true
+    rm -rf -- "${stale_bundle_dir}"
+  fi
+}
+trap cleanup_stale_bundle EXIT
 
 cd "${project_dir}"
+
+# Local launches and Gatekeeper checks can attach macOS access-control or
+# provenance metadata that cannot be removed in place, even by the bundle
+# owner. Move the entire generated bundle out of Wails' destination before a
+# clean build and delete that temporary copy when this script exits.
+if [[ -d "${app_path}" ]]; then
+  stale_bundle_dir="$(mktemp -d "${TMPDIR:-/tmp}/ptxttr-desktop-build.XXXXXX")"
+  mv "${app_path}" "${stale_bundle_dir}/"
+fi
 
 # Wails reads build/appicon.png when packaging the .app (Dock / Finder icon).
 # Keep it aligned with web favicons: web/static/img/ascritch_icon_black.png.
@@ -37,7 +57,6 @@ wails build \
   -trimpath \
   -skipbindings
 
-app_path="${project_dir}/build/bin/ptxt-nstr.app"
 if [[ ! -d "${app_path}" ]]; then
   echo "expected ${app_path} after build, not found" >&2
   exit 1

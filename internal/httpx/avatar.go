@@ -30,7 +30,7 @@ const (
 	avatarPathPrefix        = "/avatar/"
 	avatarFingerprintSize   = 12 // hex chars, ~48 bits of entropy on the URL
 	// avatarFetchUserAgent is browser-like so CDNs and hotlink guards that block unknown bots still serve images.
-	avatarFetchUserAgent = "Mozilla/5.0 (compatible; ptxt-nstr/1; +https://example.com) AppleWebKit/537.36 (KHTML, like Gecko) avatar-proxy"
+	avatarFetchUserAgent = "Mozilla/5.0 (compatible; ptxt-nstr/1; +https://plaintextnostr.com) AppleWebKit/537.36 (KHTML, like Gecko) avatar-proxy"
 )
 
 var avatarAllowedTypes = map[string]bool{

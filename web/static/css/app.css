@@ -2,6 +2,14 @@ html {
   font-size: 10pt;
 }
 
+@font-face {
+  font-display: swap;
+  font-family: "Ptxt Local Mono";
+  font-style: normal;
+  font-weight: 100 900;
+  src: url("../fonts/local-mono-variable.woff2") format("woff2");
+}
+
 :root {
   color-scheme: light dark;
   --bg: #fff;
@@ -16,7 +24,7 @@ html {
   --body-max: 1280px;
   /* Extra scroll room below the last note/reply so the feed does not end flush with the viewport. */
   --feed-scroll-pad: max(3rem, 22vh);
-  --font-mono-stack: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+  --font-mono-stack: "Ptxt Local Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     "Liberation Mono", "Courier New", monospace;
   --mono: var(--font-mono-stack);
 }
@@ -53,15 +61,179 @@ main {
   max-width: min(var(--page-max), 100%);
 }
 
-/* Route outlet wraps `.app-shell` for SPA swaps; `contents` keeps the same layout
-   as when `.app-shell` was a direct child of `main` (mobile bar + shell siblings). */
-[data-route-outlet] {
+/* Only the root outlet uses `display: contents` so `.feed-column` / `.right-rail` stay
+   as grid tracks. Nested `main` / `right-rail` outlets are semantic swap targets. */
+[data-route-outlet="root"] {
   display: contents;
+}
+
+/* SSR route templates wrap outlet markup in a bare `<div>`; flatten it for the shell grid. */
+[data-route-outlet="root"] > div:not([class]) {
+  display: contents;
+}
+
+.route-keepalive-layer--feed {
+  display: contents;
+  min-width: 0;
+  position: relative;
+}
+
+.route-keepalive-layer--feed[data-route-keepalive-active="0"] {
+  bottom: 0;
+  contain: layout style paint;
+  display: block;
+  grid-column: 2;
+  left: 0;
+  max-height: 100vh;
+  min-width: 0;
+  overflow: hidden;
+  overflow-x: clip;
+  pointer-events: none;
+  position: absolute;
+  right: 0;
+  top: 0;
+  visibility: hidden;
+  width: auto;
+  z-index: 0;
+}
+
+.route-keepalive-layer--thread {
+  display: none;
+}
+
+.route-keepalive-layer--thread[data-route-keepalive-active="1"] {
+  display: contents;
+}
+
+.route-keepalive-layer--thread[data-route-keepalive-active="1"] > .feed-column,
+.route-keepalive-layer--thread[data-route-keepalive-active="1"] > .right-rail {
+  min-height: 100vh;
+}
+
+.route-keepalive-layer--thread[data-route-keepalive-active="1"] > .feed-column,
+.feed-column[data-relay-native-thread="1"] {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: clip;
+}
+
+.route-keepalive-layer--thread[data-route-keepalive-active="1"] #thread-focus {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: clip;
 }
 
 body.feed-shell {
   max-width: min(1500px, 100vw);
   padding: 0 0.75rem;
+}
+
+html.ptxt-note-transition-cleanup .ptxt-note-transition-selected {
+  isolation: isolate;
+}
+
+html.ptxt-thread-route-transition ::view-transition-old(root),
+html.ptxt-thread-route-transition ::view-transition-new(root) {
+  animation: none;
+  opacity: 0;
+}
+
+::view-transition-group(*) {
+  animation-duration: 220ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+::view-transition-old(*),
+::view-transition-new(*) {
+  animation-duration: 220ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  mix-blend-mode: normal;
+}
+
+html.ptxt-thread-route-transition ::view-transition-group(.ptxt-note-avatar),
+html.ptxt-thread-route-transition ::view-transition-group(.ptxt-note-author),
+html.ptxt-thread-route-transition ::view-transition-group(.ptxt-note-meta) {
+  animation-duration: 160ms;
+}
+
+html.ptxt-thread-route-transition ::view-transition-group(.ptxt-note-body) {
+  animation-duration: 260ms;
+}
+
+html.ptxt-thread-route-transition .route-keepalive-layer--feed[data-route-keepalive-active="0"] {
+  max-height: 100vh;
+  overflow: hidden;
+  visibility: visible;
+}
+
+html.ptxt-thread-route-transition .route-keepalive-layer--feed[data-route-keepalive-active="0"] #feed-heading,
+html.ptxt-thread-route-transition .route-keepalive-layer--feed[data-route-keepalive-active="0"] .feed-status-slot,
+html.ptxt-thread-route-transition .route-keepalive-layer--feed[data-route-keepalive-active="0"] [data-load-more],
+html.ptxt-thread-route-transition .route-keepalive-layer--feed[data-route-keepalive-active="0"] .right-rail,
+html.ptxt-thread-route-transition .route-keepalive-layer--feed[data-route-keepalive-active="0"] #feed > .note,
+html.ptxt-thread-route-transition .route-keepalive-layer--feed[data-route-keepalive-active="0"] #feed > .comment,
+html.ptxt-thread-route-transition .route-keepalive-layer--feed[data-route-keepalive-active="0"] #user-panel-posts [data-feed] > .note,
+html.ptxt-thread-route-transition .route-keepalive-layer--feed[data-route-keepalive-active="0"] #user-panel-posts [data-feed] > .comment,
+html.ptxt-thread-route-transition .route-keepalive-layer--feed[data-route-keepalive-active="0"] #user-panel-replies [data-profile-feed] > .note,
+html.ptxt-thread-route-transition .route-keepalive-layer--feed[data-route-keepalive-active="0"] #user-panel-replies [data-profile-feed] > .comment,
+html.ptxt-thread-route-transition .route-keepalive-layer--feed[data-route-keepalive-active="0"] #user-panel-media [data-profile-feed] > .note,
+html.ptxt-thread-route-transition .route-keepalive-layer--feed[data-route-keepalive-active="0"] #user-panel-media [data-profile-feed] > .comment {
+  opacity: 0;
+  transition: opacity 160ms ease-out;
+}
+
+html.ptxt-thread-route-transition .route-keepalive-layer--feed[data-route-keepalive-active="0"] .ptxt-note-transition-selected {
+  opacity: 1 !important;
+}
+
+html.ptxt-thread-route-transition #user-panel-posts [data-feed] > .ptxt-carried-profile-note,
+html.ptxt-thread-route-transition .route-keepalive-layer--feed[data-route-keepalive-active="1"] #user-panel-posts .ptxt-note-transition-selected {
+  opacity: 1 !important;
+}
+
+html.ptxt-thread-route-transition #user-panel-posts [data-feed] > .note:not(.ptxt-carried-profile-note):not(.ptxt-note-transition-selected),
+html.ptxt-thread-route-transition #user-panel-posts [data-feed] > .comment:not(.ptxt-carried-profile-note) {
+  opacity: 0;
+  transition: opacity 160ms ease-out;
+}
+
+html.ptxt-thread-route-transition [data-profile-shell] #user-header,
+html.ptxt-thread-route-transition [data-profile-shell] #user-stats,
+html.ptxt-thread-route-transition [data-profile-shell] .profile-tabs,
+html.ptxt-thread-route-transition [data-profile-shell] > .right-rail {
+  animation: ptxt-thread-context-enter 140ms ease-out 120ms both;
+}
+
+html.ptxt-thread-route-transition .route-keepalive-layer--thread[data-route-keepalive-active="1"] #thread-summary,
+html.ptxt-thread-route-transition .route-keepalive-layer--thread[data-route-keepalive-active="1"] #thread-ancestors,
+html.ptxt-thread-route-transition .route-keepalive-layer--thread[data-route-keepalive-active="1"] .thread-replies,
+html.ptxt-thread-route-transition .route-keepalive-layer--thread[data-route-keepalive-active="1"] > .right-rail {
+  animation: ptxt-thread-context-enter 140ms ease-out 120ms both;
+}
+
+@keyframes ptxt-thread-context-enter {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html.ptxt-thread-route-transition ::view-transition-group(*),
+  html.ptxt-thread-route-transition ::view-transition-old(*),
+  html.ptxt-thread-route-transition ::view-transition-new(*) {
+    animation: none !important;
+  }
+
+  html.ptxt-thread-route-transition .route-keepalive-layer--thread[data-route-keepalive-active="1"] #thread-summary,
+  html.ptxt-thread-route-transition .route-keepalive-layer--thread[data-route-keepalive-active="1"] #thread-ancestors,
+  html.ptxt-thread-route-transition .route-keepalive-layer--thread[data-route-keepalive-active="1"] .thread-replies,
+  html.ptxt-thread-route-transition .route-keepalive-layer--thread[data-route-keepalive-active="1"] > .right-rail {
+    animation: none !important;
+  }
 }
 
 body.feed-shell main {
@@ -72,6 +244,28 @@ body.feed-shell main {
   display: none;
 }
 
+.mobile-bar-center {
+  display: none;
+}
+
+.thread-view-toggle {
+  color: var(--link);
+  font-weight: inherit;
+  text-decoration: none;
+}
+
+.thread-view-toggle-desktop {
+  display: none;
+  justify-content: center;
+  margin: 0.35rem 0 0.75rem;
+}
+
+[data-thread-view-toggle][data-loading="1"] {
+  cursor: wait;
+  pointer-events: none;
+  position: relative;
+}
+
 .app-shell {
   align-items: start;
   display: grid;
@@ -79,6 +273,7 @@ body.feed-shell main {
   justify-content: center;
   gap: 0;
   min-height: 100vh;
+  position: relative;
 }
 
 .left-rail,
@@ -260,6 +455,13 @@ body.feed-shell main {
   margin-top: 0;
 }
 
+#feed-heading .page-heading {
+  background: var(--bg) !important;
+  isolation: isolate;
+  position: relative;
+  z-index: 1;
+}
+
 .feed-heading-top {
   display: flex;
   flex-direction: column;
@@ -363,6 +565,10 @@ body.feed-shell main {
   gap: 0.35rem;
 }
 
+.feed-wot-quick[hidden] {
+  display: none !important;
+}
+
 .feed-wot-quick-label {
   color: var(--muted);
   display: none;
@@ -392,11 +598,16 @@ body.feed-shell main {
   background-size: 0.55em auto;
 }
 
-.feed-new-notes {
+.feed-status-slot {
   margin: 0 0 0.5rem;
+  min-height: 1.1rem;
   position: sticky;
   top: 0.25rem;
   z-index: 2;
+}
+
+.feed-new-notes {
+  margin: 0;
 }
 
 .feed-new-notes,
@@ -416,23 +627,7 @@ body.feed-shell main {
 
 .feed-new-notes[data-loading="1"],
 .load-more[data-loading="1"] {
-  color: transparent;
-}
-
-.feed-new-notes[data-loading="1"]::after,
-.load-more[data-loading="1"]::after {
-  animation: button-spinner 0.7s linear infinite;
-  border: 2px solid var(--muted);
-  border-radius: 50%;
-  border-top-color: var(--fg);
-  content: "";
-  height: 0.9rem;
-  left: 50%;
-  margin-left: -0.45rem;
-  margin-top: -0.45rem;
-  position: absolute;
-  top: 50%;
-  width: 0.9rem;
+  opacity: 0.7;
 }
 
 .right-rail {
@@ -469,12 +664,53 @@ body.feed-shell main {
   }
 }
 
+.rail-search {
+  display: grid;
+  gap: 0.35rem;
+}
+
 .rail-search input {
+  border: 1px dashed var(--border);
   width: 100%;
   min-width: 0;
 }
 
+.search-mode-toggle {
+  align-items: baseline;
+  border: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin: 0;
+  padding: 0;
+}
+
+.search-mode-option {
+  color: var(--link);
+  cursor: pointer;
+  display: inline;
+  position: relative;
+}
+
+.search-mode-option input {
+  inset: 0 auto auto 0;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.search-mode-option.is-active {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.search-mode-sep {
+  color: var(--muted);
+}
+
 .search-heading {
+  display: grid;
   gap: 0.4rem;
 }
 
@@ -589,7 +825,7 @@ body.feed-shell main {
   gap: 0.55rem;
 }
 
-.thread-person img,
+.thread-person > img,
 .thread-person-avatar-fallback {
   border: 0;
   border-radius: 0;
@@ -700,6 +936,104 @@ body.feed-shell main {
   margin: 0.5rem 0 0;
 }
 
+.publish-status-dialog {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem 1.1rem;
+  max-width: min(92vw, 34rem);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: 0 18px 40px rgb(0 0 0 / 0.28);
+  opacity: 1;
+}
+
+.publish-status-heading {
+  font-size: 1.05rem;
+  margin: 0 0 0.5rem;
+}
+
+.publish-status-dialog::backdrop {
+  background: rgb(0 0 0 / 0.45);
+}
+
+.publish-status-close-row {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 0.35rem;
+}
+
+.publish-status-shell {
+  margin: 0 0 0.75rem;
+}
+
+.publish-status-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.85rem;
+}
+
+.publish-status-row {
+  align-items: start;
+  border-top: 1px solid var(--border);
+  column-gap: 0.75rem;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  padding: 0.5rem 0;
+}
+
+.publish-status-row-badge {
+  color: var(--muted);
+}
+
+.publish-status-row--success .publish-status-row-badge {
+  color: #17803d;
+}
+
+.publish-status-row--failed .publish-status-row-badge {
+  color: #b33131;
+}
+
+.publish-status-row-body {
+  display: grid;
+  gap: 0.12rem;
+}
+
+.publish-status-row-relay {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.publish-status-row-detail {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.thread-focus-parent--skeleton .text-skeleton {
+  display: inline-block;
+  min-width: 8ch;
+}
+
+.thread-parent-skeleton-avatar {
+  animation: skeleton-bob 1.45s ease-in-out infinite;
+  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--muted) 16%, transparent);
+}
+
+.note.ptxt-note-removing,
+.comment.ptxt-note-removing,
+[data-thread-tree-note].ptxt-note-removing {
+  overflow: hidden;
+  transition: opacity 0.22s ease, max-height 0.22s ease, margin 0.22s ease, padding 0.22s ease;
+  opacity: 0;
+  max-height: 0 !important;
+  margin-block: 0 !important;
+  padding-block: 0 !important;
+}
+
 .composer-close-row {
   display: flex;
   justify-content: flex-end;
@@ -741,18 +1075,21 @@ body.feed-shell main {
 }
 
 .composer-input-wrap textarea {
-  background: transparent;
-  border: 1px solid transparent;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 0.3rem;
   caret-color: var(--text);
-  color: transparent;
+  color: var(--text);
   margin: 0;
   padding: 0.55rem 0.6rem;
   position: relative;
   z-index: 2;
+  -webkit-text-fill-color: var(--text);
 }
 
 .composer-input-wrap textarea:focus,
 .composer-input-wrap textarea:focus-visible {
+  border-color: var(--muted);
   outline: none;
 }
 
@@ -774,6 +1111,10 @@ body.feed-shell main {
   white-space: pre-wrap;
   word-break: break-word;
   z-index: 1;
+}
+
+.composer-overlay[hidden] {
+  display: none;
 }
 
 .composer-overlay-mention {
@@ -943,7 +1284,7 @@ body.feed-shell main {
 
 /* Connector from parent into this composer: branch uses a short vertical stub; leaf is a single `|` so nothing reads as continuing below the avatar when there are no sibling rails. */
 .thread-inline-reply::before {
-  color: var(--fg);
+  color: var(--muted);
   content: "|\A|";
   left: calc(var(--avatar-left) + var(--avatar-size) / 2 - 0.5ch);
   line-height: 1.25em;
@@ -1067,6 +1408,7 @@ body.feed-shell main {
 
 .thread-inline-reply .composer-input-wrap textarea {
   border-radius: 0;
+  border-style: dashed;
   min-height: 5.25rem;
 }
 
@@ -1338,16 +1680,6 @@ body.feed-shell main {
   color: #fff;
 }
 
-.settings-mode-option.is-active[data-wot-set="off"] {
-  background: rgb(153 27 27 / 70%);
-  color: #fff;
-}
-
-.settings-mode-option.is-active[data-wot-set="on"] {
-  background: rgb(22 101 52 / 70%);
-  color: #fff;
-}
-
 .settings-mode-option:focus-visible {
   outline: 1px solid var(--link);
   outline-offset: 1px;
@@ -1368,6 +1700,10 @@ body.feed-shell main {
 }
 
 .settings-mode-tree-group-main > :last-child .settings-mode-branch::before {
+  bottom: 50%;
+}
+
+.settings-mode-tree-group-main:has(> :last-child[hidden]) > :nth-last-child(2):not([hidden]) .settings-mode-branch::before {
   bottom: 50%;
 }
 
@@ -1505,9 +1841,9 @@ body.mobile-menu-open {
 .mobile-menu-header {
   align-items: center;
   border-bottom: 0;
-  column-gap: 0.65rem;
+  column-gap: 1rem;
   display: grid;
-  grid-template-columns: minmax(3.75rem, 5.75rem) minmax(0, 1fr);
+  grid-template-columns: minmax(3rem, 2rem) minmax(0, 1fr);
   grid-template-rows: auto auto;
   margin-bottom: 0.75rem;
   padding-bottom: 0.75rem;
@@ -1529,13 +1865,6 @@ body.mobile-menu-open {
   width: clamp(4rem, 17vw, 6.25rem);
 }
 
-.mobile-menu-header-title {
-  align-self: start;
-  grid-column: 2;
-  grid-row: 1;
-  min-width: 0;
-}
-
 .mobile-menu-session {
   align-self: start;
   display: flex;
@@ -1548,6 +1877,27 @@ body.mobile-menu-open {
 
 .mobile-menu-login-cta {
   font-weight: 600;
+}
+
+.mobile-menu-current-user {
+  align-items: flex-start;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.mobile-menu-current-user strong {
+  font-size: clamp(1.05rem, 3.5vw, 1.2rem);
+  font-weight: 700;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-menu-logout {
+  padding: 0;
 }
 
 .mobile-menu-profile {
@@ -1573,11 +1923,13 @@ body.mobile-menu-open {
 }
 
 .mobile-menu-login-cta:focus,
+.mobile-menu-logout:focus,
 .mobile-menu-profile:focus {
   outline: none;
 }
 
 .mobile-menu-login-cta:focus-visible,
+.mobile-menu-logout:focus-visible,
 .mobile-menu-profile:focus-visible {
   outline: 1px dashed var(--border);
   outline-offset: 2px;
@@ -1607,14 +1959,11 @@ body.mobile-menu-open {
   justify-content: center;
 }
 
-.mobile-menu-header-title strong {
-  display: block;
-  font-size: 1.15rem;
-  line-height: 1.2;
-}
-
 .mobile-menu-intro {
-  margin-bottom: 0.55rem;
+  grid-column: 2;
+  grid-row: 1;
+  margin: 0;
+  min-width: 0;
 }
 
 .mobile-menu-intro-copy {
@@ -1629,13 +1978,12 @@ body.mobile-menu-open {
 .mobile-menu-nav {
   align-items: stretch;
   display: grid;
-  gap: 0.3rem;
+  gap: 0;
   margin-bottom: 0.9rem;
 }
 
 .mobile-menu-close {
   margin-top: 0.6rem;
-  width: 100%;
 }
 
 .mobile-menu-trigger {
@@ -1770,6 +2118,103 @@ code,
   gap: 0.35rem 0.5rem;
 }
 
+.relay-list .relay-card {
+  align-items: flex-start;
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 72%, transparent);
+  box-sizing: border-box;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.65rem;
+  padding: 0.55rem 0;
+  width: 100%;
+}
+
+.relay-list .relay-card:last-child {
+  border-bottom: 0;
+}
+
+.relay-card-icon {
+  align-items: center;
+  background: color-mix(in oklab, var(--link) 14%, transparent);
+  border: 1px solid color-mix(in oklab, var(--link) 20%, var(--border));
+  box-sizing: border-box;
+  color: var(--link);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 0.95rem;
+  font-weight: 700;
+  height: 2.15rem;
+  justify-content: center;
+  line-height: 1;
+  margin-top: 0.1rem;
+  overflow: hidden;
+  width: 2.15rem;
+}
+
+.relay-card-icon img {
+  display: block;
+  height: 100%;
+  object-fit: cover;
+  width: 100%;
+}
+
+.relay-card-main {
+  display: grid;
+  flex: 1 1 auto;
+  gap: 0.18rem;
+  min-width: 0;
+}
+
+.relay-card-header {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.55rem;
+  min-width: 0;
+}
+
+.relay-card-title {
+  overflow-wrap: anywhere;
+}
+
+.relay-card-meta,
+.relay-card-url,
+.relay-card-description {
+  font-size: 0.95rem;
+}
+
+.relay-card-url {
+  color: var(--muted);
+}
+
+.relay-card-description {
+  line-height: 1.35;
+  max-width: 38rem;
+}
+
+.relay-card-nips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  padding-top: 0.15rem;
+}
+
+.relay-card-nip {
+  background: color-mix(in oklab, var(--muted) 10%, transparent);
+  color: var(--fg);
+  display: inline-flex;
+  font-size: 0.82rem;
+  line-height: 1.2;
+  padding: 0.08rem 0.35rem;
+}
+
+.relay-card-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 0.45rem;
+  padding-top: 0.1rem;
+}
+
 code.relay-url-popover {
   cursor: pointer;
 }
@@ -1813,6 +2258,65 @@ nav,
   flex-shrink: 0;
 }
 
+body.share-page .site-header,
+body.share-page main,
+body.share-page .share-page-column {
+  box-sizing: border-box;
+  margin-left: auto;
+  margin-right: auto;
+  max-width: 640px;
+  width: 100%;
+}
+
+body.share-page .site-header {
+  border-bottom: 0;
+  border-top: 0;
+}
+
+body.share-page .share-page-heading {
+  text-align: center;
+}
+
+body.share-page .share-page-heading .feed-heading-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+body.share-page .share-page-heading .feed-heading-title-row h1 {
+  flex: 0 1 auto;
+  min-width: max-content;
+  overflow: visible;
+  white-space: normal;
+}
+
+body.share-page .share-heading-separator {
+  color: var(--muted);
+}
+
+body.share-page .share-live-link {
+  flex: 0 1 auto;
+  margin: 0;
+  white-space: nowrap;
+  width: auto;
+}
+
+body.share-page .share-page-column:not(.reads-column) .share-page-heading .feed-heading-title-row {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+body.share-page .share-page-column:not(.reads-column) .share-page-heading .feed-heading-title-row h1 {
+  flex: 0 1 auto;
+  grid-column: auto;
+  grid-row: auto;
+  min-width: max-content;
+  overflow: visible;
+  white-space: normal;
+}
+
 .brand {
   font-weight: 700;
 }
@@ -1841,6 +2345,28 @@ nav,
 .note[data-ascii-select-href],
 .comment[data-ascii-select-href] {
   cursor: pointer;
+  touch-action: manipulation;
+}
+
+.note[data-ascii-select-href].ptxt-route-pressed,
+.comment[data-ascii-select-href].ptxt-route-pressed {
+  opacity: 0.82;
+}
+
+.note-raw-content {
+  color: transparent;
+  display: block;
+  font-size: 1px;
+  height: 1px;
+  left: 0;
+  line-height: 1px;
+  overflow: hidden;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  user-select: none;
+  white-space: nowrap;
+  width: 1px;
 }
 
 .feed,
@@ -1854,6 +2380,18 @@ article.note {
 
 .feed {
   min-width: 0;
+}
+
+#feed.feed:has(> [data-feed-loader]) {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  min-height: min(52vh, 30rem);
+}
+
+#feed.feed:has(> [data-feed-loader]) > .feed-loader {
+  max-width: 100%;
+  width: fit-content;
 }
 
 .muted {
@@ -1921,6 +2459,53 @@ article.note {
 
 .about-page-links {
   margin-top: 0.15rem;
+}
+
+.legal-page {
+  max-width: 52rem;
+}
+
+.legal-page-lead {
+  line-height: 1.45;
+  margin: 0 0 1.25rem;
+}
+
+.legal-page-meta {
+  margin: 0 0 0.75rem;
+}
+
+.legal-page h2 {
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin: 1.35rem 0 0.45rem;
+}
+
+.legal-page h3 {
+  font-size: 0.98rem;
+  font-weight: 700;
+  margin: 1rem 0 0.35rem;
+}
+
+.legal-page p,
+.legal-page li {
+  line-height: 1.45;
+}
+
+.legal-page ul {
+  margin: 0.35rem 0 0.85rem;
+  padding-left: 1.35rem;
+}
+
+.legal-page li + li {
+  margin-top: 0.35rem;
+}
+
+.legal-page code {
+  font-size: 0.92em;
+}
+
+.legal-page-links {
+  margin-top: 1.5rem;
 }
 
 .text-skeleton {
@@ -2006,38 +2591,131 @@ article.note {
 
 .feed-loader {
   display: grid;
-  gap: 0.55rem;
-  min-height: 12rem;
+  gap: 0.4rem;
+  min-height: 0;
   min-width: 0;
 }
 
-.feed-loader-status {
-  letter-spacing: 0.02em;
+.retro-loader-block {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.retro-loader-title {
+  display: none;
+}
+
+.retro-loader-summary {
+  display: none;
+}
+
+.retro-loader-progress-block,
+.retro-loader-activity-block {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.retro-loader-progress,
+.retro-loader-activity {
+  color: var(--muted);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  line-height: 1.35;
   margin: 0;
-  min-height: 1.25rem;
+  min-height: 0;
+  overflow: hidden;
+  padding: 0;
+  white-space: pre-wrap;
+}
+
+.retro-loader-progress {
   animation: text-skeleton-live 2s ease-in-out infinite;
   animation-delay: 0.06s;
+  color: var(--text);
+  min-height: 0;
 }
 
-.feed-loader-stack {
-  gap: 0.65rem;
+.retro-loader-activity {
+  min-height: 1.35lh;
+  max-height: 4.05lh;
 }
 
-/* Empty until ascii.js measures column width; keeps first paint height stable. */
-.feed-loader-stack > pre.feed-loader-card:empty {
-  min-height: 7lh;
-  min-height: 8.75rem;
+.retro-loader--compact .retro-loader-activity {
+  max-height: 4.05lh;
+}
+
+.thread-route-loader,
+.thread-telemetry-loader {
+  margin-bottom: 0.5rem;
+}
+
+.thread-route-loader .retro-loader-block,
+.thread-telemetry-loader .retro-loader-block {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.thread-route-loader .retro-loader-block::before,
+.thread-telemetry-loader .retro-loader-block::before {
+  content: none;
+}
+
+.thread-route-loader .retro-loader-title,
+.thread-telemetry-loader .retro-loader-title {
+  display: none;
+}
+
+.thread-route-loader .retro-loader-summary,
+.thread-telemetry-loader .retro-loader-summary {
+  display: block;
+}
+
+.thread-route-loader .retro-loader-progress-block,
+.thread-route-loader .retro-loader-activity-block,
+.thread-telemetry-loader .retro-loader-progress-block,
+.thread-telemetry-loader .retro-loader-activity-block {
+  display: grid;
+}
+
+@keyframes thread-hydration-pulse {
+  0%,
+  100% {
+    opacity: 0.28;
+    transform: scale(0.88);
+  }
+
+  50% {
+    opacity: 0.72;
+    transform: scale(1);
+  }
+}
+
+.inline-retro-loader {
+  margin: 0;
+}
+
+.inline-retro-loader .retro-loader-progress,
+.inline-retro-loader .retro-loader-activity {
+  font-size: 0.74rem;
+}
+
+.inline-retro-loader--progress-only .retro-loader-block,
+.feed-status-slot > .inline-retro-loader .retro-loader-block {
+  gap: 0;
+}
+
+.inline-retro-loader--progress-only .retro-loader-activity-block,
+.feed-status-slot > .inline-retro-loader .retro-loader-activity-block {
+  display: none;
 }
 
 @keyframes text-skeleton-live {
   0%,
   100% {
     opacity: 0.58;
-    transform: translateY(0);
   }
   50% {
     opacity: 0.92;
-    transform: translateY(-2px);
   }
 }
 
@@ -2054,7 +2732,7 @@ article.note {
 @media (prefers-reduced-motion: reduce) {
   .text-skeleton,
   .text-skeleton-note,
-  .feed-loader-status,
+  .retro-loader-progress,
   .profile-skeleton-avatar,
   .thread-person-avatar-skeleton,
   .thread-tree-skeleton-wave,
@@ -2103,11 +2781,32 @@ article.note {
 }
 
 .thread-focus-skeleton {
+  display: grid;
+  gap: 0.65rem;
   min-height: 14rem;
 }
 
 .thread-replies-skeleton {
   min-height: 14rem;
+}
+
+.thread-replies-skeleton .thread-reply-skeleton-item,
+.thread-replies-page-skeleton .thread-reply-skeleton-item {
+  cursor: default;
+  pointer-events: none;
+  user-select: none;
+}
+
+.thread-replies-skeleton .thread-reply-skeleton-item:nth-child(2) .text-skeleton-note,
+.thread-replies-skeleton .thread-reply-skeleton-item:nth-child(2) .thread-parent-skeleton-avatar,
+.thread-replies-page-skeleton .thread-reply-skeleton-item:nth-child(2) .text-skeleton-note,
+.thread-replies-page-skeleton .thread-reply-skeleton-item:nth-child(2) .thread-parent-skeleton-avatar {
+  animation-delay: 0.18s;
+}
+
+.thread-replies-skeleton .thread-reply-skeleton-item:nth-child(3) .text-skeleton-note,
+.thread-replies-skeleton .thread-reply-skeleton-item:nth-child(3) .thread-parent-skeleton-avatar {
+  animation-delay: 0.36s;
 }
 
 .thread-tree-skeleton {
@@ -2251,6 +2950,20 @@ article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--
   vertical-align: baseline;
 }
 
+.ascii-line.ascii-ssr-mobile-only {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  .ascii-line.ascii-ssr-mobile-only {
+    display: block;
+  }
+
+  .ascii-line.ascii-ssr-desktop-only {
+    display: none;
+  }
+}
+
 .thread-toolbar-slot {
   border: 0;
   margin: 0;
@@ -2258,53 +2971,335 @@ article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--
   width: 100%;
 }
 
-.thread-header {
-  margin: 1rem 0;
+.thread-tree-toggle-dots span {
+  animation: thread-tree-toggle-dot 1.2s ease-in-out infinite;
+  display: inline-block;
 }
 
-/* One row: back | OP / depth | tree view — 1fr | auto | 1fr keeps [OP] at true center when
-   the toggle label width changes; outer columns absorb asymmetry. */
-.thread-header-top {
+.thread-tree-toggle-dots span:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.thread-tree-toggle-dots span:nth-child(3) {
+  animation-delay: 0.3s;
+}
+
+@keyframes thread-tree-toggle-dot {
+  0%,
+  80%,
+  100% {
+    opacity: 0.25;
+    transform: translateY(0);
+  }
+
+  40% {
+    opacity: 1;
+    transform: translateY(-0.12em);
+  }
+}
+
+.thread-filtered-replies-toggle {
+  margin: 0.35rem 0 0.75rem;
+}
+
+.thread-filtered-replies:not([hidden]) > .comment:first-child,
+.thread-other-replies:not([hidden]) > .comment:first-child {
+  margin-top: 2.5em;
+}
+
+.thread-filtered-replies:not([hidden]) > .comment:first-child::before,
+.thread-other-replies:not([hidden]) > .comment:first-child::before {
+  color: var(--muted);
+  content: "|\A|";
+  left: var(--reply-parent-rail-x);
+  line-height: 1.25em;
+  pointer-events: none;
+  position: absolute;
+  top: -2.5em;
+  white-space: pre;
+  z-index: 1;
+}
+
+.profile-website-line {
   align-items: baseline;
-  column-gap: 0.5rem;
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 0.35rem 0.55rem;
+  margin: 0;
+  max-width: 100%;
+  min-width: 0;
+  width: 100%;
 }
 
-.thread-header-top .thread-back {
-  justify-self: start;
-  margin: 0.35rem 0;
+.profile-website-symbol {
+  flex: 0 0 auto;
+  font-size: 0.92em;
+}
+
+.profile-website-value {
+  flex: 1 1 auto;
+  font-size: 1rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-website-value a {
+  display: block;
+  overflow: hidden;
+  text-decoration: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-website-value a:hover,
+.profile-website-value a:focus-visible {
+  text-decoration: underline;
+}
+
+.profile-payment-line {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.55rem;
+  margin: 0;
   min-width: 0;
 }
 
-.thread-header-actions {
-  justify-self: end;
-  margin: 0.35rem 0;
+.profile-payment-target {
+  align-items: baseline;
+  color: inherit;
+  display: inline-flex;
+  flex: 1 1 auto;
+  gap: 0.35rem 0.55rem;
+  min-width: 0;
+  text-decoration: none;
+}
+
+.profile-payment-target:hover,
+.profile-payment-target:focus-visible {
+  text-decoration: underline;
+}
+
+.profile-payment-symbol {
+  flex: 0 0 auto;
+  font-size: 0.92em;
+}
+
+.profile-payment-value {
+  flex: 1 1 auto;
+  font-size: 1rem;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-payment-actions {
+  align-items: baseline;
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 0.2rem;
+  white-space: nowrap;
+}
+
+.profile-payment-copy-icon {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  font-size: 0.95rem;
+  justify-content: center;
+  line-height: 1;
+  min-height: 1rem;
+  min-width: 1rem;
+  padding: 0;
+}
+
+.profile-payment-copy-icon:hover,
+.profile-payment-copy-icon:focus-visible,
+.profile-payment-copy-icon[data-copied="1"] {
+  color: var(--link);
+  text-decoration: none;
+}
+
+.profile-metadata-links {
+  display: grid;
+  gap: 0.5rem 1rem;
+  grid-template-columns: minmax(0, 1fr);
+  margin: 0.45rem 0 0;
+}
+
+@media (min-width: 360px) {
+  .profile-metadata-links--paired {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+}
+
+.profile-metadata-link {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.profile-metadata-link-header {
+  align-items: baseline;
+  display: flex;
+  gap: 0.45rem;
+  justify-content: flex-start;
+  min-width: 0;
+}
+
+.profile-metadata-link-label {
+  font-size: 0.82em;
+  text-transform: lowercase;
+}
+
+.profile-metadata-link--website {
+  align-content: start;
+}
+
+.profile-metadata-link--pay {
+  align-content: start;
+}
+
+.profile-metadata-link-value,
+.profile-payment-value {
+  font-size: 0.92em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-metadata-link-actions {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  white-space: nowrap;
+}
+
+.profile-payment-open {
+  white-space: nowrap;
+}
+
+.profile-nip05-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: baseline;
+}
+
+.profile-nip05-status {
+  appearance: none;
+  background: none;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  color: var(--muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.92em;
+  line-height: 1;
+  padding: 0;
+}
+
+.profile-nip05-status.is-ok {
+  color: #5cc96b;
+}
+
+.profile-nip05-status.is-error {
+  color: #d14b4b;
+}
+
+.profile-nip05-status:hover,
+.profile-nip05-status:focus-visible {
+  text-decoration: none;
+}
+
+.profile-nip05-status:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+#ptxt-nip05-popover.nip05-detail-popover {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.12);
+  color: var(--text);
+  font-size: 0.92rem;
+  line-height: 1.4;
+  margin: 0;
+  max-width: min(20rem, calc(100vw - 2rem));
+  padding: 0.55rem 0.65rem;
+  white-space: normal;
 }
 
 .thread-summary {
   margin: 0.5rem 0 1rem;
 }
 
-.thread-header-op {
-  font-size: 0.95em;
-  justify-self: center;
-  margin: 0.35rem 0;
-  min-width: 0;
-  text-align: center;
-  white-space: nowrap;
-}
-
-.thread-op-label {
-  color: var(--text);
-}
-
-.thread-header-op-trail {
-  white-space: nowrap;
-}
-
 .thread-focus {
   margin: 0.5rem 0 1rem;
+}
+
+/* Bridge OP footer rail to the first reply avatar (mirrors iOS ThreadRailGapConnector). */
+.thread-rail-gap {
+  --avatar-left: -0.4ch;
+  --avatar-size: 2.4em;
+  --reply-rail-x: calc(var(--avatar-left) + var(--avatar-size) / 2 - 0.5ch);
+  color: var(--muted);
+  font-family: var(--font-mono-stack);
+  height: 2.5em;
+  line-height: 1.25em;
+  margin-left: calc((var(--depth, 1) - 1) * 1ch);
+  padding-left: 1ch;
+  pointer-events: none;
+  position: relative;
+  white-space: pre;
+}
+
+.thread-rail-gap::before {
+  color: var(--muted);
+  content: "|\A|";
+  left: var(--reply-rail-x);
+  line-height: 1.25em;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+  white-space: pre;
+}
+
+/* Thread root OP: selected-style card with reply-column avatar geometry. */
+#thread-focus > article.note[data-ascii-kind="selected"]:not(.thread-focus-selected) {
+  --avatar-left: -0.4ch;
+  --avatar-size: 2.4em;
+  font-family: var(--font-mono-stack);
+  margin: 0.5rem 0 0;
+  padding-left: 1ch;
+  position: relative;
+}
+
+#thread-focus > article.note[data-ascii-kind="selected"]:not(.thread-focus-selected) .note-avatar {
+  left: var(--avatar-left);
+  top: calc(0.625em - var(--avatar-size) / 2);
+}
+
+#thread-focus > article.note[data-ascii-kind="selected"]:not(.thread-focus-selected) .ascii-reply > .ascii-line:first-child {
+  padding-left: calc(1ch + var(--avatar-size));
+}
+
+#thread-focus > article.note[data-ascii-kind="selected"]:not(.thread-focus-selected) .note-content {
+  display: block;
+  margin-top: calc(var(--avatar-size) / 2);
+}
+
+.thread-replies:has(> .thread-rail-gap) #thread-replies > .comment:first-child {
+  margin-top: 0.4em;
+}
+
+.thread-replies:has(> .thread-rail-gap) #thread-replies > .comment:first-child::before {
+  display: none;
 }
 
 .thread-focus-parent {
@@ -2317,8 +3312,54 @@ article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--
   margin: 1.4rem 0 0.5rem 0;
 }
 
+/* Focused reply: same rail column as thread root OP (iOS selected @ indent 0). */
+#thread-focus > .thread-focus-selected {
+  --avatar-left: -0.4ch;
+  --avatar-size: 2.4em;
+  --depth: 1;
+  font-family: var(--font-mono-stack);
+  margin-left: 0;
+  padding-left: 1ch;
+  position: relative;
+}
+
+#thread-focus > .thread-focus-selected .note-avatar {
+  left: var(--avatar-left);
+  top: calc(0.625em - var(--avatar-size) / 2);
+}
+
+#thread-focus > .thread-focus-selected .ascii-reply > .ascii-line:first-child {
+  padding-left: calc(1ch + var(--avatar-size));
+}
+
+#thread-focus > .thread-focus-selected .note-content {
+  display: block;
+  margin-top: calc(var(--avatar-size) / 2);
+}
+
+/* Linear thread replies share the OP rail column. */
+.feed-column[data-relay-native-thread="1"] #thread-replies > .comment {
+  --avatar-left: -0.4ch;
+  margin-left: 0;
+}
+
 .thread-hidden-toggle {
   margin: 0.5rem 0;
+}
+
+/* Respect thread/tree preference before thread.js applies [hidden] (see thread-view-bootstrap.js). */
+html[data-ptxt-thread-view="thread"] #thread-tree-view {
+  display: none !important;
+}
+
+html[data-ptxt-thread-view="tree"] #thread-ancestors,
+html[data-ptxt-thread-view="tree"] #thread-focus,
+html[data-ptxt-thread-view="tree"] .thread-replies {
+  display: none !important;
+}
+
+html[data-ptxt-thread-view="tree"] #thread-tree-view[hidden] {
+  display: block !important;
 }
 
 /* Pseudo-elements sometimes use negative top; clip so tree chrome cannot paint outside this column. */
@@ -2370,7 +3411,7 @@ article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--
 }
 
 /* With replies: no empty gutter column beside the root — note sits left like `tree` root text; `|` begins under it via first reply gutter + bridge. */
-.thread-tree-mode:has(> .thread-tree) .thread-tree-root-note {
+.thread-tree-mode:has(> .thread-tree:not([hidden])) .thread-tree-root-note {
   background-color: var(--bg);
   gap: 0;
   grid-template-columns: minmax(0, 1fr);
@@ -2378,12 +3419,12 @@ article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--
   z-index: 2;
 }
 
-.thread-tree-mode:has(> .thread-tree) .thread-tree-root-gutter {
+.thread-tree-mode:has(> .thread-tree:not([hidden])) .thread-tree-root-gutter {
   display: none;
 }
 
 /* Root gutter is structural only (`tree`-style `.` has no downward trunk beside the label — trunk is bridged via first reply gutter + JS-measured rise). */
-.thread-tree-mode:not(:has(> .thread-tree)) .thread-tree-root-gutter {
+.thread-tree-mode:not(:has(> .thread-tree:not([hidden]))) .thread-tree-root-gutter {
   align-self: start;
   min-height: var(--thread-tree-avatar-size);
   position: relative;
@@ -2398,11 +3439,11 @@ article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--
  * Draw the missing segment on the root stack so it shows from below the OP avatar through the
  * long OP body and the inter-block margin to the first gutter spine (same x as --thread-tree-spine-x).
  */
-.thread-tree-mode:has(> .thread-tree) .thread-tree-root-stack {
+.thread-tree-mode:has(> .thread-tree:not([hidden])) .thread-tree-root-stack {
   position: relative;
 }
 
-.thread-tree-mode:has(> .thread-tree) .thread-tree-root-stack::after {
+.thread-tree-mode:has(> .thread-tree:not([hidden])) .thread-tree-root-stack::after {
   border-left: 1px solid var(--fg);
   bottom: calc(-1 * max(0.35rem, var(--thread-tree-trunk-gap)));
   content: "";
@@ -2638,6 +3679,11 @@ article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--
   white-space: pre-wrap;
 }
 
+.thread-tree-quote-media {
+  margin-top: 0.25rem;
+  width: min(100%, 34rem);
+}
+
 .continue-thread-tree {
   margin: 0.25rem 0 0;
 }
@@ -2654,9 +3700,13 @@ article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--
   margin-top: 0.35rem;
 }
 
+.thread-tree-media-preview .note-media-grid-wrap {
+  width: min(100%, 34rem);
+}
+
 .thread-tree-media-preview .note-media-preview {
-  margin: 0.15rem 0;
-  width: min(100%, 28rem);
+  margin: 0.35rem 0 0;
+  width: min(100%, 34rem);
 }
 
 @media (max-width: 700px) {
@@ -2681,7 +3731,7 @@ article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--
 }
 
 /* HN-style flat thread tree (indent column + comhead / commtext / reply). */
-.hn-thread-tree-mode.thread-tree-mode:has(> .thread-tree) > .thread-tree-root-note.hn-story {
+.hn-thread-tree-mode.thread-tree-mode:has(> .thread-tree:not([hidden])) > .thread-tree-root-note.hn-story {
   align-items: flex-start;
   background-color: var(--bg);
   display: flex;
@@ -2797,6 +3847,32 @@ article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--
   height: var(--hn-tree-rail-join);
 }
 
+/*
+ * Filtered replies are a second top-level list so they can stay hidden behind
+ * the disclosure. When revealed, make that list a continuation of the visible
+ * tree instead of starting a disconnected trunk.
+ */
+.hn-thread-tree-mode
+  > .hn-comment-tree.has-expanded-filtered-replies
+  > .hn-tree-ul
+  > li.hn-comtr:last-child::after {
+  bottom: 0;
+  height: auto;
+}
+
+.hn-thread-tree-mode
+  > .thread-tree-filtered-replies.continues-thread-tree:not([hidden])::before {
+  background-color: var(--hn-tree-rail-color);
+  content: "";
+  height: calc(var(--thread-tree-trunk-gap) + 0.5rem);
+  left: calc(0.2rem + 0.45rem);
+  pointer-events: none;
+  position: absolute;
+  top: calc(-1 * var(--thread-tree-trunk-gap));
+  width: 1px;
+  z-index: 0;
+}
+
 .hn-li-body {
   align-items: flex-start;
   display: flex;
@@ -2826,17 +3902,17 @@ article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--
  * into the first reply join (same tail as nested `hn-li-body` uses). Implemented on `.hn-story`
  * so `top` + negative `bottom` stretch with content instead of a fixed `height` on the avatar.
  */
-.hn-thread-tree-mode > .hn-story.thread-tree-root-note.hn-story:has(+ .hn-comment-tree) {
+.hn-thread-tree-mode > .hn-story.thread-tree-root-note.hn-story:has(+ .hn-comment-tree:not([hidden])) {
   position: relative;
   z-index: 0;
 }
 
-.hn-thread-tree-mode > .hn-story.thread-tree-root-note.hn-story:has(+ .hn-comment-tree) > .hn-tree-avatar {
+.hn-thread-tree-mode > .hn-story.thread-tree-root-note.hn-story:has(+ .hn-comment-tree:not([hidden])) > .hn-tree-avatar {
   position: relative;
   z-index: 1;
 }
 
-.hn-thread-tree-mode > .hn-story.thread-tree-root-note.hn-story:has(+ .hn-comment-tree)::after {
+.hn-thread-tree-mode > .hn-story.thread-tree-root-note.hn-story:has(+ .hn-comment-tree:not([hidden]))::after {
   background-color: var(--hn-tree-rail-color);
   bottom: calc(-1 * (var(--thread-tree-trunk-gap) + var(--hn-tree-trunk-into-ul)));
   content: "";
@@ -2934,6 +4010,15 @@ article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--
   width: 100%;
 }
 
+.ascii-ssr-media-mode {
+  display: contents;
+}
+
+html[data-ptxt-image-mode="on"] .ascii-ssr-media-off,
+html[data-ptxt-image-mode="off"] .ascii-ssr-media-on {
+  display: none;
+}
+
 .note-content.is-collapsed,
 .thread-tree-text.is-collapsed {
   max-height: 8.7rem;
@@ -2990,6 +4075,23 @@ article.note[data-ascii-kind="note"]:has(.note-feed-avatar) .note-feed-context--
   color: var(--link);
 }
 
+.note-chrome {
+  color: var(--muted);
+}
+
+.ascii-reference-placeholder {
+  animation: text-skeleton-live 1.45s ease-in-out infinite;
+  color: var(--muted);
+  opacity: 0.78;
+  text-decoration: none;
+}
+
+.ascii-reference-placeholder:hover,
+.ascii-reference-placeholder:focus-visible {
+  color: var(--link);
+  text-decoration: none;
+}
+
 .note-image-toggle {
   color: var(--link);
   display: inline-block;
@@ -3042,7 +4144,7 @@ button.note-image-toggle {
 .comment[data-ascii-has-children="true"] .ascii-reply > .note-media-drawer:not([hidden])::before,
 .comment[data-ascii-is-last="false"] .ascii-reply > .note-media-drawer:not([hidden])::before {
   bottom: 0;
-  color: var(--fg);
+  color: var(--muted);
   content: "|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|";
   font-family: var(--font-mono-stack);
   font-size: inherit;
@@ -3062,6 +4164,234 @@ button.note-image-toggle {
   width: 100%;
 }
 
+.note-media-grid-row {
+  white-space: normal;
+}
+
+.reply-media-row.note-media-grid-row {
+  align-items: start;
+  display: grid;
+  grid-template-columns: 5ch minmax(0, 1fr);
+}
+
+.selected-media-row.note-media-grid-row {
+  align-items: start;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 1ch;
+}
+
+.reference-media-row.note-media-grid-row {
+  align-items: start;
+  display: grid;
+  grid-template-columns: 6ch minmax(0, 1fr) 5ch;
+}
+
+.note-media-grid-wrap {
+  background: var(--bg);
+  display: inline-grid;
+  gap: 0.35rem;
+  max-width: 100%;
+  vertical-align: top;
+  white-space: normal;
+}
+
+.note-media-grid-edge,
+.note-media-reply-prefix,
+.note-media-reference-prefix,
+.note-media-reference-suffix {
+  --note-media-rail-fill: "|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|\A|";
+  align-self: stretch;
+  color: var(--muted);
+  display: block;
+  font-family: var(--font-mono-stack);
+  line-height: 1.25em;
+  overflow: hidden;
+  position: relative;
+  white-space: pre;
+}
+
+.note-media-grid-edge {
+  width: 1ch;
+}
+
+.note-media-reply-prefix {
+  width: 5ch;
+}
+
+.note-media-reference-prefix {
+  --note-media-reference-prefix-fill: "|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |";
+  width: 6ch;
+}
+
+.note-media-reference-suffix {
+  --note-media-reference-suffix-fill: "|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |\A|   |";
+  width: 5ch;
+}
+
+.note-media-grid-edge::before,
+.note-media-reply-prefix.has-rail::before,
+.note-media-reference-prefix::before,
+.note-media-reference-suffix::before {
+  content: var(--note-media-rail-fill);
+  left: 0;
+  pointer-events: none;
+  position: absolute;
+  top: 0;
+}
+
+.note-media-reference-prefix::before {
+  content: var(--note-media-reference-prefix-fill);
+}
+
+.note-media-reference-suffix::before {
+  content: var(--note-media-reference-suffix-fill);
+}
+
+.reply-media-row > .note-media-grid-wrap {
+  width: 100%;
+}
+
+.selected-media-row > .note-media-grid-wrap {
+  width: calc(100% - 2ch);
+}
+
+.selected-media-row:has(.note-media-grid-edge-left) {
+  grid-template-columns: 1ch minmax(0, 1fr) 1ch;
+}
+
+.selected-media-row:has(.note-media-grid-edge-left) > .note-media-grid-wrap {
+  justify-self: center;
+  width: min(100%, calc(100% - 2ch));
+}
+
+.note-image-boxed-row > .note-media-grid-wrap {
+  box-sizing: border-box;
+  padding: 0 0.65rem;
+  width: 100%;
+}
+
+.note-media-grid-wrap:has(> .note-media-grid-1) {
+  justify-items: center;
+}
+
+.note-media-grid {
+  aspect-ratio: 1 / 1;
+  background: var(--bg);
+  display: grid;
+  gap: 2px;
+  grid-auto-rows: minmax(0, 1fr);
+  max-height: min(58vh, 24rem);
+  overflow: hidden;
+  width: 100%;
+}
+
+.note-media-grid-1 {
+  aspect-ratio: var(--note-media-image-aspect-ratio, 4 / 3);
+  grid-template-columns: 1fr;
+  justify-items: center;
+  max-height: min(64vh, 34rem);
+}
+
+.note-media-grid-1.note-media-grid-single-video {
+  aspect-ratio: var(--note-media-image-aspect-ratio, 16 / 9);
+}
+
+.note-media-grid-2 {
+  aspect-ratio: 2 / 1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.note-media-grid-3,
+.note-media-grid-4 {
+  aspect-ratio: 1 / 1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+}
+
+.note-media-grid-5,
+.note-media-grid-6 {
+  aspect-ratio: 3 / 2;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+}
+
+.note-media-grid-3 .note-media-tile:first-child,
+.note-media-grid-5 .note-media-tile:first-child {
+  grid-row: span 2;
+}
+
+.note-media-tile {
+  align-items: center;
+  background: var(--bg);
+  color: var(--link);
+  cursor: zoom-in;
+  display: flex;
+  font: inherit;
+  justify-content: center;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.note-media-grid-1 .note-media-tile {
+  aspect-ratio: inherit;
+  max-height: min(64vh, 34rem);
+}
+
+.note-media-tile img,
+.note-media-tile video {
+  background: var(--bg);
+  border: 0;
+  border-radius: 0;
+  display: block;
+  height: 100%;
+  max-height: none;
+  max-width: none;
+  object-fit: cover;
+  width: 100%;
+}
+
+.note-media-video-tile {
+  cursor: default;
+}
+
+.note-media-video-tile video {
+  object-fit: contain;
+}
+
+.note-media-grid-1 .note-media-tile img,
+.note-media-grid-1 .note-media-tile video {
+  height: auto;
+  max-height: min(64vh, 34rem);
+  max-width: 100%;
+  min-width: 0;
+  object-fit: contain;
+  width: auto;
+}
+
+.note-media-grid-1 .note-media-video-tile-single {
+  overflow: visible;
+}
+
+.note-media-grid-1 .note-media-video-tile-single video {
+  height: 100%;
+  max-height: min(64vh, 34rem);
+  max-width: 100%;
+  min-width: 0;
+  object-fit: contain;
+  width: 100%;
+}
+
+.note-media-more-tile {
+  cursor: pointer;
+  font-size: clamp(1.5rem, 8vw, 3rem);
+  font-weight: 700;
+  line-height: 1;
+  text-decoration: none;
+}
+
 .ascii-line.note-image-boxed-row {
   align-items: start;
   box-sizing: border-box;
@@ -3072,9 +4402,12 @@ button.note-image-toggle {
   max-width: 100%;
 }
 
-.ascii-line.note-image-boxed-row,
-.ascii-line.note-image-boxed-row  {
+.ascii-line.note-image-boxed-row {
   white-space: pre;
+}
+
+.ascii-line.note-image-boxed-row.note-media-grid-row {
+  white-space: normal;
 }
 
 .ascii-line.note-image-boxed-row > .ascii-inline-media,
@@ -3123,6 +4456,8 @@ button.note-image-toggle {
   border: 0;
   max-height: 100vh;
   max-width: 100vw;
+  overflow: hidden;
+  overscroll-behavior: contain;
   padding: 0;
   width: 100vw;
 }
@@ -3156,12 +4491,23 @@ button.note-image-toggle {
   display: flex;
   justify-content: center;
   min-height: 100vh;
+  overscroll-behavior: contain;
   padding: 3.5rem 1rem 1rem;
   position: relative;
   width: 100vw;
 }
 
-.image-viewer-body img {
+.image-viewer-media {
+  align-items: center;
+  display: flex;
+  justify-content: center;
+  max-height: calc(100vh - 4.5rem);
+  max-width: min(96vw, 96rem);
+}
+
+.image-viewer-media img,
+.image-viewer-media video {
+  background: #000;
   display: block;
   max-height: calc(100vh - 4.5rem);
   max-width: min(96vw, 96rem);
@@ -3374,6 +4720,129 @@ button.note-image-toggle {
   color: var(--danger);
 }
 
+.login-recent-accounts-panel {
+  border-top: 1px solid var(--border);
+  margin-top: 1rem;
+  padding-top: 1rem;
+}
+
+.login-recent-accounts-panel h3,
+.login-recent-accounts-panel p {
+  margin-top: 0;
+}
+
+.login-recent-accounts-list {
+  display: grid;
+  gap: 0.6rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.login-recent-account {
+  align-items: center;
+  border: 1px solid var(--border);
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 0.65rem 0.75rem;
+}
+
+.login-recent-account-meta {
+  display: grid;
+  gap: 0.15rem;
+  grid-template-columns: 2.25rem minmax(0, 1fr);
+  min-width: 0;
+}
+
+.login-recent-account-avatar {
+  align-items: center;
+  aspect-ratio: 1;
+  border: 1px solid var(--border);
+  display: inline-flex;
+  grid-row: 1 / span 2;
+  height: 2.25rem;
+  justify-content: center;
+  overflow: hidden;
+  width: 2.25rem;
+}
+
+.login-recent-account-avatar img {
+  height: 100%;
+  object-fit: cover;
+  width: 100%;
+}
+
+.login-recent-account-meta strong,
+.login-recent-account-meta small {
+  grid-column: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.login-recent-account-actions {
+  display: flex;
+  gap: 0.45rem;
+}
+
+.login-recent-account-actions button[data-remove-account] {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.settings-account-list {
+  display: grid;
+  gap: 0.6rem;
+  list-style: none;
+  margin: 0.85rem 0 0;
+  padding: 0;
+}
+
+.settings-account-item {
+  align-items: center;
+  border: 1px solid var(--border);
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: 0.65rem 0.75rem;
+}
+
+.settings-account-avatar {
+  align-items: center;
+  aspect-ratio: 1;
+  border: 1px solid var(--border);
+  display: inline-flex;
+  height: 2.4rem;
+  justify-content: center;
+  overflow: hidden;
+  width: 2.4rem;
+}
+
+.settings-account-avatar img {
+  height: 100%;
+  object-fit: cover;
+  width: 100%;
+}
+
+.settings-account-meta {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.settings-account-meta strong,
+.settings-account-meta small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-account-actions {
+  display: flex;
+  gap: 0.45rem;
+}
+
 .login-help-panel {
   display: grid;
   gap: 0.5rem;
@@ -3434,10 +4903,6 @@ button.note-image-toggle {
   margin-top: 0;
 }
 
-.profile-back {
-  white-space: nowrap;
-}
-
 .profile-main {
   margin-top: 0;
   padding: 0 0.75rem;
@@ -3446,7 +4911,7 @@ button.note-image-toggle {
 .profile-hero {
   display: flex;
   flex-direction: column;
-  gap: 0.35rem;
+  gap: 1rem;
   padding: 0 0.75rem;
 }
 
@@ -3458,12 +4923,6 @@ button.note-image-toggle {
   justify-content: space-between;
   min-width: 0;
   width: 100%;
-}
-
-.profile-hero-top .profile-back {
-  align-self: center;
-  flex: 1 1 auto;
-  min-width: 0;
 }
 
 .profile-hero-options-menu.ascii-action-menu {
@@ -3513,32 +4972,74 @@ button.note-image-toggle {
   white-space: nowrap;
 }
 
+.profile-hero-nip05-skeleton {
+  line-height: 1.15;
+  margin: 0;
+  max-width: 20rem;
+  padding: 0;
+}
+
+.profile-hero-meta-skeleton {
+  line-height: 1.15;
+  margin: 0;
+  max-width: 22rem;
+  padding: 0;
+}
+
 .profile-hero-body {
-  align-items: stretch;
-  column-gap: 1rem;
   display: flex;
-  flex-direction: row;
+  flex-direction: column;
+  gap: 0.9rem;
   min-width: 0;
+}
+
+.profile-hero-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.profile-hero-media-row {
+  align-items: flex-start;
+  column-gap: 1.35rem;
+  display: flex;
+  min-width: 0;
+  width: 100%;
 }
 
 .profile-avatar-wrap {
   box-sizing: border-box;
   display: block;
   flex: 0 0 auto;
-  max-height: min(60vw, 9.25rem);
-  max-width: min(34vw, 9.25rem);
+  max-height: min(62vw, 12.5rem);
+  max-width: min(40vw, 12.5rem);
   min-height: 0;
   min-width: 0;
   overflow: hidden;
 }
 
-.profile-hero-text {
-  container-name: profile-hero-text;
+.profile-hero-side {
+  align-items: flex-start;
+  align-self: stretch;
+  container-name: profile-hero-side;
   container-type: inline-size;
   display: flex;
-  flex: 1 1 0;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 0.35rem;
+  justify-content: flex-start;
+  min-width: 0;
+  padding-top: 0.35rem;
+}
+
+.profile-hero-side > :first-child {
+  margin-top: auto;
+}
+
+.profile-hero-top .profile-display-name {
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -3550,10 +5051,41 @@ button.note-image-toggle {
   white-space: nowrap;
 }
 
+.profile-hero-nip05 {
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1.2;
+  margin: 0;
+  padding: 0;
+}
+
+.profile-hero-metadata {
+  font-size: 0.92em;
+  line-height: 1.25;
+  margin: 0;
+  overflow-wrap: anywhere;
+  padding-top: 0.45rem;
+}
+
+.profile-guest-wot-notice {
+  background: var(--panel);
+  border: 1px dashed var(--border);
+  border-radius: 0.35rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1.45;
+  margin: 0 0 0.55rem;
+  padding: 0.55rem 0.7rem;
+}
+
 .profile-display-name {
-  font-size: 1.25rem;
+  font-size: 2.1rem;
   font-weight: 700;
   line-height: 1.25;
+}
+
+.profile-hero-options-menu .profile-follow-mute {
+  display: contents;
 }
 
 .profile-hero .profile-actions {
@@ -3684,8 +5216,9 @@ button.note-image-toggle {
 }
 
 .profile-npub-block--header {
+  align-self: stretch;
   line-height: 1.35;
-  margin-top: 0.1rem;
+  margin-top: 0;
   max-width: 100%;
   min-width: 0;
 }
@@ -3697,11 +5230,8 @@ button.note-image-toggle {
 }
 
 @media (min-width: 701px) {
-  /* Same balance as narrow view: modest square avatar, bottom-aligned with the
-     name + actions + npub column so the block doesn’t leave a dead zone under
-     the picture or blow the avatar up to the full npub height. */
-  .profile-hero-body {
-    align-items: flex-end;
+  .profile-hero-media-row {
+    align-items: stretch;
   }
 
   .profile-avatar-wrap {
@@ -3717,7 +5247,6 @@ button.note-image-toggle {
   }
 
   .profile-npub-block--header .profile-npub-grid {
-    font-size: 0.82rem;
     gap: 0.08em;
     letter-spacing: 0.06em;
   }
@@ -3747,7 +5276,7 @@ button.note-image-toggle {
 }
 
 @media (min-width: 701px) {
-  @container profile-hero-text (min-width: 25rem) {
+  @container profile-hero-side (min-width: 25rem) {
     .profile-npub-block--header .profile-npub-grid {
       column-gap: 1.25em;
       display: grid;
@@ -3854,7 +5383,7 @@ button.note-image-toggle {
 }
 
 .profile-ident {
-  margin-top: 0.65rem;
+  margin-top: 1rem;
   min-width: 0;
   overflow-wrap: break-word;
   overflow-wrap: anywhere;
@@ -3908,14 +5437,21 @@ button.note-image-toggle {
 .comment {
   --avatar-left: -0.4ch;
   --avatar-size: 2.4em;
+  --reply-depth-step: 1ch;
+  --reply-rail-x: calc(var(--avatar-left) + var(--avatar-size) / 2 - 0.5ch);
+  --reply-parent-rail-x: calc(var(--reply-rail-x) - var(--reply-depth-step));
   font-family: var(--font-mono-stack);
-  margin-left: calc((var(--depth) - 1) * 1ch);
+  margin-left: calc((var(--depth) - 1) * var(--reply-depth-step));
   /* Top margin keeps the absolutely-positioned avatar (which overflows
      above the first text row by ~half its height) from colliding with
      the parent's last reply line above. */
   margin-top: 0.9em;
   padding-left: 1ch;
   position: relative;
+}
+
+.comment[data-depth="1"] {
+  --reply-parent-rail-x: var(--reply-rail-x);
 }
 
 .comments > .comment:first-child {
@@ -4115,19 +5651,20 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
 /* Reserve a full connector row above the first visible reply and center a
    double `|` connector over that reply's avatar. This gives focused thread
    replies a clearer visual bridge back to the selected parent reply. */
-#thread-replies > .comment:first-child {
+#thread-replies > .comment:first-child:not(:only-child) {
   margin-top: 2.5em;
 }
 
-#thread-replies > .comment:first-child::before {
-  color: var(--fg);
+#thread-replies > .comment:first-child:not(:only-child)::before {
+  color: var(--muted);
   content: "|\A|";
-  left: calc(var(--avatar-left) + var(--avatar-size) / 2 - 0.5ch);
+  left: var(--reply-parent-rail-x);
   line-height: 1.25em;
   pointer-events: none;
   position: absolute;
   top: -2.5em;
   white-space: pre;
+  z-index: 1;
 }
 
 .thread-back,
@@ -4224,14 +5761,35 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
   cursor: pointer;
 }
 
+.ascii-card .ascii-reference-card > a.ascii-line,
+.ascii-card .ascii-reference-card > a.ascii-line:hover,
+.ascii-card .ascii-reference-card > a.ascii-line:focus-visible,
+.ascii-card .ascii-reference-card .ascii-reference-line-link,
+.ascii-card .ascii-reference-card .ascii-reference-line-link:hover,
+.ascii-card .ascii-reference-card .ascii-reference-line-link:focus-visible {
+  color: inherit;
+  text-decoration: none;
+}
+
 .load-more {
   display: block;
   margin: 1rem auto;
 }
 
-@keyframes button-spinner {
-  to {
-    transform: rotate(360deg);
+@keyframes button-progress-bar {
+  0% {
+    background-size: 8% 100%;
+    opacity: 0.72;
+  }
+
+  45% {
+    background-size: 68% 100%;
+    opacity: 1;
+  }
+
+  100% {
+    background-size: 100% 100%;
+    opacity: 0.88;
   }
 }
 
@@ -4347,6 +5905,13 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
   color: var(--link);
 }
 
+@media (min-width: 1024px) {
+  .profile-relays-shortcut,
+  .profile-relays-shortcut-sep {
+    display: none;
+  }
+}
+
 .profile-search-form {
   align-items: center;
   display: flex;
@@ -4361,6 +5926,109 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
 
 .profile-follow-pager {
   margin-top: 0.6rem;
+}
+
+.profile-follow-secondary {
+  display: inline-block;
+  max-width: min(14rem, 42vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+}
+
+.profile-follow-panel {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.profile-follow-summary strong {
+  color: var(--text);
+}
+
+.profile-follow-search {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.profile-follow-search input[type="search"] {
+  max-width: 100%;
+}
+
+.profile-follow-results {
+  max-height: min(30rem, 60vh);
+  overflow: auto;
+}
+
+.profile-follow-list {
+  display: grid;
+  gap: 0;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.profile-follow-link {
+  align-items: center;
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 0.75rem;
+  text-decoration: none;
+}
+
+.profile-follow-link:hover,
+.profile-follow-link:focus-visible {
+  background: var(--surface-2);
+}
+
+.profile-follow-avatar {
+  align-items: center;
+  display: inline-flex;
+  height: 2.75rem;
+  justify-content: center;
+  overflow: hidden;
+  width: 2.75rem;
+}
+
+.profile-follow-avatar-image {
+  display: block;
+  height: 100%;
+  object-fit: cover;
+  width: 100%;
+}
+
+.profile-follow-avatar-fallback {
+  color: var(--muted);
+}
+
+.profile-follow-copy {
+  display: grid;
+  gap: 0.18rem;
+  min-width: 0;
+}
+
+.profile-follow-display,
+.profile-follow-secondary,
+.profile-follow-npub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.profile-follow-display {
+  color: var(--text);
+}
+
+.profile-follow-npub {
+  font-size: 0.9rem;
+}
+
+.profile-follow-empty-item,
+.profile-follow-filter-empty {
+  list-style: none;
+  margin: 0;
+  padding: 0.9rem 0.75rem;
 }
 
 .profile-card {
@@ -4490,6 +6158,10 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
     grid-template-columns: 74px minmax(0, 640px) 320px;
   }
 
+  .route-keepalive-layer--thread[data-route-keepalive-active="1"] {
+    grid-template-columns: minmax(0, 640px) 320px;
+  }
+
   .left-rail {
     align-items: center;
     padding-left: 0.4rem;
@@ -4517,6 +6189,15 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
     grid-template-columns: 74px minmax(0, 700px);
   }
 
+  .route-keepalive-layer--thread[data-route-keepalive-active="1"] {
+    grid-column: 2 / 3;
+    grid-template-columns: minmax(0, 700px);
+  }
+
+  .route-keepalive-layer--thread[data-route-keepalive-active="1"] > .right-rail {
+    display: none;
+  }
+
   .right-rail {
     display: none;
   }
@@ -4527,42 +6208,189 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
 
 }
 
-/* Thread (desktop): five-column shell — `1fr` gutters + fixed rail widths — keeps the
-   left rail aligned when toggling tree view (participants column collapses to 0) while
-   preserving the same centered slack as the default three-column feed shell. */
+/* Thread (desktop): five-column shell — feed column centered on viewport. */
 @media (min-width: 1024px) and (max-width: 1199px) {
-  body.feed-shell main:has(#thread-summary) .app-shell {
-    grid-template-columns: 1fr 74px minmax(0, 640px) 320px 1fr;
+  body.feed-shell.thread-route-layout .app-shell {
+    --shell-left-rail: 74px;
+    --shell-feed-max: 640px;
+    --shell-right-rail: 320px;
+    --shell-column-gap: 1.5rem;
+    --shell-feed-center-gutter: max(0.75rem, calc(50vw - var(--shell-left-rail) - (2 * var(--shell-column-gap)) - (var(--shell-feed-max) / 2)));
+    column-gap: var(--shell-column-gap);
+    grid-template-columns:
+      var(--shell-feed-center-gutter)
+      var(--shell-left-rail)
+      minmax(0, var(--shell-feed-max))
+      var(--shell-right-rail)
+      minmax(0.75rem, 1fr);
   }
 
-  body.feed-shell main:has(#thread-summary) .app-shell .left-rail {
+  body.feed-shell.thread-route-layout .app-shell .left-rail {
     grid-column: 2;
   }
 
-  body.feed-shell main:has(#thread-summary) .app-shell .feed-column {
+  body.feed-shell.thread-route-layout .app-shell .feed-column {
     grid-column: 3;
   }
 
-  body.feed-shell main:has(#thread-summary) .app-shell .right-rail {
+  body.feed-shell.thread-route-layout .route-keepalive-layer--feed[data-route-keepalive-active="0"] {
+    grid-column: 3;
+  }
+
+  body.feed-shell.thread-route-layout .app-shell .right-rail {
     grid-column: 4;
   }
 }
 
 @media (min-width: 1200px) {
-  body.feed-shell main:has(#thread-summary) .app-shell {
-    grid-template-columns: 1fr 240px minmax(0, 640px) 340px 1fr;
+  body.feed-shell.thread-route-layout .app-shell {
+    --shell-left-rail: 240px;
+    --shell-feed-max: 640px;
+    --shell-right-rail: 340px;
+    --shell-column-gap: 2rem;
+    --shell-feed-center-gutter: max(1rem, calc(50vw - var(--shell-left-rail) - (2 * var(--shell-column-gap)) - (var(--shell-feed-max) / 2)));
+    column-gap: var(--shell-column-gap);
+    grid-template-columns:
+      var(--shell-feed-center-gutter)
+      var(--shell-left-rail)
+      minmax(0, var(--shell-feed-max))
+      var(--shell-right-rail)
+      minmax(1rem, 1fr);
   }
 
-  body.feed-shell main:has(#thread-summary) .app-shell .left-rail {
+  body.feed-shell.thread-route-layout .app-shell .left-rail {
     grid-column: 2;
   }
 
-  body.feed-shell main:has(#thread-summary) .app-shell .feed-column {
+  body.feed-shell.thread-route-layout .app-shell .feed-column {
     grid-column: 3;
   }
 
-  body.feed-shell main:has(#thread-summary) .app-shell .right-rail {
+  body.feed-shell.thread-route-layout .route-keepalive-layer--feed[data-route-keepalive-active="0"] {
+    grid-column: 3;
+  }
+
+  body.feed-shell.thread-route-layout .app-shell .right-rail {
     grid-column: 4;
+  }
+}
+
+/* Desktop shell: feed column centered on viewport, column gaps, section padding. */
+@media (min-width: 1024px) {
+  body.feed-shell {
+    margin: 0;
+    max-width: none;
+    padding-inline: 0;
+  }
+
+  body.feed-shell main {
+    margin: 0;
+    max-width: 100%;
+  }
+
+  .app-shell {
+    --shell-left-rail: 74px;
+    --shell-feed-max: 640px;
+    --shell-right-rail: 320px;
+    --shell-column-gap: 1.5rem;
+    --shell-feed-center-gutter: max(0.75rem, calc(50vw - var(--shell-left-rail) - (2 * var(--shell-column-gap)) - (var(--shell-feed-max) / 2)));
+    column-gap: var(--shell-column-gap);
+    grid-template-columns:
+      var(--shell-feed-center-gutter)
+      var(--shell-left-rail)
+      minmax(0, var(--shell-feed-max))
+      var(--shell-right-rail)
+      minmax(0.75rem, 1fr);
+    justify-content: stretch;
+  }
+
+  .app-shell .left-rail {
+    grid-column: 2;
+  }
+
+  .app-shell .feed-column,
+  .route-keepalive-layer--thread[data-route-keepalive-active="1"] > .feed-column {
+    grid-column: 3;
+  }
+
+  .app-shell .right-rail {
+    grid-column: 4;
+  }
+
+  .route-keepalive-layer--feed[data-route-keepalive-active="0"] {
+    grid-column: 3;
+  }
+
+  .left-rail,
+  .feed-column,
+  .right-rail {
+    padding-block: 1rem;
+    padding-inline: 1.15rem;
+  }
+
+  .left-rail {
+    padding-inline: 0.55rem;
+  }
+}
+
+@media (min-width: 1200px) {
+  .app-shell {
+    --shell-left-rail: 240px;
+    --shell-right-rail: 340px;
+    --shell-column-gap: 2rem;
+    --shell-feed-center-gutter: max(1rem, calc(50vw - var(--shell-left-rail) - (2 * var(--shell-column-gap)) - (var(--shell-feed-max) / 2)));
+    grid-template-columns:
+      var(--shell-feed-center-gutter)
+      var(--shell-left-rail)
+      minmax(0, var(--shell-feed-max))
+      var(--shell-right-rail)
+      minmax(1rem, 1fr);
+  }
+
+  .left-rail,
+  .feed-column,
+  .right-rail {
+    padding-inline: 1.35rem;
+  }
+
+  .left-rail {
+    padding-inline: 1rem;
+  }
+}
+
+/* Desktop without right rail: center feed between icon rail and trailing slack. */
+@media (min-width: 701px) and (max-width: 1023px) {
+  body.feed-shell {
+    margin: 0;
+    max-width: none;
+    padding-inline: 0;
+  }
+
+  .app-shell {
+    --shell-left-rail: 74px;
+    --shell-feed-max: 700px;
+    --shell-column-gap: 1.5rem;
+    --shell-feed-center-gutter: max(0.75rem, calc(50vw - var(--shell-left-rail) - (2 * var(--shell-column-gap)) - (var(--shell-feed-max) / 2)));
+    column-gap: var(--shell-column-gap);
+    grid-template-columns:
+      var(--shell-feed-center-gutter)
+      var(--shell-left-rail)
+      minmax(0, var(--shell-feed-max))
+      minmax(0.75rem, 1fr);
+    justify-content: stretch;
+  }
+
+  .app-shell .left-rail {
+    grid-column: 2;
+  }
+
+  .app-shell .feed-column,
+  .route-keepalive-layer--thread[data-route-keepalive-active="1"] > .feed-column {
+    grid-column: 3;
+  }
+
+  .route-keepalive-layer--feed[data-route-keepalive-active="0"] {
+    grid-column: 3;
   }
 }
 
@@ -4576,24 +6404,30 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
 }
 
 @media (min-width: 1024px) and (max-width: 1199px) {
-  body.thread-tree-wide-layout.feed-shell main:has(#thread-summary) .app-shell {
+  body.thread-tree-wide-layout.feed-shell.thread-route-layout .app-shell {
     grid-template-columns: 1fr 74px minmax(0, calc(100% - 74px - max(0px, 100% - 1034px))) 0 1fr;
   }
 }
 
 @media (min-width: 1200px) {
-  body.thread-tree-wide-layout.feed-shell main:has(#thread-summary) .app-shell {
+  body.thread-tree-wide-layout.feed-shell.thread-route-layout .app-shell {
     grid-template-columns: 1fr 240px minmax(0, calc(100% - 240px - max(0px, 100% - 1220px))) 0 1fr;
   }
 }
 
-/* Thread tree mode widens the feed column on desktop; keep the toolbar row at the usual
-   feed width so [OP] / view toggle stay put while thread content uses the extra space. */
+/* Thread tree mode widens the feed column on desktop. */
 @media (min-width: 1024px) {
-  body.thread-tree-wide-layout.feed-shell #thread-summary > .thread-header {
+  body.thread-tree-wide-layout.feed-shell #thread-summary > .thread-view-toggle-desktop {
     box-sizing: border-box;
     max-width: 640px;
     width: 100%;
+  }
+}
+
+@media (min-width: 701px) {
+  body.feed-shell:has(.feed-column[data-thread-root-id]) .thread-view-toggle-desktop,
+  body.feed-shell:has(.feed-column[data-thread-route-pending]) .thread-view-toggle-desktop {
+    display: flex;
   }
 }
 
@@ -4616,7 +6450,7 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
     min-height: 0;
   }
 
-  /* `[data-route-outlet]` keeps global `display: contents` — no nested scroll box. */
+  /* Root `[data-route-outlet="root"]` uses `display: contents` — no nested scroll box. */
 
   .mobile-bar {
     align-items: center;
@@ -4632,21 +6466,98 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
     z-index: 5;
   }
 
+  body.feed-shell:has(.feed-column[data-thread-root-id]) .mobile-bar-center,
+  body.feed-shell:has(.feed-column[data-thread-route-pending]) .mobile-bar-center {
+    display: block;
+    left: 50%;
+    pointer-events: auto;
+    position: absolute;
+    transform: translateX(-50%);
+    z-index: 4;
+  }
+
+  body.feed-shell:has(.feed-column[data-thread-root-id]) .thread-view-toggle-desktop,
+  body.feed-shell:has(.feed-column[data-thread-route-pending]) .thread-view-toggle-desktop {
+    display: none;
+  }
+
+  .mobile-bar-center .thread-view-toggle {
+    min-height: 2.75rem;
+    min-width: 4.5rem;
+    padding: 0 0.75rem;
+  }
+
   /* Keep the bar (and the ≡ / × control) above the full-screen menu overlay. */
   body.mobile-menu-open .mobile-bar {
+    gap: 0.35rem;
     z-index: 25;
   }
 
   .mobile-bar .mobile-brand {
     flex: 1 1 auto;
     min-width: 0;
-    text-align: center;
+    position: relative;
+    text-align: left;
+    z-index: 1;
+  }
+
+  .mobile-brand-text {
+    display: inline-block;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    vertical-align: top;
+    white-space: nowrap;
+  }
+
+  body.feed-shell:has(.feed-column[data-thread-root-id]) .mobile-brand-text,
+  body.feed-shell:has(.feed-column[data-thread-route-pending]) .mobile-brand-text {
+    max-width: calc(50vw - 3.25rem);
+  }
+
+  body.feed-shell:has(.feed-column[data-thread-root-id]) .mobile-bar .mobile-brand,
+  body.feed-shell:has(.feed-column[data-thread-route-pending]) .mobile-bar .mobile-brand {
+    flex: 0 1 calc(50vw - 3.25rem);
+    max-width: calc(50vw - 3.25rem);
+  }
+
+  .mobile-bar-wot {
+    display: none;
+    flex: 0 0 auto;
+    margin-left: auto;
+  }
+
+  body.mobile-menu-open .mobile-bar-wot {
+    display: inline-flex;
+  }
+
+  body.mobile-menu-open .mobile-bar-wot .feed-wot-quick-label {
+    display: none;
+  }
+
+  body.mobile-menu-open .mobile-bar-wot .feed-wot-depth-select {
+    border: 0;
+    color: var(--link);
+    font-size: 1rem;
+    font-weight: 700;
+    padding-left: 0;
+    padding-right: 0.1rem;
   }
 
   .mobile-bar .mobile-menu-trigger {
     border-radius: 0.45rem;
+    margin-left: auto;
     min-height: 2.75rem;
-    min-width: 2.75rem;
+    position: relative;
+    z-index: 3;
+  }
+
+  body.mobile-menu-open .mobile-bar .mobile-menu-trigger {
+    margin-left: 0;
+  }
+
+  body.mobile-menu-open .mobile-bar-wot[hidden] + .mobile-menu-trigger {
+    margin-left: auto;
   }
 
   .mobile-bar .mobile-menu-trigger img,
@@ -4703,6 +6614,18 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
     min-height: 0;
   }
 
+  .route-keepalive-layer--thread[data-route-keepalive-active="1"] {
+    background: var(--bg);
+    display: block;
+    bottom: 0;
+    left: 0;
+    overflow-y: auto;
+    position: fixed;
+    right: 0;
+    top: var(--mobile-app-nav-height, max(3.4rem, calc(0.75rem + 2.75rem + 0.75rem)));
+    z-index: 4;
+  }
+
   .left-rail,
   .right-rail {
     display: none;
@@ -4715,34 +6638,8 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
     padding-bottom: var(--feed-scroll-pad);
   }
 
-  /* Thread toolbar: `position: sticky` is unreliable here (iOS); pin below `.mobile-bar` and reserve flow with `.thread-toolbar-slot`. */
-  body.feed-shell #thread-summary > .thread-toolbar-slot {
-    overflow: hidden;
-    pointer-events: none;
-  }
-
-  body.feed-shell #thread-summary > .thread-header {
-    background-color: var(--bg);
-    box-sizing: border-box;
-    left: 0;
-    margin: 0;
-    max-width: 100vw;
-    padding-block: 0.35rem 0.5rem;
-    padding-inline: max(0.75rem, env(safe-area-inset-left, 0px)) max(0.75rem, env(safe-area-inset-right, 0px));
-    position: fixed;
-    right: 0;
-    top: var(--mobile-app-nav-height, max(3.4rem, calc(0.75rem + 2.75rem + 0.75rem)));
-    width: 100%;
-    z-index: 4;
-  }
-
-  body.feed-shell #thread-summary > .thread-header .thread-header-top .thread-back,
-  body.feed-shell #thread-summary > .thread-header .thread-header-top .thread-header-actions {
-    margin-block: 0.2rem;
-  }
-
-  body.feed-shell #thread-summary > .thread-header > .thread-back-primary {
-    margin-block: 0.2rem;
+  body.feed-shell #thread-focus {
+    padding-top: 1rem;
   }
 
   /* Use clip (not hidden) so overflow-y stays visible: feed avatars sit half
@@ -4768,17 +6665,45 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
     padding: 0 0.3rem;
   }
 
-  .profile-hero-body {
-    align-items: flex-end;
+  .profile-hero-media-row {
+    align-items: stretch;
     column-gap: 0.65rem;
+    flex-direction: row;
+    row-gap: 0;
   }
 
   .profile-modern .profile-hero .profile-avatar-wrap {
-    min-width: min(34vw, 9.25rem);
+    max-width: min(38vw, 10.5rem);
+    min-width: min(38vw, 10.5rem);
+    width: min(38vw, 10.5rem);
   }
 
   .profile-display-name {
-    font-size: 1.1rem;
+    font-size: 1.5rem;
+  }
+
+  .profile-hero-side {
+    align-self: stretch;
+    flex: 1 1 0;
+    min-width: 0;
+    padding-top: 0;
+    width: auto;
+  }
+
+  .profile-npub-grid-row {
+    column-gap: 1.15em;
+  }
+
+  .profile-nip05-line,
+  .profile-website-line,
+  .profile-payment-line,
+  .profile-payment-target {
+    max-width: 100%;
+  }
+
+  .profile-payment-value {
+    white-space: normal;
+    word-break: break-word;
   }
 
   .profile-ident {
@@ -4804,33 +6729,33 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
     max-height: 100dvh;
     max-width: 100vw;
     min-height: 100dvh;
-    padding: max(0.75rem, env(safe-area-inset-top, 0px))
-      max(0.75rem, env(safe-area-inset-right, 0px))
-      max(0.75rem, env(safe-area-inset-bottom, 0px))
-      max(0.75rem, env(safe-area-inset-left, 0px));
+    overflow-y: auto;
+    padding: max(1rem, env(safe-area-inset-top, 0px))
+      max(1.5rem, env(safe-area-inset-right, 0px))
+      max(1.35rem, env(safe-area-inset-bottom, 0px))
+      max(1.5rem, env(safe-area-inset-left, 0px));
     width: 100vw;
   }
 
   /* .mobile-bar sits above the panel (z-index 25 vs 20); pad so header/title is not clipped. */
   body.mobile-menu-open .mobile-menu-panel {
     padding-top: calc(
-      max(0.75rem, env(safe-area-inset-top, 0px)) + max(3.4rem, calc(0.75rem + 2.75rem + 0.75rem)) + 0.35rem
+      max(1rem, env(safe-area-inset-top, 0px)) + max(3.4rem, calc(0.75rem + 2.75rem + 0.75rem)) + 0.65rem
     );
   }
 
   .mobile-menu-header {
+    column-gap: 1rem;
     display: grid;
-    margin-bottom: 0.5rem;
-    padding-bottom: 0.5rem;
+    flex-shrink: 0;
+    grid-template-columns: minmax(3rem, 2rem) minmax(0, 1fr);
+    margin-bottom: 1.55rem;
+    padding-bottom: 0;
+    row-gap: 0.6rem;
   }
 
   .mobile-menu-intro {
     flex-shrink: 0;
-    margin-bottom: 0.45rem;
-  }
-
-  .mobile-menu-header-title strong {
-    font-size: clamp(1.1rem, 4vw, 1.25rem);
   }
 
   .mobile-menu-profile [data-session-avatar],
@@ -4840,39 +6765,96 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
   }
 
   .mobile-menu-intro-copy {
-    font-size: clamp(0.85rem, 2.8vw, 1rem);
+    color: var(--fg);
+    font-family: var(--font-mono-stack);
+    font-size: 1rem;
+    font-weight: 400;
+    line-height: 1;
+  }
+
+  .mobile-menu-header-logo {
+    align-self: center;
+    justify-content: center;
+  }
+
+  .mobile-menu-header-logo .about-page-logo .about-logo {
+    width: 5.3rem;
+  }
+
+  .mobile-menu-login-cta {
+    font-size: 1.35rem;
+    font-weight: 700;
+    line-height: 1.1;
+  }
+
+  .mobile-menu-search {
+    flex-shrink: 0;
+    margin-bottom: 1.35rem;
+  }
+
+  .mobile-menu-search .rail-search {
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 1.35rem;
+  }
+
+  .mobile-menu-search .rail-search input {
+    background: transparent;
+    border: 2px dashed color-mix(in srgb, var(--border) 72%, transparent);
+    border-radius: 0;
+    color: var(--fg);
+    font-size: 1.2rem;
+    min-height: 2.7rem;
+    padding: 0.45rem 0.65rem;
+  }
+
+  .mobile-menu-search .rail-search input::placeholder {
+    color: color-mix(in srgb, var(--muted) 45%, transparent);
+    opacity: 1;
+  }
+
+  .mobile-menu-search .search-mode-toggle {
+    align-self: flex-end;
+    font-size: 1.05rem;
+    font-weight: 700;
+    padding-right: 1.15rem;
+  }
+
+  .mobile-menu-search .search-mode-option.is-active {
+    color: var(--fg);
   }
 
   .mobile-menu-nav {
     display: flex;
-    flex: 1 1 auto;
+    flex: 1 0 auto;
     flex-direction: column;
-    gap: 0.4rem;
-    margin-bottom: 0.5rem;
+    gap: 0;
+    justify-content: flex-start;
+    margin-bottom: 2.15rem;
     min-height: 0;
-    overflow-y: auto;
+    overflow: visible;
   }
 
   .mobile-menu-nav a {
     align-items: center;
     border: 0;
-    border-bottom: 1px dashed var(--border);
+    border-top: 2px dashed color-mix(in srgb, var(--border) 78%, transparent);
     border-radius: 0;
     box-sizing: border-box;
     display: flex;
-    flex: 1 1 0;
-    font-size: clamp(1.4rem, 4.5vw, 1.85rem);
-    font-weight: 600;
+    flex: 0 0 auto;
+    font-size: 1.55rem;
+    font-weight: 700;
     justify-content: center;
-    min-height: 3.5rem;
-    padding: 0.7rem 1rem;
+    min-height: 5.1rem;
+    padding: 1rem;
     text-align: center;
     text-decoration: none;
     width: 100%;
   }
 
   .mobile-menu-nav a:last-child {
-    border-bottom: 0;
+    border-bottom: 2px dashed color-mix(in srgb, var(--border) 78%, transparent);
   }
 
   .mobile-menu-nav a:hover {
@@ -4880,11 +6862,17 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
   }
 
   .mobile-menu-close {
+    align-self: flex-start;
+    background: transparent;
+    border: 0;
+    color: var(--link);
     flex-shrink: 0;
-    font-size: clamp(1.15rem, 3.5vw, 1.45rem);
-    margin-top: 0.35rem;
-    min-height: 3.25rem;
-    padding: 0.7rem 1rem;
+    font-size: 1.2rem;
+    font-weight: 700;
+    margin-top: auto;
+    min-height: 0;
+    padding: 0.1rem 0.5rem;
+    width: auto;
   }
 
   .mobile-menu-backdrop {
@@ -4896,12 +6884,14 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
   }
 
   .comment {
-    margin-left: calc(var(--depth) * 0.25rem);
+    --reply-depth-step: 0.25rem;
+    margin-left: calc(var(--depth) * var(--reply-depth-step));
     padding-left: 0.95rem;
   }
 
   .ascii-enhanced .comment {
-    margin-left: calc((var(--depth) - 1) * 1ch);
+    --reply-depth-step: 1ch;
+    margin-left: calc((var(--depth) - 1) * var(--reply-depth-step));
     padding-left: 1ch;
   }
 
@@ -4946,6 +6936,18 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
     grid-template-rows: auto auto;
   }
 
+  .feed-column:not(.reads-column) .feed-heading-top {
+    display: grid;
+  }
+
+  .feed-column:not(.reads-column) .feed-heading-summary {
+    grid-row: 1;
+  }
+
+  .feed-column:not(.reads-column) .feed-heading-title-row {
+    grid-row: 2;
+  }
+
   .feed-column:not(.reads-column) .feed-heading-title-row h1 {
     align-self: center;
     grid-column: 1;
@@ -4962,17 +6964,17 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
   }
 
   .feed-column:not(.reads-column) .feed-heading-controls .feed-sort-label {
-    grid-column: 2;
+    grid-column: 3;
     grid-row: 1;
-    justify-self: center;
+    justify-self: end;
     margin: 0;
     max-width: 100%;
     min-width: 0;
   }
 
-  /* No WoT block (e.g. default/trending feed or WoT off): park sort where WoT sits */
+  /* Guest view has no New Note; logged-in view uses the same right edge. */
   .feed-column:not(.reads-column)
-    .feed-heading-controls:not(:has(.feed-wot-quick))
+    .feed-heading-controls:not(:has(.feed-heading-post))
     .feed-sort-label {
     grid-column: 3;
     justify-self: end;
@@ -4986,7 +6988,7 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
     width: auto;
   }
 
-  .feed-column:not(.reads-column) .feed-heading-controls .feed-wot-quick {
+  .feed-column:not(.reads-column) .feed-heading-controls .feed-heading-wot {
     grid-column: 3;
     grid-row: 1;
     justify-self: end;
@@ -4995,16 +6997,20 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
     width: auto;
   }
 
-  .feed-column:not(.reads-column) .feed-wot-quick {
+  .feed-column:not(.reads-column) .feed-heading-wot {
     align-items: center;
     display: flex;
     gap: 0.35rem;
     min-width: 0;
   }
 
-  .feed-column:not(.reads-column) .feed-wot-quick-label {
+  .feed-column:not(.reads-column) .feed-heading-wot .feed-wot-quick-label {
     align-self: center;
     flex-shrink: 0;
+  }
+
+  .feed-column:not(.reads-column) .feed-heading-wot {
+    display: none;
   }
 
   .reads-column .feed-heading-title-row {
@@ -5015,12 +7021,8 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
   }
 
   .feed-heading-controls {
-    justify-content: flex-start;
+    justify-content: flex-end;
     width: 100%;
-  }
-
-  .feed-wot-quick {
-    margin-left: auto;
   }
 
   .feed-column:not(.reads-column) .feed-wot-depth-select {
@@ -5030,10 +7032,6 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
 
 .reads-column {
   max-width: 640px;
-}
-
-.app-shell.reads-shell {
-  grid-template-columns: 240px minmax(0, 640px) 340px;
 }
 
 .reads-list {
@@ -5318,10 +7316,6 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
 }
 
 @media (max-width: 1023px) {
-  .app-shell.reads-shell {
-    grid-template-columns: 74px minmax(0, 700px);
-  }
-
   .read-article h2 {
     font-size: 1.45rem;
   }
@@ -5414,5 +7408,131 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
     display: block;
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
+  }
+}
+.notifications-toolbar {
+  align-items: center;
+  backdrop-filter: blur(12px);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  display: flex;
+  gap: 0.75rem;
+  margin: 0 0 1rem;
+  padding: 0.15rem 0 0.4rem;
+  position: sticky;
+  top: 0;
+  z-index: 12;
+}
+
+.notifications-filter-bar {
+  display: flex;
+  gap: 0.5rem;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.notifications-filter-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.notifications-filter-chip,
+.notifications-wot-toggle,
+.notifications-new-items {
+  appearance: none;
+  align-items: center;
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: 999px;
+  color: var(--fg);
+  display: inline-flex;
+  font: inherit;
+  gap: 0.45rem;
+  justify-content: center;
+  min-height: 2.5rem;
+  min-width: 4.8rem;
+  padding: 0.4rem 0.9rem;
+  cursor: pointer;
+  transition: border-color 140ms ease, color 140ms ease, background-color 140ms ease, transform 140ms ease;
+}
+
+.notifications-filter-chip:hover,
+.notifications-wot-toggle:hover,
+.notifications-new-items:hover {
+  transform: translateY(-1px);
+}
+
+.notifications-filter-chip[data-category="reply"] {
+  color: var(--fg);
+}
+
+.notifications-filter-chip[data-category="like"] {
+  color: #ef5a79;
+}
+
+.notifications-filter-chip[data-category="repost"] {
+  color: #5cc96b;
+}
+
+.notifications-filter-chip[data-category="mention"] {
+  color: #5a9dff;
+}
+
+.notifications-filter-chip[data-active] {
+  background: color-mix(in srgb, var(--panel) 96%, var(--bg));
+  border-color: currentColor;
+  box-shadow: 0 0 0 1px color-mix(in srgb, currentColor 30%, transparent);
+}
+
+.notifications-filter-chip-icon {
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+.notifications-filter-chip-count {
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.notifications-wot-toggle,
+.notifications-new-items {
+  color: var(--link);
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.notifications-wot-toggle[aria-pressed="false"] {
+  text-decoration: line-through;
+  color: var(--muted);
+}
+
+.notification-item {
+  margin-bottom: 1rem;
+}
+
+.note-feed-context--notification {
+  margin: 0 0 0.35rem;
+}
+
+.notification-reaction-roll {
+  margin: 0 0 1rem;
+}
+
+@media (max-width: 700px) {
+  .notifications-toolbar {
+    margin-bottom: 0.75rem;
+    padding-bottom: 0.3rem;
+  }
+
+  .notifications-filter-chip,
+  .notifications-wot-toggle,
+  .notifications-new-items {
+    min-height: 2.35rem;
+    min-width: 4.2rem;
+    padding: 0.35rem 0.75rem;
+  }
+
+  .notifications-filter-chip-count {
+    font-size: 0.95rem;
   }
 }

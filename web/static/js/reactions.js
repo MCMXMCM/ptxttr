@@ -1,8 +1,12 @@
+import { fetchReactionsForNote } from "./relay-reads.js";
+import { shortNpubLabel } from "./profile-parse.js";
 import { normalizedPubkey } from "./session.js";
 import { activeSignerState, signEventDraft } from "./signer.js";
 import { publishSignedEvent } from "./bookmarks.js";
-import { clearThreadSnapshots } from "./thread-cache.js";
-import { invalidateThreadFragmentPrefetch } from "./prefetch.js";
+import { planPublishTargets } from "./publish.js";
+import { pendingPublishStatus, showPublishStatusSheet } from "./publish-status.js";
+import { clearThreadWarmCache } from "./thread-graph.js";
+import { profilePath } from "./relay-utils.js";
 
 let delegated = false;
 const reactionRequestSequence = new WeakMap();
@@ -146,13 +150,21 @@ async function publishReaction(noteEl, polarity) {
   optimisticBump(noteEl, next);
   refreshAsciiAround(noteEl);
   try {
+    const plannedRelays = await planPublishTargets(signed).catch(() => []);
+    const pendingState = pendingPublishStatus({
+      phaseTitle: "Broadcasting reaction",
+      statusMessage: "Preparing reaction broadcast...",
+      plannedRelays,
+      completionMessage: "reaction published.",
+    });
+    showPublishStatusSheet(null, { title: "Reaction publish status", initialState: pendingState });
     const payload = await publishSignedEvent(signed);
     const accepted = Number(payload?.accepted || 0);
     if (!payload?.persisted && accepted <= 0) {
       throw new Error(payload?.error || "Publish failed.");
     }
-    clearThreadSnapshots();
-    invalidateThreadFragmentPrefetch();
+    showPublishStatusSheet(payload, { title: "Reaction publish status", initialState: pendingState });
+    clearThreadWarmCache();
   } catch (err) {
     if (requestSeq === latestReactionSequence(noteEl)) {
       rollback(noteEl, snap);
@@ -228,17 +240,9 @@ export async function openReactionsModal(noteId) {
       dialog.setAttribute("open", "");
     }
   }
-  const url = new URL("/api/reactions", window.location.origin);
-  url.searchParams.set("note_id", id);
   try {
-    const res = await fetch(url.toString(), { credentials: "same-origin" });
-    const data = await res.json().catch(() => ({}));
+    const data = await fetchReactionsForNote(id);
     if (seq !== reactionsModalSeq) return;
-    if (!res.ok) {
-      const msg = typeof data.error === "string" && data.error ? data.error : res.statusText || "Could not load reactions.";
-      status.textContent = msg;
-      return;
-    }
     const rows = Array.isArray(data.reactions) ? data.reactions : [];
     if (rows.length === 0) {
       status.textContent = "No reactions yet.";
@@ -250,9 +254,9 @@ export async function openReactionsModal(noteId) {
       const li = document.createElement("li");
       li.className = "reactions-dialog-row";
       const nameLink = document.createElement("a");
-      nameLink.href = pk ? `/u/${encodeURIComponent(pk)}` : "#";
+      nameLink.href = pk ? profilePath(pk) : "#";
       if (pk) nameLink.dataset.relayAware = "";
-      nameLink.textContent = typeof row.display_name === "string" && row.display_name ? row.display_name : pk.slice(0, 12);
+      nameLink.textContent = typeof row.display_name === "string" && row.display_name ? row.display_name : shortNpubLabel(pk);
       const vote = document.createElement("span");
       vote.className = "reactions-dialog-vote";
       const isDown = row.vote === "down";

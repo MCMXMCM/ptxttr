@@ -22,7 +22,9 @@ func (s *Server) runViewerCrawler() {
 		interval = 30 * time.Second
 	}
 	for {
-		s.tryRunMaintenanceWork(maintenanceLaneViewer, s.crawlViewerTick)
+		s.tryRunMaintenanceWork(maintenanceLaneViewer, func() {
+			s.runWithRelayWriteBudget(s.ctx, "crawler.viewer", s.crawlViewerTick)
+		})
 		select {
 		case <-s.ctx.Done():
 			return

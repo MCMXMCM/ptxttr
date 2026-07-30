@@ -1,46 +1,105 @@
-/**
- * SPA route swaps: replace only `[data-route-outlet]` so mobile bar, menu, and
- * composer stay mounted. Preserves `.rail-user` inside the outlet.
- * Falls back to legacy full-main merge when the outlet is absent (tests / old HTML).
- */
+/** Helpers for the client-hydrated document shell. */
 
 /** @param {HTMLElement | null} navRoot `#app-main[data-nav-root]` */
 export function routeOutletElement(navRoot) {
-  return navRoot?.querySelector("[data-route-outlet]") ?? null;
+  return navRoot?.querySelector('[data-route-outlet="root"]')
+    ?? navRoot?.querySelector("[data-route-outlet]")
+    ?? null;
+}
+
+function computedOverflowY(element) {
+  if (!element || typeof getComputedStyle !== "function") return "";
+  try {
+    return String(getComputedStyle(element).overflowY || "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function isScrollableElement(element) {
+  if (!element) return false;
+  const overflowY = computedOverflowY(element);
+  if (!/(auto|scroll|overlay)/.test(overflowY)) return false;
+  return Number(element.scrollHeight || 0) > Number(element.clientHeight || 0);
+}
+
+function isRouteVisibleElement(element) {
+  if (!element || typeof element !== "object") return false;
+  if (typeof HTMLElement !== "undefined" && !(element instanceof HTMLElement)) return false;
+  if (element.hidden || element.getAttribute?.("aria-hidden") === "true") return false;
+  if (element.closest?.("[hidden], [aria-hidden='true']")) return false;
+  try {
+    const style = getComputedStyle(element);
+    if (style.display === "none") return false;
+    if (style.visibility === "hidden") return false;
+  } catch {
+    // ignore computed-style lookup failures
+  }
+  return true;
 }
 
 /**
- * Feed-shell routes use native document scroll (`window`), including mobile.
- * Kept for callers that branch on a scroll root element; always `null` here.
+ * Detect the route-owned scroller. Most routes use document scroll, but some
+ * embedded layouts can end up with a nested scrolling root inside the outlet.
  *
  * @param {HTMLElement | null} navRoot
- * @returns {null}
+ * @returns {HTMLElement | null}
  */
-export function routeScrollRoot(_navRoot) {
+export function routeScrollRoot(navRoot) {
+  const outlet = routeOutletElement(navRoot);
+  const primary = outlet?.querySelector?.("[data-shell-main], [data-profile-shell], .feed-column") || null;
+  const candidates = [
+    ...(primary ? [primary] : []),
+    ...(outlet?.querySelectorAll?.("[data-shell-main], [data-profile-shell], .feed-column") || []),
+    outlet,
+    navRoot,
+  ];
+  for (const candidate of candidates) {
+    if (isRouteVisibleElement(candidate) === false && typeof HTMLElement !== "undefined" && candidate instanceof HTMLElement) continue;
+    if (isScrollableElement(candidate)) return candidate;
+  }
   return null;
 }
 
 /** @param {HTMLElement | null} navRoot */
 export function routeScrollTop(navRoot) {
-  void navRoot;
-  return window.scrollY;
+  const root = routeScrollRoot(navRoot);
+  if (root) {
+    const y = Number(root.scrollTop);
+    return Number.isFinite(y) && y > 0 ? y : 0;
+  }
+  const doc = globalThis.document;
+  const scrollingElement = doc?.scrollingElement || doc?.documentElement || doc?.body || null;
+  const y = Number(globalThis.window?.scrollY);
+  if (Number.isFinite(y) && y > 0) return y;
+  const elementY = Number(scrollingElement?.scrollTop);
+  if (Number.isFinite(elementY) && elementY > 0) return elementY;
+  return 0;
 }
 
 /** @param {HTMLElement | null} navRoot */
 export function setRouteScrollTop(navRoot, y) {
-  void navRoot;
-  window.scrollTo(0, y);
+  const nextY = Math.max(0, Number(y) || 0);
+  const root = routeScrollRoot(navRoot);
+  if (root) {
+    root.scrollTop = nextY;
+    return;
+  }
+  const doc = globalThis.document;
+  const scrollingElement = doc?.scrollingElement || doc?.documentElement || doc?.body || null;
+  if (scrollingElement) scrollingElement.scrollTop = nextY;
+  if (doc?.documentElement && doc.documentElement !== scrollingElement) {
+    doc.documentElement.scrollTop = nextY;
+  }
+  if (doc?.body && doc.body !== scrollingElement) {
+    doc.body.scrollTop = nextY;
+  }
+  globalThis.window?.scrollTo?.(0, nextY);
 }
 
 /** @param {HTMLElement | null} navRoot */
 export function scrollRouteToTop(navRoot) {
   setRouteScrollTop(navRoot, 0);
-}
-
-/** HTML string inside `[data-route-outlet]` for snapshotting restores. */
-export function routeOutletInnerHTML(navRoot) {
-  const outlet = routeOutletElement(navRoot);
-  return outlet ? outlet.innerHTML : (navRoot?.innerHTML ?? "");
 }
 
 /**
@@ -54,37 +113,45 @@ export function replaceRouteOutletHTML(navRoot, outletHtml) {
     replaceNavRootHTMLPreservingChrome(navRoot, outletHtml);
     return;
   }
+  const existingLeftRail = outlet.querySelector(".left-rail");
   const existingRailUser = outlet.querySelector(".left-rail .rail-user");
   const stage = document.createElement("div");
   stage.innerHTML = outletHtml;
-  if (existingRailUser) {
+  const nextLeftRail = stage.querySelector(".left-rail");
+  if (existingLeftRail && nextLeftRail) {
+    syncLeftRailActiveState(existingLeftRail, nextLeftRail);
+    nextLeftRail.replaceWith(existingLeftRail);
+  } else if (existingRailUser) {
     const nextRailUser = stage.querySelector(".left-rail .rail-user");
     if (nextRailUser) nextRailUser.replaceWith(existingRailUser);
   }
   outlet.replaceChildren(...Array.from(stage.childNodes));
 }
 
-/**
- * Replace outlet markup then apply scroll on the route scroll root (sync + next frame).
- * @param {HTMLElement | null} navRoot
- * @param {string} html
- * @param {number} scrollTop
- */
-export function replaceRouteOutletAndScroll(navRoot, html, scrollTop) {
-  replaceRouteOutletHTML(navRoot, html);
-  const y = Number(scrollTop) || 0;
-  setRouteScrollTop(navRoot, y);
-  requestAnimationFrame(() => {
-    setRouteScrollTop(navRoot, y);
+function syncLeftRailActiveState(currentShell, nextShell) {
+  const currentLinks = leftRailScopedQueryAll(currentShell, ".left-rail a[href]");
+  const nextActiveHrefs = new Set(
+    leftRailScopedQueryAll(nextShell, ".left-rail a[aria-current='page']")
+      .map((link) => link.getAttribute?.("href") || "")
+      .filter(Boolean),
+  );
+  currentLinks.forEach((link) => {
+    const href = link.getAttribute?.("href") || "";
+    if (nextActiveHrefs.has(href)) link.setAttribute?.("aria-current", "page");
+    else link.removeAttribute?.("aria-current");
   });
 }
 
-/**
- * @deprecated Prefer {@link replaceRouteOutletHTML} when `[data-route-outlet]` exists.
- * Merges mobile bar, menu, and rail user into a full-main HTML string.
- */
-export function replaceNavRootHTMLPreservingChrome(navRoot, html) {
+function leftRailScopedQueryAll(root, selector) {
+  if (!root?.querySelectorAll) return [];
+  const direct = Array.from(root.querySelectorAll(selector) || []);
+  if (direct.length || !selector.startsWith(".left-rail ")) return direct;
+  return Array.from(root.querySelectorAll(selector.slice(".left-rail ".length)) || []);
+}
+
+function replaceNavRootHTMLPreservingChrome(navRoot, html) {
   if (!navRoot) return;
+  const existingLeftRail = navRoot.querySelector(".left-rail");
   const existingRailUser = navRoot.querySelector(".left-rail .rail-user");
   const existingMobileBar = navRoot.querySelector(".mobile-bar");
   const existingMobileMenu = navRoot.querySelector("[data-mobile-menu]");
@@ -100,7 +167,11 @@ export function replaceNavRootHTMLPreservingChrome(navRoot, html) {
     const nextMobileMenu = stage.querySelector("[data-mobile-menu]");
     if (nextMobileMenu) nextMobileMenu.replaceWith(existingMobileMenu);
   }
-  if (existingRailUser) {
+  const nextLeftRail = stage.querySelector(".left-rail");
+  if (existingLeftRail && nextLeftRail) {
+    syncLeftRailActiveState(existingLeftRail, nextLeftRail);
+    nextLeftRail.replaceWith(existingLeftRail);
+  } else if (existingRailUser) {
     const nextRailUser = stage.querySelector(".left-rail .rail-user");
     if (nextRailUser) nextRailUser.replaceWith(existingRailUser);
   }

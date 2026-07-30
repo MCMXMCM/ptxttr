@@ -26,6 +26,7 @@ func TestHandleThreadRendersTelegramInstantViewForLongContent(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	allowAnonymousAuthors(t, st, author)
 	req := httptest.NewRequest(http.MethodGet, "/thread/"+id, nil)
 	req.Header.Set("User-Agent", "TelegramBot (like TwitterBot)")
 	rr := httptest.NewRecorder()
@@ -35,10 +36,7 @@ func TestHandleThreadRendersTelegramInstantViewForLongContent(t *testing.T) {
 	}
 	body := rr.Body.String()
 	if !strings.Contains(body, "<article>") {
-		t.Fatalf("expected <article> in IV template body, got:\n%s", truncateForLog(body, 500))
-	}
-	if strings.Contains(body, `id="app-main"`) {
-		t.Fatalf("IV template should not include the regular shell, got:\n%s", truncateForLog(body, 500))
+		t.Fatalf("expected telegram instant view article, got:\n%s", truncateForLog(body, 500))
 	}
 }
 
@@ -57,13 +55,17 @@ func TestHandleThreadSkipsIVForShortContent(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	allowAnonymousAuthors(t, st, author)
 	req := httptest.NewRequest(http.MethodGet, "/thread/"+id, nil)
 	req.Header.Set("User-Agent", "TelegramBot")
 	rr := httptest.NewRecorder()
 	srv.handleThread(rr, req)
 	body := rr.Body.String()
+	if !strings.Contains(body, `data-route-outlet`) {
+		t.Fatalf("expected SSR thread document, got:\n%s", truncateForLog(body, 500))
+	}
 	if strings.Contains(body, "<article>\n    <h1>") {
-		t.Fatalf("expected normal thread, got IV body:\n%s", truncateForLog(body, 500))
+		t.Fatalf("expected regular thread body, got IV body:\n%s", truncateForLog(body, 500))
 	}
 }
 
@@ -82,12 +84,13 @@ func TestHandleThreadIVForcedByQuery(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	allowAnonymousAuthors(t, st, author)
 	req := httptest.NewRequest(http.MethodGet, "/thread/"+id+"?tgiv=true", nil)
 	rr := httptest.NewRecorder()
 	srv.handleThread(rr, req)
 	body := rr.Body.String()
 	if !strings.Contains(body, "<article>") {
-		t.Fatalf("expected IV body via query override, got:\n%s", truncateForLog(body, 500))
+		t.Fatalf("expected forced instant view body, got:\n%s", truncateForLog(body, 500))
 	}
 }
 

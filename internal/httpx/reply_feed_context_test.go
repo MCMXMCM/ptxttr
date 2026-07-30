@@ -123,10 +123,10 @@ func TestReplyContextHTML(t *testing.T) {
 		if !strings.Contains(html, "Replying to ") {
 			t.Fatalf("missing lead: %q", html)
 		}
-		if !strings.Contains(html, `href="/u/`+bob+`"`) || !strings.Contains(html, `@Bob`) {
+		if !strings.Contains(html, `href="`+profileHref(bob)+`"`) || !strings.Contains(html, `@Bob`) {
 			t.Fatalf("want bob link: %q", html)
 		}
-		if !strings.Contains(html, `href="/u/`+carol+`"`) || !strings.Contains(html, `@Carol`) {
+		if !strings.Contains(html, `href="`+profileHref(carol)+`"`) || !strings.Contains(html, `@Carol`) {
 			t.Fatalf("want carol link: %q", html)
 		}
 		if strings.Contains(html, "other") {

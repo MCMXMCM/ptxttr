@@ -56,6 +56,67 @@ func TestThreadHydrationRelaysMergesAuthorAndDefaults(t *testing.T) {
 	}
 }
 
+func TestThreadHydrationRelaysIncludesMentionedAuthorHints(t *testing.T) {
+	srv, st := newTestServer(t, testServerOptions{})
+	ctx := context.Background()
+
+	rootAuthor := strings.Repeat("a", 64)
+	replyAuthor := strings.Repeat("b", 64)
+	parentAuthor := strings.Repeat("c", 64)
+	root := nostrx.Event{
+		ID:        strings.Repeat("1", 64),
+		PubKey:    rootAuthor,
+		CreatedAt: 100,
+		Kind:      nostrx.KindTextNote,
+	}
+	selected := nostrx.Event{
+		ID:        strings.Repeat("2", 64),
+		PubKey:    replyAuthor,
+		CreatedAt: 200,
+		Kind:      nostrx.KindTextNote,
+		Tags: [][]string{
+			{"e", root.ID, "", "root"},
+			{"e", strings.Repeat("3", 64), "", "reply"},
+			{"p", parentAuthor},
+			{"p", replyAuthor},
+		},
+	}
+	parentRelayList := nostrx.Event{
+		ID:        strings.Repeat("4", 64),
+		PubKey:    parentAuthor,
+		CreatedAt: 300,
+		Kind:      nostrx.KindRelayListMetadata,
+		Tags: [][]string{
+			{"r", "wss://parent-read.example", "read"},
+		},
+	}
+	selectedRelayList := nostrx.Event{
+		ID:        strings.Repeat("5", 64),
+		PubKey:    replyAuthor,
+		CreatedAt: 300,
+		Kind:      nostrx.KindRelayListMetadata,
+		Tags: [][]string{
+			{"r", "wss://selected-read.example", "read"},
+		},
+	}
+	if err := st.SaveEvent(ctx, parentRelayList); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveEvent(ctx, selectedRelayList); err != nil {
+		t.Fatal(err)
+	}
+
+	srv.cfg.ThreadMaxRelays = 1
+	relays := srv.threadHydrationRelays(ctx, "", &root, &selected, nil)
+	joined := strings.Join(relays, ",")
+	if !strings.Contains(joined, "wss://parent-read.example") {
+		t.Fatalf("threadHydrationRelays missing mentioned parent author relay in %v", relays)
+	}
+	if strings.Contains(joined, "wss://selected-read.example") {
+		t.Fatalf("threadHydrationRelays should prioritize mentioned parent author relay before selected author relay: %v", relays)
+	}
+}
+
 func TestNip50RelaysUsesDedicatedTier(t *testing.T) {
 	srv, _ := newTestServer(t, testServerOptions{})
 	srv.cfg.IndexerNIP50Relays = []string{
@@ -73,6 +134,24 @@ func TestNip50RelaysUsesDedicatedTier(t *testing.T) {
 	}
 	if !strings.Contains(joined, "relay.nostr.band") {
 		t.Fatalf("nip50Relays missing nostr.band: %v", got)
+	}
+}
+
+func TestTrendingSearchRelaysUseDedicatedTier(t *testing.T) {
+	srv, _ := newTestServer(t, testServerOptions{})
+	srv.cfg.TrendingSearchRelays = []string{
+		"wss://relay.nostr.band",
+		"wss://search.nos.today",
+		"wss://relay.ditto.pub",
+	}
+	srv.cfg.TrendingSearchMaxRelays = 2
+	got := srv.trendingSearchRelays()
+	if len(got) != 2 {
+		t.Fatalf("trendingSearchRelays len = %d, want 2: %v", len(got), got)
+	}
+	joined := strings.Join(got, ",")
+	if !strings.Contains(joined, "search.nos.today") {
+		t.Fatalf("trendingSearchRelays should keep search relays: %v", got)
 	}
 }
 

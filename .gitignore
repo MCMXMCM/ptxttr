@@ -5,15 +5,27 @@
 .gocache
 .gocache/
 
+# Go module cache when GOMODCACHE is set under the repo (e.g. CI/Docker)
+.gomodcache
+.gomodcache/
+
 # Workspace-local Go caches (agents/tools often set GOCACHE/GOMODCACHE here)
 .cache/
 
+# Workspace-local scratch, test binaries, and OS metadata
+.tmp/
+*.test
+.DS_Store
+
 data/*.sqlite
 data/*.sqlite-*
+data/*.bbolt
 data/profile-debug/
 tmp/
 node_modules/
 dist/
+/web/static/build/
+/web/static/fonts/*.woff2
 /test-results/
 /playwright-report/
 /playwright/.cache/

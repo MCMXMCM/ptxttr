@@ -71,7 +71,7 @@ func mentionLabelHref(ref nostrx.NIP27Reference, profiles map[string]nostrx.Prof
 		if profile, ok := profiles[ref.PubKey]; ok {
 			name = nostrx.DisplayName(profile)
 		}
-		return "@" + name, "/u/" + ref.PubKey, ref.Code
+		return "@" + name, profileHref(ref.PubKey, ref.Relays...), ref.Code
 	case nostrx.NIP27KindNEvent, nostrx.NIP27KindNote:
 		if ref.Event == "" {
 			return "", "", ""

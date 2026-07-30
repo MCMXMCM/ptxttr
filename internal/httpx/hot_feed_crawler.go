@@ -5,10 +5,12 @@ import (
 	"time"
 
 	"ptxt-nstr/internal/config"
+	"ptxt-nstr/internal/nostrx"
 )
 
 const (
 	hotFeedCrawlerTickTimeout = 90 * time.Second
+	hotFeedRelayHintLimit     = 24
 )
 
 type hotFeedCohort struct {
@@ -50,7 +52,9 @@ func (s *Server) runHotFeedCrawler() {
 
 func (s *Server) warmHotFeedTick(ctx context.Context) {
 	s.tryRunMaintenanceWork(maintenanceLaneSeed, func() {
-		s.warmHotFeedTickBody(ctx)
+		s.runWithRelayWriteBudget(ctx, "crawler.hot_feed", func() {
+			s.warmHotFeedTickBody(ctx)
+		})
 	})
 }
 
@@ -80,6 +84,7 @@ func (s *Server) warmHotFeedTickBody(ctx context.Context) {
 			continue
 		}
 		viewer := cohort.resolved.viewerForMuteFilter()
+		s.refreshHotFeedRelayHints(ctx, selected, cohort.req.Relays)
 		relays := s.filterCrawlerRelays(s.outboxSeedRelays(ctx, viewer, selected, cohort.req.Relays))
 		if len(relays) == 0 {
 			relays = s.crawlRelays(cohort.req.Relays)
@@ -93,6 +98,29 @@ func (s *Server) warmHotFeedTickBody(ctx context.Context) {
 		s.metrics.Add("crawler.hot_feed.refresh_events", int64(fetched))
 		s.refreshHotFeedSnapshots(ctx, cohort)
 	}
+}
+
+func (s *Server) refreshHotFeedRelayHints(ctx context.Context, authors []string, baseRelays []string) int {
+	if s == nil || s.store == nil || s.nostr == nil {
+		return 0
+	}
+	authors = limitedStrings(uniqueNonEmptyStrings(authors), hotFeedRelayHintLimit)
+	if len(authors) == 0 {
+		return 0
+	}
+	relays := s.filterCrawlerRelays(s.mergeCrawlRelayTiers(baseRelays))
+	if len(relays) == 0 {
+		return 0
+	}
+	result := s.refreshCached(ctx, "hot_feed_relay_hints", authorsCacheKey(authors), 5*time.Minute, relays, nostrx.Query{
+		Authors: authors,
+		Kinds:   []int{nostrx.KindRelayListMetadata},
+		Limit:   max(20, len(authors)*2),
+	})
+	if result > 0 {
+		s.metrics.Add("crawler.hot_feed.relay_hints", int64(result))
+	}
+	return result
 }
 
 func (s *Server) hotFeedCohorts(ctx context.Context, now time.Time) []hotFeedCohort {
@@ -187,10 +215,7 @@ func (s *Server) hotFeedCohortFromRequest(ctx context.Context, name string, req 
 	req.SortMode = normalizeFeedSort(req.SortMode)
 	req.Timeframe = normalizeTrendingTimeframe(req.Timeframe)
 	resolved := s.resolveRequestAuthors(ctx, req.Pubkey, req.SeedPubkey, req.Relays, req.WoT)
-	authors := resolved.allAuthors
-	if len(authors) == 0 {
-		authors = resolved.authors
-	}
+	authors := resolved.cohortAuthors()
 	key := hotFeedCohortKey(resolved, req)
 	if key == "" || len(authors) == 0 {
 		return hotFeedCohort{}, false
@@ -206,7 +231,7 @@ func (s *Server) hotFeedCohortFromRequest(ctx context.Context, name string, req 
 
 func hotFeedCohortKey(resolved requestAuthors, req feedRequest) string {
 	if resolved.loggedOut && resolved.wotEnabled {
-		return "guest:" + authorsCacheKey(resolved.allAuthors)
+		return "guest:" + authorsCacheKey(resolved.cohortAuthors())
 	}
 	if resolved.userPubkey != "" {
 		return "viewer:" + resolvedAuthorsCacheKey(resolved.userPubkey, req.WoT)
@@ -248,7 +273,7 @@ func (s *Server) refreshHotFeedSnapshots(ctx context.Context, cohort hotFeedCoho
 		req.Limit = 30
 		req.SortMode = sort
 		data := s.feedPageDataExResolved(ctx, req, false, feedPageDataOptions{
-			lightStatsOnly:         true,
+			lightStatsOnly:         sort == feedSortRecent,
 			guestCacheReadDisabled: true,
 		}, cohort.resolved)
 		if len(data.Feed) == 0 {

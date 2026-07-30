@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -22,6 +23,17 @@ type NoteLink struct {
 	RootID       string
 	ParentID     string
 	CreatedAt    int64
+}
+
+type ThreadGraphCache struct {
+	RootID           string
+	EventIDs         []string
+	ParentByID       map[string]string
+	LastReplyEventAt int64
+	BuiltAt          int64
+	Truncated        bool
+	NextCursor       int64
+	NextCursorID     string
 }
 
 type RelayHintSet struct {
@@ -105,6 +117,75 @@ func (s *Store) projectEventTx(ctx context.Context, tx *sql.Tx, event nostrx.Eve
 	}
 }
 
+// applyEventDeletionTx removes notes referenced by a kind-5 event when they
+// belong to the deletion author. Returns deleted note ids and parent ids whose
+// reply stats should be refreshed.
+func applyEventDeletionTx(ctx context.Context, tx *sql.Tx, event nostrx.Event) (deleted []string, dirtyParents []string, err error) {
+	if event.Kind != nostrx.KindEventDeletion {
+		return nil, nil, nil
+	}
+	author, err := nostrx.NormalizePubKey(event.PubKey)
+	if err != nil {
+		return nil, nil, err
+	}
+	ids := nostrx.DeletionEventIDs(&event)
+	if len(ids) == 0 {
+		return nil, nil, nil
+	}
+	type noteLink struct {
+		parentID string
+		rootID   string
+	}
+	linkByID := make(map[string]noteLink, len(ids))
+	parentSeen := make(map[string]bool)
+	for _, id := range ids {
+		var parentID, rootID string
+		rowErr := tx.QueryRowContext(ctx, `SELECT parent_id, root_id FROM note_links WHERE note_id = ?`, id).Scan(&parentID, &rootID)
+		switch {
+		case errors.Is(rowErr, sql.ErrNoRows):
+		case rowErr != nil:
+			return deleted, dirtyParents, rowErr
+		default:
+			linkByID[id] = noteLink{parentID: parentID, rootID: rootID}
+		}
+		result, execErr := tx.ExecContext(ctx, `DELETE FROM events WHERE id = ? AND pubkey = ?`, id, author)
+		if execErr != nil {
+			return deleted, dirtyParents, execErr
+		}
+		if n, _ := result.RowsAffected(); n == 0 {
+			continue
+		}
+		deleted = append(deleted, id)
+		if refs, ok := linkByID[id]; ok {
+			for _, ref := range []string{refs.parentID, refs.rootID} {
+				ref = nostrx.CanonicalHex64(ref)
+				if ref != "" && ref != id && !parentSeen[ref] {
+					parentSeen[ref] = true
+					dirtyParents = append(dirtyParents, ref)
+				}
+			}
+		}
+	}
+	if len(deleted) == 0 {
+		return deleted, dirtyParents, nil
+	}
+	ph := placeholders(len(deleted))
+	args := make([]any, len(deleted))
+	for i, id := range deleted {
+		args[i] = id
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM note_links WHERE note_id IN (`+ph+`)`, args...); err != nil {
+		return deleted, dirtyParents, err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM note_stats WHERE note_id IN (`+ph+`)`, args...); err != nil {
+		return deleted, dirtyParents, err
+	}
+	if err := invalidateFeedSnapshotsTx(ctx, tx); err != nil {
+		return deleted, dirtyParents, err
+	}
+	return deleted, dirtyParents, nil
+}
+
 func (s *Store) RebuildProjections(ctx context.Context) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -120,6 +201,9 @@ func (s *Store) RebuildProjections(ctx context.Context) error {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM note_stats`); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM thread_graph_cache`); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM note_reaction_latest`); err != nil {
@@ -141,8 +225,8 @@ func (s *Store) RebuildProjections(ctx context.Context) error {
 		return err
 	}
 
-	rows, err := tx.QueryContext(ctx, `SELECT raw_json FROM events WHERE kind IN (?, ?, ?, ?, ?, ?, ?) ORDER BY created_at ASC, id ASC`,
-		nostrx.KindProfileMetadata, nostrx.KindTextNote, nostrx.KindComment, nostrx.KindFollowList, nostrx.KindMuteList, nostrx.KindRelayListMetadata, nostrx.KindReaction)
+	rows, err := tx.QueryContext(ctx, `SELECT raw_json FROM events WHERE kind IN (?, ?, ?, ?, ?, ?, ?, ?) ORDER BY created_at ASC, id ASC`,
+		nostrx.KindProfileMetadata, nostrx.KindTextNote, nostrx.KindComment, nostrx.KindFollowList, nostrx.KindMuteList, nostrx.KindRelayListMetadata, nostrx.KindReaction, nostrx.KindEventDeletion)
 	if err != nil {
 		return err
 	}
@@ -156,6 +240,12 @@ func (s *Store) RebuildProjections(ctx context.Context) error {
 		event, err := decodeEvent(raw)
 		if err != nil {
 			return err
+		}
+		if event.Kind == nostrx.KindEventDeletion {
+			if _, _, err := applyEventDeletionTx(ctx, tx, *event); err != nil {
+				return err
+			}
+			continue
 		}
 		if err := s.projectEventTx(ctx, tx, *event, now); err != nil {
 			return err
@@ -216,7 +306,7 @@ func (s *Store) profileSummariesFromSQLite(ctx context.Context, pubkeys []string
 	if len(keys) == 0 {
 		return out, nil
 	}
-	query := fmt.Sprintf(`SELECT pubkey, display_name, name, about, picture, nip05 FROM profiles_cache WHERE pubkey IN (%s)`, placeholders(len(keys)))
+	query := fmt.Sprintf(`SELECT pubkey, display_name, name, about, picture, nip05, website, lud16, lud06 FROM profiles_cache WHERE pubkey IN (%s)`, placeholders(len(keys)))
 	args := make([]any, 0, len(keys))
 	for _, key := range keys {
 		args = append(args, key)
@@ -228,7 +318,7 @@ func (s *Store) profileSummariesFromSQLite(ctx context.Context, pubkeys []string
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var item ProfileSummary
-		if err := rows.Scan(&item.PubKey, &item.DisplayName, &item.Name, &item.About, &item.Picture, &item.NIP05); err != nil {
+		if err := rows.Scan(&item.PubKey, &item.DisplayName, &item.Name, &item.About, &item.Picture, &item.NIP05, &item.Website, &item.Lud16, &item.Lud06); err != nil {
 			return nil, err
 		}
 		out[item.PubKey] = item
@@ -383,6 +473,37 @@ func (s *Store) ThreadEdges(ctx context.Context, parentIDs []string, limit int) 
 	return s.ThreadEdgesCursor(ctx, parentIDs, 0, "", limit)
 }
 
+func (s *Store) ThreadRootIDsByNoteIDs(ctx context.Context, ids []string) (map[string]string, error) {
+	keys := uniqueNonEmpty(ids)
+	out := make(map[string]string, len(keys))
+	if len(keys) == 0 {
+		return out, nil
+	}
+	for _, id := range keys {
+		out[id] = id
+	}
+	query := fmt.Sprintf(`SELECT note_id, root_id FROM note_links WHERE note_id IN (%s)`, placeholders(len(keys)))
+	args := make([]any, 0, len(keys))
+	for _, id := range keys {
+		args = append(args, id)
+	}
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var noteID, rootID string
+		if err := rows.Scan(&noteID, &rootID); err != nil {
+			return nil, err
+		}
+		if rootID != "" {
+			out[noteID] = rootID
+		}
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ThreadRootEdgesCursor(ctx context.Context, rootID string, cursor int64, cursorID string, limit int) ([]NoteLink, error) {
 	rootID = strings.TrimSpace(rootID)
 	if rootID == "" {
@@ -456,6 +577,153 @@ func (s *Store) ThreadEdgesCursor(ctx context.Context, parentIDs []string, curso
 		out = append(out, link)
 	}
 	return out, rows.Err()
+}
+
+func (s *Store) ThreadGraphCache(ctx context.Context, rootID string) (*ThreadGraphCache, bool, error) {
+	rootID = strings.TrimSpace(rootID)
+	if rootID == "" {
+		return nil, false, nil
+	}
+	var eventIDsJSON, parentByIDJSON string
+	cache := ThreadGraphCache{RootID: rootID}
+	var truncated int
+	var currentLastReplyAt int64
+	err := s.db.QueryRowContext(ctx, `SELECT tgc.event_ids_json, tgc.parent_by_id_json, tgc.last_reply_event_at, tgc.built_at, tgc.truncated, tgc.next_cursor, tgc.next_cursor_id,
+			COALESCE(ns.last_reply_event_at, 0)
+		FROM thread_graph_cache tgc
+		LEFT JOIN note_stats ns ON ns.note_id = tgc.root_id
+		WHERE tgc.root_id = ?`, rootID).
+		Scan(&eventIDsJSON, &parentByIDJSON, &cache.LastReplyEventAt, &cache.BuiltAt, &truncated, &cache.NextCursor, &cache.NextCursorID, &currentLastReplyAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	if err := json.Unmarshal([]byte(eventIDsJSON), &cache.EventIDs); err != nil {
+		return nil, false, err
+	}
+	if err := json.Unmarshal([]byte(parentByIDJSON), &cache.ParentByID); err != nil {
+		return nil, false, err
+	}
+	cache.Truncated = truncated != 0
+	return &cache, cache.LastReplyEventAt >= currentLastReplyAt, nil
+}
+
+func (s *Store) BuildThreadGraphCache(ctx context.Context, rootID string, limit int) (*ThreadGraphCache, error) {
+	rootID = strings.TrimSpace(rootID)
+	if rootID == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 500
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT nl.note_id, nl.parent_id, nl.created_at
+		FROM note_links nl
+		JOIN events e ON e.id = nl.note_id
+		WHERE nl.root_id = ? AND nl.note_id != nl.root_id
+		ORDER BY nl.created_at ASC, nl.note_id ASC
+		LIMIT ?`, rootID, limit+1)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	eventIDs := make([]string, 0, limit)
+	parentByID := make(map[string]string)
+	var lastEdgeCreatedAt int64
+	var nextCursor int64
+	var nextCursorID string
+	truncated := false
+	for rows.Next() {
+		var noteID, parentID string
+		var createdAt int64
+		if err := rows.Scan(&noteID, &parentID, &createdAt); err != nil {
+			return nil, err
+		}
+		if len(eventIDs) >= limit {
+			truncated = true
+			continue
+		}
+		eventIDs = append(eventIDs, noteID)
+		parentByID[noteID] = parentID
+		if createdAt > lastEdgeCreatedAt {
+			lastEdgeCreatedAt = createdAt
+		}
+		nextCursor = createdAt
+		nextCursorID = noteID
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	lastReplyAt, err := s.threadLastReplyEventAt(ctx, rootID)
+	if err != nil {
+		return nil, err
+	}
+	if lastReplyAt == 0 {
+		lastReplyAt = lastEdgeCreatedAt
+	}
+	cache := &ThreadGraphCache{
+		RootID:           rootID,
+		EventIDs:         eventIDs,
+		ParentByID:       parentByID,
+		LastReplyEventAt: lastReplyAt,
+		BuiltAt:          time.Now().Unix(),
+		Truncated:        truncated,
+		NextCursor:       nextCursor,
+		NextCursorID:     nextCursorID,
+	}
+	if err := s.SaveThreadGraphCache(ctx, *cache); err != nil {
+		return nil, err
+	}
+	return cache, nil
+}
+
+func (s *Store) SaveThreadGraphCache(ctx context.Context, cache ThreadGraphCache) error {
+	rootID := strings.TrimSpace(cache.RootID)
+	if rootID == "" {
+		return nil
+	}
+	if cache.ParentByID == nil {
+		cache.ParentByID = map[string]string{}
+	}
+	eventIDsJSON, err := json.Marshal(uniqueNonEmpty(cache.EventIDs))
+	if err != nil {
+		return err
+	}
+	parentByIDJSON, err := json.Marshal(cache.ParentByID)
+	if err != nil {
+		return err
+	}
+	truncated := 0
+	if cache.Truncated {
+		truncated = 1
+	}
+	if cache.BuiltAt <= 0 {
+		cache.BuiltAt = time.Now().Unix()
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_, err = s.db.ExecContext(ctx, `INSERT INTO thread_graph_cache(root_id, event_ids_json, parent_by_id_json, last_reply_event_at, built_at, truncated, next_cursor, next_cursor_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(root_id) DO UPDATE SET
+			event_ids_json = excluded.event_ids_json,
+			parent_by_id_json = excluded.parent_by_id_json,
+			last_reply_event_at = excluded.last_reply_event_at,
+			built_at = excluded.built_at,
+			truncated = excluded.truncated,
+			next_cursor = excluded.next_cursor,
+			next_cursor_id = excluded.next_cursor_id`,
+		rootID, string(eventIDsJSON), string(parentByIDJSON), cache.LastReplyEventAt, cache.BuiltAt, truncated, cache.NextCursor, cache.NextCursorID)
+	return err
+}
+
+func (s *Store) threadLastReplyEventAt(ctx context.Context, rootID string) (int64, error) {
+	var lastReplyAt int64
+	err := s.db.QueryRowContext(ctx, `SELECT last_reply_event_at FROM note_stats WHERE note_id = ?`, rootID).Scan(&lastReplyAt)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return lastReplyAt, err
 }
 
 // DistinctAuthorsUnderRoot returns up to `limit` distinct author pubkeys for
@@ -626,8 +894,21 @@ func (s *Store) followPubkeysPage(ctx context.Context, subject string, query str
 				LOWER(COALESCE(pc.name, '')) LIKE ? OR
 				LOWER(COALESCE(pc.nip05, '')) LIKE ? OR
 				LOWER(COALESCE(pc.about, '')) LIKE ?)
-		ORDER BY fe.%s ASC
-		LIMIT ? OFFSET ?`, peerColumn, peerColumn, subjectColumn, peerColumn, peerColumn)
+		ORDER BY
+			CASE WHEN
+				TRIM(COALESCE(pc.display_name, '')) != '' OR
+				TRIM(COALESCE(pc.name, '')) != '' OR
+				TRIM(COALESCE(pc.picture, '')) != '' OR
+				TRIM(COALESCE(pc.nip05, '')) != ''
+			THEN 0 ELSE 1 END ASC,
+			LOWER(COALESCE(
+				NULLIF(TRIM(pc.display_name), ''),
+				NULLIF(TRIM(pc.name), ''),
+				NULLIF(TRIM(pc.nip05), ''),
+				fe.%s
+			)) ASC,
+			fe.%s ASC
+		LIMIT ? OFFSET ?`, peerColumn, peerColumn, subjectColumn, peerColumn, peerColumn, peerColumn)
 	args := []any{subject, needleContains, needlePrefix, needleContains, needleContains, needleContains, needleContains, limit, offset}
 	rows, err := s.db.QueryContext(ctx, pageQuery, args...)
 	if err != nil {
@@ -1154,7 +1435,6 @@ func (s *Store) StaleSeedContactBatch(ctx context.Context, now int64, limit int,
 	rows, err := s.db.QueryContext(ctx, `SELECT entity_type, entity_id, priority
 		FROM hydration_state
 		WHERE entity_type = ? AND (next_retry_at = 0 OR next_retry_at <= ?)
-		AND status != 'ok'
 		AND fail_count < ?
 		ORDER BY priority DESC, last_success_at ASC, last_attempt_at ASC
 		LIMIT ?`, EntityTypeSeedContact, now, maxFailExclusive, limit)
@@ -1368,8 +1648,8 @@ func (s *Store) DeleteHydrationState(ctx context.Context, entityType, entityID s
 func upsertProfileProjectionTx(ctx context.Context, tx *sql.Tx, event nostrx.Event, now int64) error {
 	profile := nostrx.ParseProfile(event.PubKey, &event)
 	_, err := tx.ExecContext(ctx, `INSERT INTO profiles_cache(
-			pubkey, profile_event_id, created_at, display_name, name, about, picture, nip05, last_metadata_fetch_at, last_seen_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			pubkey, profile_event_id, created_at, display_name, name, about, picture, nip05, website, lud16, lud06, last_metadata_fetch_at, last_seen_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(pubkey) DO UPDATE SET
 			profile_event_id = excluded.profile_event_id,
 			created_at = excluded.created_at,
@@ -1378,11 +1658,14 @@ func upsertProfileProjectionTx(ctx context.Context, tx *sql.Tx, event nostrx.Eve
 			about = excluded.about,
 			picture = excluded.picture,
 			nip05 = excluded.nip05,
+			website = excluded.website,
+			lud16 = excluded.lud16,
+			lud06 = excluded.lud06,
 			last_metadata_fetch_at = excluded.last_metadata_fetch_at,
 			last_seen_at = excluded.last_seen_at
 		WHERE excluded.created_at > profiles_cache.created_at
 			OR (excluded.created_at = profiles_cache.created_at AND excluded.profile_event_id > profiles_cache.profile_event_id)`,
-		event.PubKey, event.ID, event.CreatedAt, profile.Display, profile.Name, profile.About, profile.Picture, profile.NIP05, now, now)
+		event.PubKey, event.ID, event.CreatedAt, profile.Display, profile.Name, profile.About, profile.Picture, profile.NIP05, profile.Website, profile.Lud16, profile.Lud06, now, now)
 	return err
 }
 
@@ -1426,20 +1709,16 @@ func upsertNoteProjectionTx(ctx context.Context, tx *sql.Tx, event nostrx.Event,
 		event.ID, event.PubKey, rootID, parentID, event.CreatedAt, now); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO note_stats(note_id, last_reply_event_at)
-		VALUES (?, ?)
-		ON CONFLICT(note_id) DO UPDATE SET
-			last_reply_event_at = MAX(note_stats.last_reply_event_at, excluded.last_reply_event_at)`,
-		event.ID, event.CreatedAt); err != nil {
+	if err := upsertNoteReplyStatsTx(ctx, tx, event.ID, 0, event.CreatedAt); err != nil {
 		return err
 	}
 	if parentID != "" && parentID != event.ID {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO note_stats(note_id, direct_reply_count, last_reply_event_at)
-			VALUES (?, 1, ?)
-			ON CONFLICT(note_id) DO UPDATE SET
-				direct_reply_count = note_stats.direct_reply_count + 1,
-				last_reply_event_at = MAX(note_stats.last_reply_event_at, excluded.last_reply_event_at)`,
-			parentID, event.CreatedAt); err != nil {
+		if err := upsertNoteReplyStatsTx(ctx, tx, parentID, 1, event.CreatedAt); err != nil {
+			return err
+		}
+	}
+	if rootID != "" && rootID != event.ID && rootID != parentID {
+		if err := upsertNoteReplyStatsTx(ctx, tx, rootID, 0, event.CreatedAt); err != nil {
 			return err
 		}
 	}
@@ -1447,6 +1726,19 @@ func upsertNoteProjectionTx(ctx context.Context, tx *sql.Tx, event nostrx.Event,
 		return err
 	}
 	return nil
+}
+
+func upsertNoteReplyStatsTx(ctx context.Context, tx *sql.Tx, noteID string, directReplyDelta int, lastReplyEventAt int64) error {
+	if noteID == "" {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO note_stats(note_id, direct_reply_count, last_reply_event_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(note_id) DO UPDATE SET
+			direct_reply_count = note_stats.direct_reply_count + excluded.direct_reply_count,
+			last_reply_event_at = MAX(note_stats.last_reply_event_at, excluded.last_reply_event_at)`,
+		noteID, directReplyDelta, lastReplyEventAt)
+	return err
 }
 
 func resolveAddressParentTx(ctx context.Context, tx *sql.Tx, event nostrx.Event) (string, error) {
@@ -1639,11 +1931,11 @@ func upsertRelayHintsProjectionTx(ctx context.Context, tx *sql.Tx, event nostrx.
 	return err
 }
 
-// noteRootParent returns (root_id, parent_id) for note_links. Kind-1 uses
-// thread.RootID / thread.ParentID so projections match the thread UI and NIP-10.
+// noteRootParent returns (root_id, parent_id) for note_links. The shared thread
+// helpers cover NIP-10 kind-1 notes and NIP-22 kind-1111 comments.
 func noteRootParent(event nostrx.Event) (string, string) {
 	switch event.Kind {
-	case nostrx.KindTextNote:
+	case nostrx.KindTextNote, nostrx.KindComment:
 		rootID := thread.RootID(event)
 		parentID := thread.ParentID(rootID, event)
 		if rootID == "" && parentID == "" {
@@ -1656,35 +1948,6 @@ func noteRootParent(event nostrx.Event) (string, string) {
 			parentID = rootID
 		}
 		return rootID, parentID
-	case nostrx.KindComment:
-		var firstE, rootE, replyE string
-		for _, tag := range event.Tags {
-			if len(tag) < 2 || tag[0] != "e" {
-				continue
-			}
-			ref := thread.NormalizeHexEventID(tag[1])
-			if ref == "" {
-				continue
-			}
-			if firstE == "" {
-				firstE = ref
-			}
-			if len(tag) >= 4 {
-				switch strings.ToLower(strings.TrimSpace(tag[3])) {
-				case "root":
-					rootE = ref
-				case "reply":
-					replyE = ref
-				}
-			}
-		}
-		if rootE == "" {
-			rootE = firstE
-		}
-		if replyE == "" {
-			replyE = firstE
-		}
-		return rootE, replyE
 	default:
 		return "", ""
 	}

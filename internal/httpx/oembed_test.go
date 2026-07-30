@@ -187,6 +187,7 @@ func TestHandleThreadEmitsOEmbedLinkHeaders(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	allowAnonymousAuthors(t, st, author)
 	req := httptest.NewRequest(http.MethodGet, "/thread/"+id, nil)
 	rr := httptest.NewRecorder()
 	srv.handleThread(rr, req)

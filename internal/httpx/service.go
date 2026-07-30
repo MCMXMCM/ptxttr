@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,37 +16,47 @@ import (
 	"ptxt-nstr/internal/config"
 	"ptxt-nstr/internal/nostrx"
 	"ptxt-nstr/internal/store"
+	staticfs "ptxt-nstr/web/static"
 )
 
 const (
-	maxFeedAuthors              = 80
-	feedTTL                     = 2 * time.Minute
-	profileHeadRefreshTTL       = 90 * time.Second
-	threadTTL                   = 2 * time.Minute
-	trendingLimit               = 10
-	trendingCacheLimit          = 200
-	trending24h                 = "24h"
-	trending1w                  = "1w"
-	loggedInFetchWindow         = 160
-	asciiWidthMobile            = 42
-	asciiWidthTablet            = 64
-	asciiWidthDesktop           = 120
-	asciiWidthUserDesktop       = 82
-	loggedOutMaxPerAuthor       = 8
-	loggedOutFetchLimit         = 160
-	defaultFeedCacheKey         = "firehose"
-	readsCacheKey               = "reads"
-	readsFetchLimit             = 120
-	feedSortRecent              = "recent"
-	profilePostsNewerLimit      = 30
-	feedSortTrend24h            = "trend24h"
-	feedSortTrend7d             = "trend7d"
-	scanFeedChunkSize           = 256
-	feedMuteTopUpMaxRounds      = 4
-	trendingScanLimit           = 4800
-	trendingSidebarBackfillMin  = 8
-	defaultLoggedOutWOTDepth    = 3
-	defaultLoggedOutWOTSeedNPub = "npub1sg6plzptd64u62a878hep2kev88swjh3tw00gjsfl8f237lmu63q0uf63m"
+	maxFeedAuthors            = 80
+	maxAuthorsCacheKeyAuthors = 512
+	feedTTL                   = 2 * time.Minute
+	profileHeadRefreshTTL     = 90 * time.Second
+	threadTTL                 = 2 * time.Minute
+	trendingLimit             = 10
+	trendingCacheLimit        = 200
+	trending24h               = "24h"
+	trending1w                = "1w"
+	loggedInFetchWindow       = 160
+	// First-visit fallbacks must fit before ascii.js can measure the center
+	// column. The desktop shell can narrow to roughly 53 monospace columns
+	// when the participants rail first appears, so keep the cold-load fallback
+	// below that boundary. Every viewport replaces these defaults with the exact
+	// measured value persisted by ascii.js.
+	asciiWidthMobile               = 45
+	asciiWidthTablet               = 64
+	asciiWidthDesktop              = 52
+	asciiWidthUserDesktop          = 52
+	loggedOutMaxPerAuthor          = 8
+	loggedOutFetchLimit            = 160
+	defaultFeedCacheKey            = "firehose"
+	readsCacheKey                  = "reads"
+	readsFetchLimit                = 120
+	feedSortRecent                 = "recent"
+	feedSortTrend24h               = "trend24h"
+	feedSortTrend7d                = "trend7d"
+	scanFeedChunkSize              = 256
+	feedMuteTopUpMaxRounds         = 4
+	trendingScanLimit              = 4800
+	defaultLoggedOutWOTDepth       = 1
+	defaultLoggedOutThreadWOTDepth = 3
+	defaultLoggedOutWOTSeedNPub    = "npub1dergggklka99wwrs92yz8wdjs952h2ux2ha2ed598ngwu9w7a6fsh9xzpc"
+
+	// Pinned into the logged-out Gigi slice even when the current Gigi kind-3
+	// graph does not include it yet.
+	defaultLoggedOutPinnedProfilePubkey = "d84d5f410eba46f8ee9c8e56aabf88996f4f0e3b32a8d87d4f07476ffd1bdd5d"
 )
 
 var noteTimelineKinds = []int{nostrx.KindTextNote, nostrx.KindRepost}
@@ -63,26 +74,13 @@ func allBootstrapSeedPubkeys() []string {
 }
 
 var loggedOutWOTSeedNamesByPubkey = func() map[string]string {
-	type namedSeed struct {
-		name string
-		npub string
+	decoded, err := nostrx.DecodeIdentifier(defaultLoggedOutWOTSeedNPub)
+	if err != nil || decoded == "" {
+		return map[string]string{}
 	}
-	seeds := []namedSeed{
-		{name: "Jack Dorsey", npub: defaultLoggedOutWOTSeedNPub},
-		{name: "Fiatjaf", npub: "npub180cvv07tjdrrgpa0j7j7tmnyl2yr6yr7l8j4s3evf6u64th6gkwsyjh6w6"},
-		{name: "Gigi", npub: "npub1dergggklka99wwrs92yz8wdjs952h2ux2ha2ed598ngwu9w7a6fsh9xzpc"},
-		{name: "Lyn Alden", npub: "npub1a2cww4kn9wqte4ry70vyfwqyqvpswksna27rtxd8vty6c74era8sdcw83a"},
-		{name: "Odell", npub: "npub1qny3tkh0acurzla8x3zy4nhrjz5zd8l9sy9jys09umwng00manysew95gx"},
+	return map[string]string{
+		decoded: "Gigi",
 	}
-	m := make(map[string]string, len(seeds))
-	for _, seed := range seeds {
-		decoded, err := nostrx.DecodeIdentifier(seed.npub)
-		if err != nil || decoded == "" {
-			continue
-		}
-		m[decoded] = seed.name
-	}
-	return m
 }()
 
 type webOfTrustOptions struct {
@@ -93,6 +91,26 @@ type webOfTrustOptions struct {
 type authorMembership struct {
 	filter *bloom.Filter
 	exact  map[string]struct{}
+}
+
+func (m authorMembership) Authors() []string {
+	if len(m.exact) == 0 {
+		return nil
+	}
+	authors := make([]string, 0, len(m.exact))
+	for author := range m.exact {
+		authors = append(authors, author)
+	}
+	sort.Strings(authors)
+	return authors
+}
+
+func defaultLoggedOutPinnedPubkeys() []string {
+	return []string{defaultLoggedOutPinnedProfilePubkey}
+}
+
+func appendDefaultLoggedOutPinnedPubkeys(authors []string) []string {
+	return append(authors, defaultLoggedOutPinnedPubkeys()...)
 }
 
 // feedRequest bundles the parameters shared by the feed-rendering helpers.
@@ -135,19 +153,30 @@ func (a requestAuthors) feedQueryAuthors() []string {
 	return a.authors
 }
 
+// cohortAuthors returns the bounded author set used for cohort cache keys and
+// trending work. The full WoT graph can be very large; it remains available for
+// membership filtering, but background warmers must stay bounded.
+func (a requestAuthors) cohortAuthors() []string {
+	if a.wotEnabled {
+		if len(a.authors) > 0 {
+			return a.authors
+		}
+		return clampAuthors(a.allAuthors)
+	}
+	return a.authors
+}
+
 // trendingScope returns cohort key and authors for WoT-scoped trending sidebars.
 func (a requestAuthors) trendingScope() (cohortKey string, authors []string) {
 	if !a.wotEnabled {
 		return "", nil
 	}
-	return authorsCacheKey(a.allAuthors), a.allAuthors
+	authors = a.cohortAuthors()
+	return authorsCacheKey(authors), authors
 }
 
 func feedCacheKeyForResolved(resolved requestAuthors) string {
-	if resolved.wotEnabled {
-		return authorsCacheKey(resolved.allAuthors)
-	}
-	return authorsCacheKey(resolved.authors)
+	return authorsCacheKey(resolved.cohortAuthors())
 }
 
 func filterFeedEventsToAuthors(events []nostrx.Event, authors []string) []nostrx.Event {
@@ -227,54 +256,87 @@ func (s *Server) requestRelays(r *http.Request) []string {
 }
 
 func (s *Server) asciiWidthForRequest(r *http.Request) int {
-	if r.Header.Get("Sec-CH-UA-Mobile") == "?1" {
-		return asciiWidthMobile
-	}
+	return requestASCIIWidth(r)
+}
+
+func requestASCIIWidth(r *http.Request) int {
+	isMobileHint := r.Header.Get("Sec-CH-UA-Mobile") == "?1"
 	ua := strings.ToLower(r.UserAgent())
 	isTablet := strings.Contains(ua, "ipad") ||
 		strings.Contains(ua, "tablet") ||
 		strings.Contains(ua, "kindle") ||
 		strings.Contains(ua, "silk") ||
 		(strings.Contains(ua, "android") && !strings.Contains(ua, "mobile"))
-	if isTablet {
+	if isTablet && !isMobileHint {
+		if width, ok := asciiWidthFromRequestCookie(r, asciiWidthCookieName); ok {
+			return width
+		}
 		return asciiWidthTablet
 	}
-	isMobile := strings.Contains(ua, "mobile") ||
+	isMobile := isMobileHint || strings.Contains(ua, "mobile") ||
 		strings.Contains(ua, "iphone") ||
 		strings.Contains(ua, "ipod") ||
 		strings.Contains(ua, "android") ||
 		strings.Contains(ua, "mobi")
 	if isMobile {
+		if width, ok := asciiWidthFromRequestCookie(r, asciiWidthCookieName); ok {
+			return width
+		}
 		return asciiWidthMobile
+	}
+	if width, ok := asciiWidthFromRequestCookie(r, asciiWidthDesktopCookieName); ok {
+		return width
 	}
 	return asciiWidthDesktop
 }
 
+const (
+	asciiWidthCookieName        = "ptxt_ascii_w"
+	asciiWidthDesktopCookieName = "ptxt_ascii_w_desktop"
+)
+
+func asciiWidthFromRequestCookie(r *http.Request, name string) (int, bool) {
+	cookie, err := r.Cookie(name)
+	if err != nil {
+		return 0, false
+	}
+	return parseAsciiWidth(cookie.Value)
+}
+
+func parseAsciiWidth(raw string) (int, bool) {
+	n, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || n < 32 || n > 160 {
+		return 0, false
+	}
+	return n, true
+}
+
 // parseAsciiWQuery returns a client-supplied ASCII column count from ?ascii_w=.
-// In-page fetch() often omits Sec-CH-UA-Mobile; the SPA sends this hint so
+// In-page fetch() often omits Sec-CH-UA-Mobile; client hydration sends this hint so
 // fragments match the real viewport width.
 func parseAsciiWQuery(r *http.Request) (int, bool) {
 	raw := strings.TrimSpace(r.URL.Query().Get("ascii_w"))
 	if raw == "" {
 		return 0, false
 	}
-	n, err := strconv.Atoi(raw)
-	if err != nil {
-		return 0, false
-	}
-	switch n {
-	case asciiWidthMobile, asciiWidthTablet, asciiWidthDesktop, asciiWidthUserDesktop:
-		return n, true
-	default:
-		return 0, false
-	}
+	return parseAsciiWidth(raw)
 }
 
 func (s *Server) asciiWidthForRequestWithQuery(r *http.Request) int {
+	return requestASCIIWidthWithQuery(r)
+}
+
+func requestASCIIWidthWithQuery(r *http.Request) int {
 	if w, ok := parseAsciiWQuery(r); ok {
+		// Older desktop bundles used 120 as a viewport-size guess. Preserve
+		// exact measured hints while keeping that legacy sentinel from
+		// reintroducing clipped first-paint chrome during rolling deploys.
+		if w == 120 && requestASCIIWidth(r) == asciiWidthDesktop {
+			return asciiWidthDesktop
+		}
 		return w
 	}
-	return s.asciiWidthForRequest(r)
+	return requestASCIIWidth(r)
 }
 
 func (s *Server) asciiWidthForUserRequestWithQuery(r *http.Request) int {
@@ -286,24 +348,54 @@ func (s *Server) asciiWidthForUserRequestWithQuery(r *http.Request) int {
 }
 
 func (s *Server) basePageData(r *http.Request, title, active, pageClass string) BasePageData {
+	guestSliceV2 := s.cfg.GuestSliceV2Enabled && r != nil &&
+		anonymousRequestFromHTTP(r) && guestDocumentPath(r.URL.Path)
+	guestGeneration := int64(0)
+	if guestSliceV2 {
+		guestGeneration = s.currentGuestGeneration(r.Context())
+	}
 	return BasePageData{
-		Title:       title,
-		Active:      active,
-		PageClass:   pageClass,
-		AsciiWidth:  s.asciiWidthForRequestWithQuery(r),
-		SearchQuery: searchQueryFromRequest(r),
+		Title:              title,
+		Active:             active,
+		PageClass:          pageClass,
+		AsciiWidth:         s.asciiWidthForRequestWithQuery(r),
+		SearchQuery:        searchQueryFromRequest(r),
+		SearchMode:         searchModeFromRequest(r),
+		SearchModeNotesURL: searchModeRouteURL(r, searchModeNotes),
+		SearchModeUsersURL: searchModeRouteURL(r, searchModeUsers),
+		AssetVersion:       staticfs.ReleaseVersion(),
+		AssetBasePath:      staticfs.VersionedBasePath(),
+		ViewerPubKey:       normalizedViewerPubkey(viewerFromRequest(r)),
+		GuestGeneration:    guestGeneration,
+		GuestSliceV2:       guestSliceV2,
+		DesktopMode:        s.cfg.DesktopMode,
 	}
 }
 
 // userBasePageData applies the narrower desktop width used by user-profile
 // pages while keeping the other base-page fields aligned with basePageData.
 func (s *Server) userBasePageData(r *http.Request, title, active, pageClass string) BasePageData {
+	guestSliceV2 := s.cfg.GuestSliceV2Enabled && r != nil &&
+		anonymousRequestFromHTTP(r) && guestDocumentPath(r.URL.Path)
+	guestGeneration := int64(0)
+	if guestSliceV2 {
+		guestGeneration = s.currentGuestGeneration(r.Context())
+	}
 	return BasePageData{
-		Title:       title,
-		Active:      active,
-		PageClass:   pageClass,
-		AsciiWidth:  s.asciiWidthForUserRequestWithQuery(r),
-		SearchQuery: searchQueryFromRequest(r),
+		Title:              title,
+		Active:             active,
+		PageClass:          pageClass,
+		AsciiWidth:         s.asciiWidthForUserRequestWithQuery(r),
+		SearchQuery:        searchQueryFromRequest(r),
+		SearchMode:         searchModeFromRequest(r),
+		SearchModeNotesURL: searchModeRouteURL(r, searchModeNotes),
+		SearchModeUsersURL: searchModeRouteURL(r, searchModeUsers),
+		AssetVersion:       staticfs.ReleaseVersion(),
+		AssetBasePath:      staticfs.VersionedBasePath(),
+		ViewerPubKey:       normalizedViewerPubkey(viewerFromRequest(r)),
+		GuestGeneration:    guestGeneration,
+		GuestSliceV2:       guestSliceV2,
+		DesktopMode:        s.cfg.DesktopMode,
 	}
 }
 
@@ -312,6 +404,22 @@ func searchQueryFromRequest(r *http.Request) string {
 		return ""
 	}
 	return strings.TrimSpace(r.URL.Query().Get("q"))
+}
+
+func searchModeFromRequest(r *http.Request) string {
+	if r == nil {
+		return searchModeNotes
+	}
+	return normalizeSearchMode(r.URL.Query().Get("mode"))
+}
+
+func searchModeRouteURL(r *http.Request, mode string) string {
+	values := url.Values{}
+	if query := searchQueryFromRequest(r); query != "" {
+		values.Set("q", query)
+	}
+	values.Set("mode", normalizeSearchMode(mode))
+	return "/search?" + values.Encode()
 }
 
 func (s *Server) feedData(ctx context.Context, req feedRequest) FeedPageData {
@@ -398,7 +506,7 @@ func (s *Server) feedPageDataExResolved(ctx context.Context, req feedRequest, in
 		cohortKey := ""
 		var cohort []string
 		if resolved.wotEnabled {
-			cohort = resolved.allAuthors
+			cohort = resolved.cohortAuthors()
 		} else if !resolved.loggedOut {
 			cohort = resolved.authors
 		}
@@ -418,6 +526,7 @@ func (s *Server) feedPageDataExResolved(ctx context.Context, req feedRequest, in
 		}
 		allowGlobalTrendFallback := resolved.loggedOut && resolved.wotEnabled && isDefaultLoggedOutSeed(req.SeedPubkey)
 		muteViewer := resolved.viewerForMuteFilter()
+		usedRelayOrdered := false
 		var muted map[string]struct{}
 		muteBlocked := false
 		if muteViewer != "" {
@@ -434,12 +543,24 @@ func (s *Server) feedPageDataExResolved(ctx context.Context, req feedRequest, in
 			for round := 0; round < feedMuteTopUpMaxRounds && len(events) < pageLimit; round++ {
 				need := pageLimit - len(events)
 				var batch []nostrx.Event
-				batch, hasMore, rankAfter = s.fetchRankedFeedPage(ctx, cohort, rankAfter, need, sortMode, cacheOnlyFeedRanking, allowGlobalTrendFallback)
+				relayOrdered := false
+				batch, hasMore, rankAfter, relayOrdered = s.fetchRankedFeedPage(ctx, cohort, rankAfter, need, sortMode, cacheOnlyFeedRanking, allowGlobalTrendFallback)
+				usedRelayOrdered = usedRelayOrdered || relayOrdered
 				if muteViewer != "" {
 					batch = s.filterEventsByViewerMutedSet(batch, muted)
 				}
 				events = append(events, batch...)
-				if len(batch) == 0 || !hasMore {
+				if relayOrdered && len(batch) > 0 {
+					last := batch[len(batch)-1]
+					rankAfter = trendingRankKey{score: int(last.CreatedAt), createdAt: last.CreatedAt, id: last.ID}
+				}
+				if len(batch) == 0 {
+					if !hasMore {
+						break
+					}
+					continue
+				}
+				if !hasMore {
 					break
 				}
 			}
@@ -447,12 +568,22 @@ func (s *Server) feedPageDataExResolved(ctx context.Context, req feedRequest, in
 		if len(events) > req.Limit {
 			events = events[:req.Limit]
 			hasMore = true
+		} else if muteViewer != "" && len(events) == req.Limit && rankAfter.id != "" {
+			last := events[len(events)-1]
+			if rankAfter.id != last.ID {
+				hasMore = true
+			}
 		}
 		if req.Cursor == 0 && req.CursorID == "" && len(events) == 0 {
 			s.metrics.Add("feed.ranked.cold_miss", 1)
 		}
 		if len(events) > 0 {
-			next, nextID = rankedFeedPaginationCursor(s, ctx, events, rankAfter, muteViewer)
+			if usedRelayOrdered {
+				last := events[len(events)-1]
+				next, nextID = last.CreatedAt, last.ID
+			} else {
+				next, nextID = rankedFeedPaginationCursor(s, ctx, events, timeframe, cohortKey, cohort, allowGlobalTrendFallback, rankAfter)
+			}
 		}
 	}
 	s.warmFeedEntities(events, req.Relays)
@@ -519,9 +650,7 @@ func (s *Server) feedItemsData(ctx context.Context, req feedRequest) FeedPageDat
 			if data, ok := s.tryLoadFeedPageFromDurableSnapshots(ctx, req, false); ok {
 				s.scheduleFeedSnapshotPersonalizedRebuild(req)
 				if deferGuestLoggedOutFeedFirstPage(req) {
-					data.ReactionTotals = map[string]int{}
-					data.ReactionViewers = map[string]string{}
-					data.ReplyCounts = map[string]int{}
+					s.hydrateFeedStats(ctx, &data, data.UserPubKey)
 				}
 				return data
 			}
@@ -537,14 +666,18 @@ func (s *Server) feedItemsData(ctx context.Context, req feedRequest) FeedPageDat
 				if len(data.Feed) > 0 {
 					s.metrics.Add("feed.snapshot_hit", 1)
 					data.FeedSort = sm
-					data.ReactionTotals = map[string]int{}
-					data.ReactionViewers = map[string]string{}
-					data.ReplyCounts = map[string]int{}
+					s.hydrateFeedStats(ctx, &data, data.UserPubKey)
 					s.scheduleGuestFeedFragmentWarm(req)
 					return data
 				}
 				s.metrics.Add("feed.guest_ranked_fragment_snapshot_miss", 1)
 			} else if sm == feedSortRecent && s.isCanonicalDefaultLoggedOutGuestFeedRequest(req) {
+				s.mergeGuestCanonicalSnapshotIntoShell(ctx, &data, req)
+				if len(data.Feed) > 0 {
+					s.metrics.Add("feed.guest_recent_fragment_snapshot_hit", 1)
+					s.scheduleGuestFeedFragmentWarm(req)
+					return data
+				}
 				if s.mergePersistedDefaultSeedGuestFeedIntoShell(ctx, &data, req) && len(data.Feed) > 0 {
 					s.metrics.Add("feed.guest_recent_fragment_snapshot_hit", 1)
 					s.scheduleGuestFeedFragmentWarm(req)
@@ -556,7 +689,7 @@ func (s *Server) feedItemsData(ctx context.Context, req feedRequest) FeedPageDat
 		}
 	}
 	o := feedPageDataOptions{}
-	if deferGuestLoggedOutFeedFirstPage(req) {
+	if deferGuestLoggedOutFeedFirstPage(req) && normalizeFeedSort(req.SortMode) == feedSortRecent {
 		o.lightStatsOnly = true
 	}
 	data := s.feedPageDataEx(ctx, req, false, o)
@@ -567,6 +700,22 @@ func (s *Server) feedItemsData(ctx context.Context, req feedRequest) FeedPageDat
 		s.scheduleGuestFeedFragmentWarm(req)
 	}
 	return data
+}
+
+func (s *Server) hydrateFeedStats(ctx context.Context, data *FeedPageData, viewerPubkey string) {
+	if s == nil || data == nil || len(data.Feed) == 0 {
+		return
+	}
+	combined := append([]nostrx.Event(nil), data.Feed...)
+	if len(data.ReferencedEvents) > 0 {
+		for _, event := range data.ReferencedEvents {
+			combined = append(combined, event)
+		}
+	}
+	rt, rv := s.reactionMapsForEvents(ctx, combined, viewerPubkey)
+	data.ReactionTotals = rt
+	data.ReactionViewers = rv
+	data.ReplyCounts = s.replyCounts(ctx, combined)
 }
 
 func (s *Server) feedHeadingData(req feedRequest) FeedPageData {
@@ -670,14 +819,14 @@ func (s *Server) feedNewerCount(ctx context.Context, req feedRequest) int {
 	return len(events)
 }
 
-func (s *Server) fetchRankedFeedPage(ctx context.Context, authors []string, after trendingRankKey, limit int, sortMode string, cacheOnly bool, allowGlobalFallback bool) ([]nostrx.Event, bool, trendingRankKey) {
+func (s *Server) fetchRankedFeedPage(ctx context.Context, authors []string, after trendingRankKey, limit int, sortMode string, cacheOnly bool, allowGlobalFallback bool) ([]nostrx.Event, bool, trendingRankKey, bool) {
 	if limit <= 0 {
-		return nil, false, after
+		return nil, false, after, false
 	}
 	timeframe := feedSortTimeframe(sortMode)
 	cohortKey := authorsCacheKey(authors)
 	if events, hasMore, nextAfter, ok := s.rankedTrendingFeedPageFromCache(ctx, timeframe, cohortKey, authors, after, limit); ok {
-		return events, hasMore, nextAfter
+		return events, hasMore, nextAfter, false
 	}
 	if cacheOnly {
 		if cohortKey != "" {
@@ -687,28 +836,33 @@ func (s *Server) fetchRankedFeedPage(ctx context.Context, authors []string, afte
 					events = filterFeedEventsToAuthors(events, authors)
 				}
 				if len(events) > 0 {
-					return events, hasMore, nextAfter
+					return events, hasMore, nextAfter, false
 				}
 				s.metrics.Add("trending.cohort_global_fallback_cache_empty", 1)
 			}
-			if events, hasMore, nextAfter, ok := s.fetchRankedSummariesPage(ctx, sortMode, authors, allowGlobalFallback, after, limit); ok {
-				s.metrics.Add("trending.cohort_global_fallback_db_hit", 1)
-				return events, hasMore, nextAfter
-			}
 		}
 		s.metrics.Add("trending.cache_miss.fast_empty", 1)
-		if after.id == "" {
-			return nil, false, after
+		if events, hasMore, nextAfter, ok := s.fetchRankedRecentFallbackPage(ctx, timeframe, authors, allowGlobalFallback, after, limit); ok {
+			return events, hasMore, nextAfter, false
 		}
-		return nil, false, after
+		return nil, false, after, false
 	}
-	if events, hasMore, nextAfter, ok := s.fetchRankedSummariesPage(ctx, sortMode, authors, false, after, limit); ok {
-		return events, hasMore, nextAfter
+	s.refreshTrendingCacheAsync(timeframe, cohortKey, authors)
+	if cohortKey != "" {
+		if events, hasMore, nextAfter, ok := s.rankedTrendingFeedPageFromCache(ctx, timeframe, "", nil, after, limit); ok {
+			s.metrics.Add("trending.cohort_global_fallback_cache_hit", 1)
+			if !allowGlobalFallback {
+				events = filterFeedEventsToAuthors(events, authors)
+			}
+			if len(events) > 0 {
+				return events, hasMore, nextAfter, false
+			}
+		}
 	}
-	if after.id == "" {
-		return nil, false, after
+	if events, hasMore, nextAfter, ok := s.fetchRankedRecentFallbackPage(ctx, timeframe, authors, allowGlobalFallback, after, limit); ok {
+		return events, hasMore, nextAfter, false
 	}
-	return nil, false, after
+	return nil, false, after, false
 }
 
 func (s *Server) fetchRankedSummariesPage(ctx context.Context, sortMode string, authors []string, allowGlobalAuthors bool, after trendingRankKey, limit int) ([]nostrx.Event, bool, trendingRankKey, bool) {
@@ -725,15 +879,78 @@ func (s *Server) fetchRankedSummariesPage(ctx context.Context, sortMode string, 
 	return events, hasMore, s.trendingRankKeyForEvent(ctx, events[len(events)-1]), true
 }
 
+func (s *Server) fetchRankedRecentFallbackPage(ctx context.Context, timeframe string, authors []string, allowGlobalAuthors bool, after trendingRankKey, limit int) ([]nostrx.Event, bool, trendingRankKey, bool) {
+	if limit <= 0 {
+		return nil, false, after, false
+	}
+	queryAuthors := authors
+	if allowGlobalAuthors {
+		queryAuthors = nil
+	}
+	since := trendingSince(timeframe, time.Now())
+	candidates, err := s.store.TrendingCandidatesByKinds(ctx, noteTimelineKinds, since, queryAuthors, max(limit+1, trendingCacheLimit))
+	if err != nil || len(candidates) == 0 {
+		return nil, false, after, false
+	}
+	start := 0
+	if after.id != "" {
+		found := false
+		for idx, item := range candidates {
+			if item.NoteID == after.id {
+				start = idx + 1
+				found = true
+				break
+			}
+		}
+		if !found && after.createdAt > 0 {
+			for idx, item := range candidates {
+				if item.NoteCreatedAt < after.createdAt || (item.NoteCreatedAt == after.createdAt && item.NoteID < after.id) {
+					start = idx
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			return nil, false, after, false
+		}
+	}
+	if start >= len(candidates) {
+		return nil, false, after, false
+	}
+	end := min(start+limit+1, len(candidates))
+	ids := make([]string, 0, end-start)
+	for _, item := range candidates[start:end] {
+		ids = append(ids, item.NoteID)
+	}
+	byID := s.eventsByIDFromStore(ctx, ids)
+	events := make([]nostrx.Event, 0, len(ids))
+	for _, id := range ids {
+		if ev := byID[id]; ev != nil {
+			events = append(events, *ev)
+		}
+	}
+	if len(events) == 0 {
+		return nil, false, after, false
+	}
+	events, hasMore := trimRankedOverfetch(events, limit)
+	last := events[len(events)-1]
+	nextAfter := s.trendingRankKeyForEvent(ctx, last)
+	if nextAfter.createdAt == 0 {
+		nextAfter.createdAt = last.CreatedAt
+	}
+	return events, hasMore, nextAfter, true
+}
+
 func (s *Server) refreshFeedForTrending(ctx context.Context, resolved requestAuthors, window int, relays []string) bool {
 	if resolved.wotEnabled {
 		viewer := resolved.userPubkey
 		if resolved.wotViewerPubkey != "" {
 			viewer = resolved.wotViewerPubkey
 		}
-		authors := resolved.allAuthors
+		authors := resolved.feedQueryAuthors()
 		if len(authors) == 0 {
-			authors = resolved.authors
+			authors = resolved.cohortAuthors()
 		}
 		return s.refreshRecent(ctx, viewer, authors, 0, window, relays, 0) >= 0
 	}
@@ -744,6 +961,9 @@ func (s *Server) refreshFeedForTrending(ctx context.Context, resolved requestAut
 }
 
 func (s *Server) refreshFeedForTrendingAsync(resolved requestAuthors, window int, relays []string, refreshKey string, timeframe string) {
+	if s == nil || !s.allowLegacyWarmers() {
+		return
+	}
 	if refreshKey == "" {
 		return
 	}
@@ -762,10 +982,7 @@ func (s *Server) refreshFeedForTrendingAsync(resolved requestAuthors, window int
 		if s.refreshFeedForTrending(refreshCtx, resolved, window, relays) {
 			s.store.MarkRefreshed(refreshCtx, "feed", refreshKey)
 		}
-		cohortAuthors := append([]string(nil), resolved.authors...)
-		if resolved.wotEnabled {
-			cohortAuthors = append([]string(nil), resolved.allAuthors...)
-		}
+		cohortAuthors := append([]string(nil), resolved.cohortAuthors()...)
 		cohortKey := authorsCacheKey(cohortAuthors)
 		if _, err := s.computeAndStoreCohortTrending(refreshCtx, timeframe, cohortKey, cohortAuthors, time.Now()); err != nil {
 			s.metrics.Add("trending.cohort_refresh_error", 1)
@@ -796,12 +1013,18 @@ func (s *Server) resolveAuthorsAll(ctx context.Context, pubkey string, relays []
 	s.touchKnownViewer(ctx, decoded)
 	if cached, ok := s.resolvedAuthors.get(cacheKey, now); ok {
 		s.metrics.Add("authors.cache_hit", 1)
+		if isDefaultLoggedOutSeed(decoded) {
+			cached = uniqueNonEmptyStable(appendDefaultLoggedOutPinnedPubkeys(cached))
+		}
 		return cached, decoded, false
 	}
 	if s.store != nil {
 		if authors, ts, ok, derr := s.store.GetResolvedAuthorsDurable(ctx, cacheKey); derr == nil && ok && len(authors) > 0 {
 			computed := time.Unix(ts, 0)
 			if age := now.Sub(computed); age >= 0 && age < resolvedAuthorsDurableMaxAge {
+				if isDefaultLoggedOutSeed(decoded) {
+					authors = uniqueNonEmptyStable(appendDefaultLoggedOutPinnedPubkeys(authors))
+				}
 				s.resolvedAuthors.put(cacheKey, authors, now)
 				s.metrics.Add("authors.durable_cache_hit", 1)
 				return authors, decoded, false
@@ -821,10 +1044,13 @@ func (s *Server) resolveAuthorsAll(ctx context.Context, pubkey string, relays []
 	}
 	if wot.Enabled && s.store != nil {
 		if reachable, err := s.store.ReachablePubkeysWithin(ctx, decoded, wot.Depth); err == nil {
-			authors = append(authors, reachable...)
+			authors = append(authors, filterValidFollowPubkeys(reachable)...)
 		}
 	}
 	authors = append(authors, decoded)
+	if isDefaultLoggedOutSeed(decoded) {
+		authors = appendDefaultLoggedOutPinnedPubkeys(authors)
+	}
 	resolved := uniqueNonEmptyStable(authors)
 	s.resolvedAuthors.put(cacheKey, resolved, now)
 	if s.store != nil {
@@ -837,6 +1063,12 @@ func (s *Server) resolveAuthorsForSeed(ctx context.Context, seedPubkey string, r
 	seedPubkey = strings.TrimSpace(seedPubkey)
 	if seedPubkey == "" {
 		return nil, "", false
+	}
+	if s != nil && s.cfg.GuestSliceV2Enabled && isDefaultLoggedOutSeed(seedPubkey) && s.store != nil {
+		state, ok, err := s.store.GetGuestSliceState(ctx, store.GuestSliceDefaultKey)
+		if err == nil && ok && state.Status == store.GuestSliceStatusReady && len(state.Cohort) > 0 {
+			return append([]string(nil), state.Cohort...), state.SeedPubKey, true
+		}
 	}
 	authors, decoded, loggedOut := s.resolveAuthorsAll(ctx, seedPubkey, relays, wot)
 	if loggedOut {
@@ -896,16 +1128,16 @@ func (s *Server) isValidSeedViewer(loggedOut bool, wot webOfTrustOptions, seedPu
 func loggedOutWOTSeedDisplayName(seedPubkey string) string {
 	seedPubkey = strings.TrimSpace(seedPubkey)
 	if seedPubkey == "" {
-		return "Jack Dorsey"
+		return "Gigi"
 	}
 	decoded, err := nostrx.DecodeIdentifier(seedPubkey)
 	if err != nil || decoded == "" {
-		return "Jack Dorsey"
+		return "Gigi"
 	}
 	if name, ok := loggedOutWOTSeedNamesByPubkey[decoded]; ok {
 		return name
 	}
-	return "selected seed profile"
+	return "Gigi"
 }
 
 // allowSyncRelayWork is the HTML-path gate paired with resolveViewer (store-first when false).
@@ -1292,9 +1524,10 @@ func (s *Server) feedMuteSet(ctx context.Context, viewer string) (map[string]str
 
 func (s *Server) fetchAuthorsPage(ctx context.Context, viewer string, authors []string, cursor int64, cursorID string, limit int, relays []string, scope, cacheKey string, muted map[string]struct{}, mutesLoaded bool) ([]nostrx.Event, bool) {
 	defer s.observe("feed.authors_page", time.Now())
+	allowRefresh := s.allowLegacyRelayBackend()
 	pageLimit := limit + 1
 	pageKey := feedRefreshKey(cacheKey, cursor, cursorID)
-	if scope == "profile" && cursor <= 0 && cursorID == "" {
+	if allowRefresh && scope == "profile" && cursor <= 0 && cursorID == "" {
 		headKey := cacheKey + "|head"
 		if s.store.ShouldRefresh(ctx, scope, headKey, profileHeadRefreshTTL) {
 			fetchLimit := recentAuthorsFetchLimit(pageLimit)
@@ -1354,7 +1587,7 @@ func (s *Server) fetchAuthorsPage(ctx context.Context, viewer string, authors []
 	shouldRefresh := len(events) == 0 || s.store.ShouldRefresh(ctx, scope, pageKey, feedTTL)
 	fetchLimit := recentAuthorsFetchLimit(pageLimit)
 	if len(events) >= pageLimit {
-		if shouldRefresh {
+		if allowRefresh && shouldRefresh {
 			oldest := events[len(events)-1]
 			s.refreshRecentAsync(viewer, authors, oldest.CreatedAt, fetchLimit, relays, scope, pageKey)
 		} else {
@@ -1365,7 +1598,7 @@ func (s *Server) fetchAuthorsPage(ctx context.Context, viewer string, authors []
 
 	if !shouldRefresh {
 		// Keep pagination open for thin cached pages; relay backfill may still find older notes.
-		if len(events) > 0 && strings.TrimSpace(viewer) != "" {
+		if allowRefresh && len(events) > 0 && strings.TrimSpace(viewer) != "" {
 			oldest := events[len(events)-1]
 			s.warmRecent(viewer, authors, oldest.CreatedAt, loggedInFetchWindow, relays)
 		}
@@ -1378,41 +1611,11 @@ func (s *Server) fetchAuthorsPage(ctx context.Context, viewer string, authors []
 		oldest := events[len(events)-1]
 		before = oldest.CreatedAt
 	}
-	s.refreshRecentAsync(viewer, authors, before, fetchLimit, relays, scope, pageKey)
+	if allowRefresh {
+		s.refreshRecentAsync(viewer, authors, before, fetchLimit, relays, scope, pageKey)
+	}
 	maybeMore := len(events) >= pageLimit || len(events) > 0
 	return events, maybeMore
-}
-
-func (s *Server) profilePostsNewerFeedPageDataFromSummaries(ctx context.Context, r *http.Request, profilePubkey string, summaries []nostrx.Event) FeedPageData {
-	base := s.userBasePageData(r, "User", "feed", "feed-shell")
-	relays := s.requestRelays(r)
-	viewer, loggedOut := s.resolveViewer(viewerFromRequest(r), relays)
-	if !loggedOut && viewer != "" {
-		summaries = s.filterFeedEventsByViewerMutes(ctx, viewer, summaries)
-	}
-	events := s.hydrateTimelineEvents(ctx, summaries)
-	var referenced map[string]nostrx.Event
-	var combined []nostrx.Event
-	if !allowSyncRelayWork(viewer, loggedOut) {
-		referenced, combined = s.referencedHydrationFromStore(ctx, events)
-	} else {
-		s.warmFeedEntities(events, relays)
-		referenced, combined = s.referencedHydration(ctx, events, relays)
-	}
-	rt, rv := s.reactionMapsForEvents(ctx, combined, viewer)
-	return FeedPageData{
-		BasePageData:     base,
-		Feed:             events,
-		ReferencedEvents: referenced,
-		ReplyCounts:      s.replyCounts(ctx, combined),
-		ReactionTotals:   rt,
-		ReactionViewers:  rv,
-		Profiles:         s.profilesFor(ctx, combined),
-		UserPubKey:       profilePubkey,
-		UserNPub:         nostrx.EncodeNPub(profilePubkey),
-		Relays:           relays,
-		FeedSort:         feedSortRecent,
-	}
 }
 
 // fetchDefaultFeedPage returns kind-1 notes from the configured relays within
@@ -1441,6 +1644,9 @@ func (s *Server) fetchDefaultFeedPage(ctx context.Context, cursor int64, cursorI
 }
 
 func (s *Server) refreshDefaultFeedAsync(cursor int64, limit int, relays []string, pageKey string) {
+	if s == nil || !s.allowLegacyWarmers() {
+		return
+	}
 	if pageKey == "" {
 		return
 	}
@@ -1463,6 +1669,9 @@ func (s *Server) refreshDefaultFeedAsync(cursor int64, limit int, relays []strin
 }
 
 func (s *Server) refreshRecentAsync(viewer string, authors []string, before int64, limit int, relays []string, scope, pageKey string) {
+	if s == nil || !s.allowLegacyWarmers() {
+		return
+	}
 	if pageKey == "" {
 		return
 	}
@@ -1627,16 +1836,8 @@ func (s *Server) refreshDefaultFeed(ctx context.Context, before int64, limit int
 	slog.Info("refresh default feed", "fetched", len(events), "saved", saved, "since", since, "until", before)
 	s.metrics.Add("refresh.success", 1)
 	s.metrics.Add("refresh.events", int64(saved))
-	if max := s.cfg.EventRetention; max > 0 {
-		go func() {
-			pruneCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if deleted, err := s.store.PruneEvents(pruneCtx, max); err != nil {
-				slog.Warn("prune events failed", "err", err)
-			} else if deleted > 0 {
-				s.metrics.Add("store.pruned", deleted)
-			}
-		}()
+	if s.cfg.EventRetention > 0 {
+		s.store.RequestPruneAsync()
 	}
 	return saved
 }
@@ -1812,6 +2013,7 @@ func (s *Server) referencedEventsFor(ctx context.Context, events []nostrx.Event,
 		}
 		out[id] = *event
 	}
+	mergeEmbeddedRepostReferences(out, events)
 	return out
 }
 
@@ -1829,7 +2031,27 @@ func (s *Server) referencedEventsForFromStore(ctx context.Context, events []nost
 		}
 		out[id] = *event
 	}
+	mergeEmbeddedRepostReferences(out, events)
 	return out
+}
+
+func mergeEmbeddedRepostReferences(out map[string]nostrx.Event, events []nostrx.Event) {
+	for _, event := range events {
+		if event.Kind != nostrx.KindRepost {
+			continue
+		}
+		refID, _ := referencedEventRef(event)
+		refID = nostrx.CanonicalHex64(strings.TrimSpace(refID))
+		if refID == "" {
+			continue
+		}
+		if _, ok := out[refID]; ok {
+			continue
+		}
+		if embedded, ok := nostrx.ParseEmbeddedRepost(event.Content, refID); ok {
+			out[refID] = embedded
+		}
+	}
 }
 
 func referencedEventRef(event nostrx.Event) (id string, relay string) {
@@ -1881,14 +2103,36 @@ func clampAuthorsWithLimit(authors []string, limit int) []string {
 }
 
 func authorsCacheKey(authors []string) string {
-	normalized := append([]string(nil), authors...)
-	sort.Strings(normalized)
-	key := strings.Join(normalized, ",")
-	if key == "" {
+	if len(authors) == 0 {
 		return ""
 	}
-	sum := sha256.Sum256([]byte(key))
-	return "authors:" + hex.EncodeToString(sum[:])
+	normalized := make([]string, 0, min(len(authors), maxAuthorsCacheKeyAuthors))
+	seen := make(map[string]struct{}, min(len(authors), maxAuthorsCacheKeyAuthors))
+	for _, author := range authors {
+		author = strings.TrimSpace(author)
+		if author == "" {
+			continue
+		}
+		if _, ok := seen[author]; ok {
+			continue
+		}
+		seen[author] = struct{}{}
+		normalized = append(normalized, author)
+		if len(normalized) >= maxAuthorsCacheKeyAuthors {
+			break
+		}
+	}
+	sort.Strings(normalized)
+	if len(normalized) == 0 {
+		return ""
+	}
+	h := sha256.New()
+	for _, author := range normalized {
+		_, _ = h.Write([]byte(author))
+		_, _ = h.Write([]byte{0})
+	}
+	sum := h.Sum(nil)
+	return "authors:" + hex.EncodeToString(sum)
 }
 
 func feedRefreshKey(cacheKey string, cursor int64, cursorID string) string {
@@ -1927,7 +2171,7 @@ func (s *Server) guestFeedCacheKey(req feedRequest, resolved requestAuthors, sor
 	sortPart := "|sort:" + sortMode
 
 	if resolved.wotEnabled {
-		cohortKey := authorsCacheKey(resolved.allAuthors)
+		cohortKey := authorsCacheKey(resolved.cohortAuthors())
 		if cohortKey == "" {
 			return "", false
 		}

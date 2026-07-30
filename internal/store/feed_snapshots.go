@@ -5,11 +5,86 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"ptxt-nstr/internal/nostrx"
 )
 
 const feedSnapshotJSONVersion = 2
+
+var ErrFeedSnapshotMissingCanonicalEvent = errors.New("feed snapshot references an event missing from the canonical store")
+
+type snapshotQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func feedSnapshotEventIDs(events []nostrx.Event) []string {
+	ids := make([]string, 0, len(events))
+	seen := make(map[string]struct{}, len(events))
+	for _, event := range events {
+		id := nostrx.CanonicalHex64(event.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func canonicalFeedEventsPresent(ctx context.Context, q snapshotQueryer, events []nostrx.Event) (bool, error) {
+	ids := feedSnapshotEventIDs(events)
+	if len(ids) != len(events) || len(ids) == 0 {
+		return false, nil
+	}
+	query := fmt.Sprintf(`SELECT id FROM events WHERE id IN (%s)`, placeholders(len(ids)))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		args[i] = id
+	}
+	rows, err := q.QueryContext(ctx, query, args...)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = rows.Close() }()
+	found := 0
+	for rows.Next() {
+		found++
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return found == len(ids), nil
+}
+
+func (s *Store) deleteFeedSnapshot(ctx context.Context, key string) error {
+	if s == nil || s.db == nil || key == "" {
+		return nil
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_, err := s.db.ExecContext(ctx, `DELETE FROM feed_snapshots WHERE snapshot_key = ?`, key)
+	return err
+}
+
+func invalidateFeedSnapshotsTx(ctx context.Context, tx *sql.Tx) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM feed_snapshots`); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM app_meta WHERE key = ?`, AppMetaKeyDefaultSeedGuestFeed)
+	return err
+}
+
+func (s *Store) invalidateFeedSnapshotsLocked(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM feed_snapshots`); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM app_meta WHERE key = ?`, AppMetaKeyDefaultSeedGuestFeed)
+	return err
+}
 
 // FeedSnapshotRecord is a durable first-page feed payload (guest canonical or
 // signed-in personalized). Shape matches DefaultSeedGuestFeedSnapshot plus
@@ -50,6 +125,14 @@ func (s *Store) GetFeedSnapshot(ctx context.Context, key string) (*FeedSnapshotR
 	if rec.Version != feedSnapshotJSONVersion || len(rec.Feed) == 0 {
 		return nil, false, nil
 	}
+	present, err := canonicalFeedEventsPresent(ctx, s.db, rec.Feed)
+	if err != nil {
+		return nil, false, err
+	}
+	if !present {
+		_ = s.deleteFeedSnapshot(ctx, key)
+		return nil, false, nil
+	}
 	return &rec, true, nil
 }
 
@@ -68,9 +151,24 @@ func (s *Store) SetFeedSnapshot(ctx context.Context, key string, rec *FeedSnapsh
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	_, err = s.db.ExecContext(ctx, `INSERT INTO feed_snapshots(snapshot_key, value, computed_at)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	present, err := canonicalFeedEventsPresent(ctx, tx, rec.Feed)
+	if err != nil {
+		return err
+	}
+	if !present {
+		return ErrFeedSnapshotMissingCanonicalEvent
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO feed_snapshots(snapshot_key, value, computed_at)
 		VALUES(?, ?, ?)
 		ON CONFLICT(snapshot_key) DO UPDATE SET value = excluded.value, computed_at = excluded.computed_at`,
 		key, string(b), rec.ComputedAtUnix)
-	return err
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }

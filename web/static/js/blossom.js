@@ -85,7 +85,7 @@ export async function blossomUploadBlob(file, options = {}) {
     const unsigned = buildUploadAuthUnsigned({ sha256Hex, serverDomain: domain });
     let authJson;
     try {
-      authJson = await signEventDraft(unsigned, session);
+      authJson = await signEventDraft(unsigned, session, { clientMetadata: false });
     } catch (e) {
       lastErr = e instanceof Error ? e.message : String(e);
       break;

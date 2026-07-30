@@ -29,6 +29,17 @@ func TestSetContentAddressedCacheEmptyEtagIsNoop(t *testing.T) {
 	}
 }
 
+func TestSetThreadPageCache(t *testing.T) {
+	rr := httptest.NewRecorder()
+	setThreadPageCache(rr, "abc123")
+	if got := rr.Header().Get("Cache-Control"); got != cacheControlThreadPage {
+		t.Fatalf("Cache-Control = %q, want %q", got, cacheControlThreadPage)
+	}
+	if got := rr.Header().Get("ETag"); got != `"abc123"` {
+		t.Fatalf("ETag = %q, want %q", got, `"abc123"`)
+	}
+}
+
 func TestSetShortCache(t *testing.T) {
 	rr := httptest.NewRecorder()
 	setShortCache(rr, 30)
@@ -110,14 +121,34 @@ func TestWriteNotModified(t *testing.T) {
 	}
 }
 
+func TestWriteThreadPageNotModified(t *testing.T) {
+	rr := httptest.NewRecorder()
+	writeThreadPageNotModified(rr, "abc123")
+	if rr.Code != http.StatusNotModified {
+		t.Fatalf("status = %d, want 304", rr.Code)
+	}
+	if got := rr.Header().Get("ETag"); got != `"abc123"` {
+		t.Fatalf("ETag = %q, want %q", got, `"abc123"`)
+	}
+	if got := rr.Header().Get("Cache-Control"); got != cacheControlThreadPage {
+		t.Fatalf("Cache-Control = %q, want %q", got, cacheControlThreadPage)
+	}
+	if rr.Body.Len() != 0 {
+		t.Fatalf("body len = %d, want 0", rr.Body.Len())
+	}
+}
+
 func TestThreadPageETagComposite(t *testing.T) {
-	if got := threadPageETag("abc", 0); got != "abc-thread-render-v2-r0" {
+	if got := threadPageETag("abc", 0); got != "abc-thread-render-v4-r0-sempty" {
 		t.Fatalf("threadPageETag(abc, 0) = %q", got)
 	}
-	if got := threadPageETag("abc", 7); got != "abc-thread-render-v2-r7" {
+	if got := threadPageETag("abc", 7); got != "abc-thread-render-v4-r7-sempty" {
 		t.Fatalf("threadPageETag(abc, 7) = %q", got)
 	}
 	if got := threadPageETag("", 5); got != "" {
 		t.Fatalf("threadPageETag(empty) = %q, want empty", got)
+	}
+	if a, b := threadPageETag("abc", 7, "root", "selected"), threadPageETag("abc", 7, "root", "parent", "selected"); a == b {
+		t.Fatalf("threadPageETag should change when rendered ancestry changes: %q", a)
 	}
 }

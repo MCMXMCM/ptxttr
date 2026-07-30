@@ -36,19 +36,18 @@ type oEmbedResponse struct {
 }
 
 const (
-	oEmbedDefaultWidth = 480
+	oEmbedDefaultWidth  = 480
 	oEmbedDefaultHeight = 200
-	oEmbedCacheSeconds = 86400
-	oEmbedFormatJSON   = "json"
-	oEmbedFormatXML    = "xml"
+	oEmbedCacheSeconds  = 86400
+	oEmbedFormatJSON    = "json"
+	oEmbedFormatXML     = "xml"
 	oEmbedRequestBudget = 3 * time.Second
 )
 
 // handleOEmbed serves /services/oembed?url=<rendered-url>[&format=json|xml].
 // Per oEmbed convention we accept the consumer-supplied URL, parse the path
 // to identify the event, and return a JSON or XML payload describing how
-// to embed it. The handler is cache-only (no relay fan-out) so it can be
-// hit by any consumer without becoming a relay-DDoS vector.
+// to embed it. This surface is cache-only so crawlers cannot force relay work.
 func (s *Server) handleOEmbed(w http.ResponseWriter, r *http.Request) {
 	defer s.observe("handler.oembed", time.Now())
 	target := strings.TrimSpace(r.URL.Query().Get("url"))

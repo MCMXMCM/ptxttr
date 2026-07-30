@@ -11,6 +11,7 @@ import (
 
 func (s *Server) handleTag(w http.ResponseWriter, r *http.Request) {
 	defer s.observe("handler.tag", time.Now())
+	w.Header().Set("X-Robots-Tag", "noindex, nofollow")
 	tag, err := parseTagFromRequestPath(r.URL.Path)
 	if err != nil {
 		s.renderNotFound(w, "error_shell", ErrorPageData{
@@ -24,9 +25,10 @@ func (s *Server) handleTag(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req := s.tagRequestFromHTTP(r, tag)
+	viewerKey := normalizeViewerKey(req.Pubkey)
 	rateKeys := []string{"ip:" + searchRemoteIP(r)}
-	if viewer := normalizeViewerKey(req.Pubkey); viewer != "" {
-		rateKeys = append(rateKeys, "viewer:"+viewer)
+	if viewerKey != "" {
+		rateKeys = append(rateKeys, "viewer:"+viewerKey)
 	}
 	status := 0
 	if !s.searchLimiter.allow(time.Now(), rateKeys...) {
@@ -60,19 +62,16 @@ func (s *Server) newTagPageData(r *http.Request, req tagRequest, tag string) Tag
 }
 
 func (s *Server) renderTagPage(w http.ResponseWriter, r *http.Request, status int, data TagPageData) {
-	name := "tag"
-	switch r.URL.Query().Get("fragment") {
-	case "1":
-		name = "tag_items"
+	if r.URL.Query().Get("fragment") != "" {
 		setPaginationHeaders(w, data.Cursor, data.CursorID, data.HasMore)
-	case "main":
-		name = "tag_main"
-	}
-	if status == 0 {
-		s.render(w, name, data)
+		s.renderStatus(w, status, "tag_items", data)
 		return
 	}
-	s.renderStatus(w, status, name, data)
+	if status == 0 {
+		s.render(w, "tag", data)
+		return
+	}
+	s.renderStatus(w, status, "tag", data)
 }
 
 func (s *Server) tagRequestFromHTTP(r *http.Request, tag string) tagRequest {

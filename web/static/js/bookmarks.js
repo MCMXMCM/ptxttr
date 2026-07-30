@@ -1,6 +1,9 @@
-import { DEFAULT_RETRY_ATTEMPTS, sleepBackoff } from "./backoff.js";
-import { fetchWithSession, getSession, normalizedPubkey, recordPublishedAt, selectedRelays } from "./session.js";
+import { publishSignedEvent } from "./publish.js";
+import { getSession, normalizedPubkey } from "./session.js";
 import { activeSignerState, signEventDraft } from "./signer.js";
+import { fetchBookmarks } from "./relay-reads.js";
+
+export { publishSignedEvent };
 
 const KIND_BOOKMARK_LIST = 10003;
 const bookmarkState = {
@@ -66,47 +69,6 @@ function syncBookmarkToggleLabels(root = document) {
   });
 }
 
-const RETRIABLE_PUBLISH_STATUSES = new Set([502, 503, 504, 429]);
-
-export async function publishSignedEvent(event) {
-  for (let attempt = 0; attempt < DEFAULT_RETRY_ATTEMPTS; attempt++) {
-    let response;
-    try {
-      response = await fetchWithSession("/api/events", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          event,
-          relays: selectedRelays(),
-        }),
-      });
-    } catch (err) {
-      if (attempt + 1 >= DEFAULT_RETRY_ATTEMPTS) {
-        throw err instanceof Error ? err : new Error("Publish failed.");
-      }
-      await sleepBackoff(attempt, 200, 200);
-      continue;
-    }
-    let payload = {};
-    try {
-      payload = await response.json();
-    } catch {
-      payload = {};
-    }
-    if (response.ok) {
-      recordPublishedAt();
-      return payload;
-    }
-    const retriable = RETRIABLE_PUBLISH_STATUSES.has(response.status);
-    const fallback = response.status === 502 ? "No relay accepted this event." : "Publish failed.";
-    const err = new Error(payload.error || fallback);
-    if (!retriable || attempt + 1 >= DEFAULT_RETRY_ATTEMPTS) {
-      throw err;
-    }
-    await sleepBackoff(attempt, 200, 200);
-  }
-}
-
 function entriesFromPayload(payload) {
   const out = new Map();
   const entries = Array.isArray(payload?.entries) ? payload.entries : [];
@@ -130,11 +92,9 @@ async function loadBookmarks(pubkey) {
     return bookmarkState.entries;
   }
   bookmarkState.pubkey = pubkey;
-  // Relays are sent as X-Ptxt-Relays via fetchWithSession.
-  bookmarkState.loading = fetchWithSession("/api/bookmarks")
-    .then(async (response) => {
-      if (!response.ok) throw new Error("bookmark list request failed");
-      const payload = await response.json();
+  // Relays are sent as X-Ptxt-Relays via fetchWithSession when falling back to server.
+  bookmarkState.loading = fetchBookmarks(pubkey)
+    .then(async (payload) => {
       bookmarkState.entries = entriesFromPayload(payload);
       bookmarkState.loaded = true;
       return bookmarkState.entries;
@@ -252,12 +212,14 @@ function resetBookmarkState() {
   bookmarkState.loaded = false;
 }
 
-window.addEventListener("ptxt:session", () => {
-  resetBookmarkState();
-  void syncBookmarkState(document);
-});
+if (typeof window !== "undefined") {
+  window.addEventListener("ptxt:session", () => {
+    resetBookmarkState();
+    void syncBookmarkState(document);
+  });
 
-window.addEventListener("ptxt:relays", () => {
-  resetBookmarkState();
-  void syncBookmarkState(document);
-});
+  window.addEventListener("ptxt:relays", () => {
+    resetBookmarkState();
+    void syncBookmarkState(document);
+  });
+}

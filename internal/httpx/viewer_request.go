@@ -9,7 +9,7 @@ import (
 // rather than URL query parameters so that anonymous full-page HTML
 // (`/thread/<id>`, `/u/<id>`, etc.) produces a single CloudFront cache entry
 // shared across all viewers. The client reads each value from localStorage and
-// injects the corresponding `X-Ptxt-*` header on every fetch / SPA hydration,
+// injects the corresponding `X-Ptxt-*` header on every fetch / client hydration,
 // so canonical viewer URLs no longer contain `?pubkey=`, `?relays=`, `?sort=`,
 // `?tf=`, `?reads_tf=`, `?wot=`, or `?wot_depth=`.
 //
@@ -23,8 +23,8 @@ const (
 	headerFeedSort        = "X-Ptxt-Sort"      // recent / trend24h / trend7d
 	headerFeedTrendingTf  = "X-Ptxt-Tf"        // 24h / 1w (home/feed trending sidebar)
 	headerReadsTrendingTf = "X-Ptxt-Reads-Tf"  // 24h / 1w (reads trending sidebar)
-	headerWotEnabled      = "X-Ptxt-Wot"       // 1 / 0 / "" (unset)
-	headerWotDepth        = "X-Ptxt-Wot-Depth" // 1..MaxDepth
+	headerWotEnabled      = "X-Ptxt-Wot"        // 1 / 0 / "" (unset)
+	headerWotDepth        = "X-Ptxt-Wot-Depth"  // 1..MaxDepth
 )
 
 // headerOrQuery returns the trimmed value from `header`, falling back to the
@@ -117,4 +117,18 @@ func wotEnabledFromRequest(r *http.Request) (set bool, value string) {
 // string value if so.
 func wotDepthFromRequest(r *http.Request) (set bool, value string) {
 	return triStateFromRequest(r, headerWotDepth, "wot_depth")
+}
+
+// effectiveThreadWoTEnabled returns the global WoT preference for thread views.
+func effectiveThreadWoTEnabled(_ *http.Request, globalEnabled bool) bool {
+	return globalEnabled
+}
+
+func parseBool01(raw string) bool {
+	switch strings.TrimSpace(strings.ToLower(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }

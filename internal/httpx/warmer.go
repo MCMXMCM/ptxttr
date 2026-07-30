@@ -56,6 +56,11 @@ func (q *warmQueue) enqueue(job warmJob) {
 	if q == nil || job.key == "" || job.kind == "" {
 		return
 	}
+	select {
+	case <-q.server.ctx.Done():
+		return
+	default:
+	}
 	q.mu.Lock()
 	if _, exists := q.pending[job.key]; exists {
 		q.mu.Unlock()
@@ -68,6 +73,10 @@ func (q *warmQueue) enqueue(job warmJob) {
 	select {
 	case q.ch <- job:
 		q.server.metrics.Add("warm.enqueued", 1)
+	case <-q.server.ctx.Done():
+		q.mu.Lock()
+		delete(q.pending, job.key)
+		q.mu.Unlock()
 	default:
 		q.mu.Lock()
 		delete(q.pending, job.key)
@@ -82,31 +91,62 @@ func (q *warmQueue) worker() {
 		select {
 		case <-q.server.ctx.Done():
 			return
+		default:
+		}
+
+		select {
+		case <-q.server.ctx.Done():
+			return
 		case job := <-q.ch:
-			func() {
-				timeout := q.server.cfg.WarmJobTimeout
-				if timeout <= 0 {
-					timeout = 45 * time.Second
-				}
-				jobCtx, cancel := context.WithTimeout(q.server.ctx, timeout)
-				defer cancel()
-				defer func() {
-					q.mu.Lock()
-					delete(q.pending, job.key)
-					q.mu.Unlock()
-				}()
-				started := time.Now()
-				q.server.runWithRelayWriteBudget(jobCtx, "warm."+job.kind, func() {
-					q.server.handleWarmJob(jobCtx, job)
-				})
-				q.server.metrics.Observe("warm."+job.kind, time.Since(started))
-				if jobCtx.Err() == context.DeadlineExceeded {
-					q.server.metrics.Add("warm."+job.kind+".timeout", 1)
-					slog.Warn("warm job timed out", "kind", job.kind, "key", job.key, "timeout", timeout)
-				}
-			}()
+			select {
+			case <-q.server.ctx.Done():
+				q.finish(job.key)
+				return
+			default:
+			}
+			q.run(job)
 		}
 	}
+}
+
+func (q *warmQueue) run(job warmJob) {
+	timeout := q.server.cfg.WarmJobTimeout
+	if timeout <= 0 {
+		timeout = 45 * time.Second
+	}
+	jobCtx, cancel := context.WithTimeout(q.server.ctx, timeout)
+	defer cancel()
+	defer q.finish(job.key)
+	started := time.Now()
+	q.server.runWithRelayWriteBudget(jobCtx, "warm."+job.kind, func() {
+		q.server.handleWarmJob(jobCtx, job)
+	})
+	q.server.metrics.Observe("warm."+job.kind, time.Since(started))
+	if jobCtx.Err() == context.DeadlineExceeded {
+		q.server.metrics.Add("warm."+job.kind+".timeout", 1)
+		slog.Warn("warm job timed out", "kind", job.kind, "items", warmJobItemCount(job), "timeout", timeout)
+	}
+}
+
+func warmJobItemCount(job warmJob) int {
+	switch {
+	case len(job.eventIDs) > 0:
+		return len(job.eventIDs)
+	case len(job.pubkeys) > 0:
+		return len(job.pubkeys)
+	case len(job.authors) > 0:
+		return len(job.authors)
+	case job.pubkey != "":
+		return 1
+	default:
+		return 0
+	}
+}
+
+func (q *warmQueue) finish(key string) {
+	q.mu.Lock()
+	delete(q.pending, key)
+	q.mu.Unlock()
 }
 
 func (q *warmQueue) close() {
@@ -209,11 +249,20 @@ func (s *Server) handleWarmJob(ctx context.Context, job warmJob) {
 			}
 			s.refreshReactionsForNote(ctx, eventID, job.relays)
 		}
+	case "threadGraph":
+		for _, rootID := range job.eventIDs {
+			if ctx.Err() != nil {
+				return
+			}
+			s.eventsByID(ctx, []string{rootID}, job.relays)
+			s.refreshRepliesBackground(ctx, rootID, job.viewer, nil, job.relays)
+			s.buildThreadGraphCache(ctx, rootID)
+		}
 	}
 }
 
 func (s *Server) enqueueWarmNotes(kind string, ids []string, relays []string) {
-	if s == nil || s.warmer == nil || len(ids) == 0 {
+	if s == nil || !s.allowLegacyWarmers() || s.warmer == nil || len(ids) == 0 {
 		return
 	}
 	sort.Strings(ids)
@@ -229,20 +278,25 @@ func (s *Server) requeueWarmAuthorsOnTimeout(ctx context.Context, ids []string, 
 	if ctx.Err() != context.DeadlineExceeded {
 		return
 	}
-	s.warmAuthors(ids, relays)
-	s.metrics.Add("warm.authors.requeued_timeout", 1)
+	// Periodic hydration/crawler passes provide the next retry. Immediate
+	// requeue under a persistently failing relay fleet turns a timeout into an
+	// endless queue churn loop that competes with foreground requests.
+	_ = ids
+	_ = relays
+	s.metrics.Add("warm.authors.abandoned_timeout", 1)
 }
 
 func (s *Server) requeueWarmNotesOnTimeout(ctx context.Context, kind string, ids []string, relays []string) {
 	if ctx.Err() != context.DeadlineExceeded {
 		return
 	}
-	s.enqueueWarmNotes(kind, ids, relays)
-	s.metrics.Add("warm."+kind+".requeued_timeout", 1)
+	_ = ids
+	_ = relays
+	s.metrics.Add("warm."+kind+".abandoned_timeout", 1)
 }
 
 func (s *Server) warmAuthor(pubkey string, relays []string) {
-	if s == nil || s.warmer == nil || pubkey == "" {
+	if s == nil || !s.allowLegacyWarmers() || s.warmer == nil || pubkey == "" {
 		return
 	}
 	s.touchHydrationTargets(s.ctx, authorWarmTargets([]string{pubkey}))
@@ -255,7 +309,7 @@ func (s *Server) warmAuthor(pubkey string, relays []string) {
 }
 
 func (s *Server) warmAuthors(pubkeys []string, relays []string) {
-	if s == nil || s.warmer == nil || len(pubkeys) == 0 {
+	if s == nil || !s.allowLegacyWarmers() || s.warmer == nil || len(pubkeys) == 0 {
 		return
 	}
 	seen := make(map[string]bool, len(pubkeys))
@@ -281,7 +335,7 @@ func (s *Server) warmAuthors(pubkeys []string, relays []string) {
 }
 
 func (s *Server) warmRecent(viewer string, authors []string, before int64, limit int, relays []string) {
-	if s == nil || s.warmer == nil || len(authors) == 0 {
+	if s == nil || !s.allowLegacyWarmers() || s.warmer == nil || len(authors) == 0 {
 		return
 	}
 	if before <= 0 {
@@ -302,8 +356,43 @@ func (s *Server) warmThread(eventIDs []string, relays []string) {
 	s.warmThreadForViewer("", eventIDs, relays)
 }
 
+func (s *Server) warmThreadGraph(rootIDs []string, relays []string) {
+	s.warmThreadGraphForViewer("", rootIDs, relays)
+}
+
+func (s *Server) warmThreadGraphForViewer(viewer string, rootIDs []string, relays []string) {
+	if s == nil || !s.allowLegacyWarmers() || s.warmer == nil || len(rootIDs) == 0 {
+		return
+	}
+	ids := trimWarmStrings(rootIDs, s.cfg.WarmMaxNoteIDsPerJob)
+	if len(ids) == 0 {
+		return
+	}
+	if s.store != nil {
+		if roots, err := s.store.ThreadRootIDsByNoteIDs(s.ctx, ids); err == nil {
+			for i, id := range ids {
+				if rootID := roots[id]; rootID != "" {
+					ids[i] = rootID
+				}
+			}
+			ids = trimWarmStrings(ids, s.cfg.WarmMaxNoteIDsPerJob)
+			if len(ids) == 0 {
+				return
+			}
+		}
+	}
+	sort.Strings(ids)
+	s.warmer.enqueue(warmJob{
+		key:      "threadGraph:" + strings.Join(ids, ","),
+		kind:     "threadGraph",
+		viewer:   viewer,
+		eventIDs: ids,
+		relays:   append([]string(nil), relays...),
+	})
+}
+
 func (s *Server) warmThreadsFromRecentSummaries(viewer string, baseRelays []string, recent []nostrx.Event, limit int) {
-	if s == nil || len(recent) == 0 {
+	if s == nil || !s.allowLegacyWarmers() || len(recent) == 0 {
 		return
 	}
 	nWarm := min(limit, len(recent))
@@ -327,7 +416,7 @@ func (s *Server) warmThreadsFromRecentSummaries(viewer string, baseRelays []stri
 }
 
 func (s *Server) warmThreadForViewer(viewer string, eventIDs []string, relays []string) {
-	if s == nil || s.warmer == nil {
+	if s == nil || !s.allowLegacyWarmers() || s.warmer == nil {
 		return
 	}
 	ids := make([]string, 0, len(eventIDs))
@@ -347,10 +436,11 @@ func (s *Server) warmThreadForViewer(viewer string, eventIDs []string, relays []
 	s.touchHydrationTargets(s.ctx, noteReactionWarmTargets(ids))
 	s.enqueueWarmNotesForViewer(viewer, "noteReplies", ids, relays)
 	s.enqueueWarmNotesForViewer(viewer, "noteReactions", ids, relays)
+	s.warmThreadGraphForViewer(viewer, ids, relays)
 }
 
 func (s *Server) enqueueWarmNotesForViewer(viewer, kind string, ids []string, relays []string) {
-	if s == nil || s.warmer == nil || len(ids) == 0 {
+	if s == nil || !s.allowLegacyWarmers() || s.warmer == nil || len(ids) == 0 {
 		return
 	}
 	sort.Strings(ids)
@@ -361,6 +451,18 @@ func (s *Server) enqueueWarmNotesForViewer(viewer, kind string, ids []string, re
 		eventIDs: append([]string(nil), ids...),
 		relays:   append([]string(nil), relays...),
 	})
+}
+
+func (s *Server) buildThreadGraphCache(ctx context.Context, rootID string) {
+	if s == nil || s.store == nil || rootID == "" {
+		return
+	}
+	if _, err := s.store.BuildThreadGraphCache(ctx, rootID, threadTreeFetchLimit); err != nil {
+		s.metrics.Add("thread.graph_cache.build_error", 1)
+		slog.Debug("thread graph cache build failed", "root", short(rootID), "err", err)
+		return
+	}
+	s.metrics.Add("thread.graph_cache.built", 1)
 }
 
 func trimWarmStrings(values []string, limit int) []string {

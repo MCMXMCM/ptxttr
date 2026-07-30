@@ -17,7 +17,9 @@ func (s *Server) runHydrationSweeper() {
 
 func (s *Server) sweepHydrationTargets(ctx context.Context) {
 	s.tryRunMaintenanceWork(maintenanceLaneHydration, func() {
-		s.sweepHydrationTargetsBody(ctx)
+		s.runWithRelayWriteBudget(ctx, "hydration.sweep", func() {
+			s.sweepHydrationTargetsBody(ctx)
+		})
 	})
 }
 

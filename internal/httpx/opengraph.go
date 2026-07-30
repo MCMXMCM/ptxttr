@@ -6,17 +6,18 @@ import (
 	"unicode/utf8"
 
 	"ptxt-nstr/internal/nostrx"
+	staticfs "ptxt-nstr/web/static"
 )
 
-const (
-	ogSiteName        = "Plain Text Nostr"
+var (
+	ogSiteName = "Plain Text Nostr"
 	// Black-on-white OG card (transparent favicon asset is composited in ascritch_og_light.png).
-	ogDefaultImage = "/static/img/ascritch_og_light.png"
-	ogDescriptionMax  = 240
-	ogTitleMax        = 110
-	ogTypeArticle     = "article"
-	ogTypeProfile     = "profile"
-	ogTypeWebsite     = "website"
+	ogDefaultImage   = staticfs.VersionedPath("img/ascritch_og_light.png")
+	ogDescriptionMax = 240
+	ogTitleMax       = 110
+	ogTypeArticle    = "article"
+	ogTypeProfile    = "profile"
+	ogTypeWebsite    = "website"
 	defaultPageDescr = "A small Nostr web app: server-rendered HTML, vanilla JS, and a SQLite event cache."
 	defaultPageTitle = "Plain Text Nostr"
 )
@@ -150,6 +151,19 @@ func ogImageForProfile(r *http.Request, pubkey string, profile nostrx.Profile) s
 		}
 	}
 	return absoluteURL(r, ogDefaultImage)
+}
+
+// ogSingleImageNote returns the direct image URL and visible text for notes
+// that contain exactly one supported image. It also accepts matching NIP-94
+// imeta tags.
+func ogSingleImageNote(content string, tags [][]string) (imageURL, visibleText string, ok bool) {
+	contentItems, mediaURLs := treeExtractMediaItems(content)
+	imetaItems := treeExtractImetaMediaItems(tags)
+	items := treeMergeMediaItems(contentItems, imetaItems)
+	if len(items) != 1 || items[0].Type != "image" || treeMediaType(items[0].URL) != "image" || !isImetaHTTPURL(items[0].URL) {
+		return "", "", false
+	}
+	return items[0].URL, strings.TrimSpace(treeStripMediaURLs(content, mediaURLs)), true
 }
 
 // homeOG returns the generic site card for / and similar non-content routes.

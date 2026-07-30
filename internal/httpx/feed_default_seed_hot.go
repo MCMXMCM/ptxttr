@@ -27,7 +27,7 @@ func (s *Server) canonicalDefaultLoggedOutRelays() []string {
 }
 
 // canonicalDefaultLoggedOutGuestFeedRequest matches anonymous home with default
-// relays, default Jack seed, WoT enabled at the default depth, recent sort, and
+// relays, default Gigi seed, WoT enabled at the default depth, recent sort, and
 // the default trending window (24h).
 func (s *Server) canonicalDefaultLoggedOutGuestFeedRequest() feedRequest {
 	return feedRequest{
@@ -134,7 +134,17 @@ func (s *Server) persistDefaultSeedGuestFeedSnapshot(ctx context.Context, req fe
 	if s == nil || s.store == nil || data == nil || len(data.Feed) == 0 {
 		return nil
 	}
+	if s.cfg.GuestSliceV2Enabled {
+		// v2 snapshots are published only by PublishGuestSlice, which validates
+		// and pins the entire dependency closure in the same transaction.
+		return nil
+	}
 	if !s.isCanonicalDefaultLoggedOutGuestFeedRequest(req) {
+		return nil
+	}
+	resolved := s.resolveRequestAuthors(ctx, req.Pubkey, req.SeedPubkey, req.Relays, req.WoT)
+	if !defaultSeedGuestFeedSnapshotReady(data, resolved) {
+		s.metrics.Add("feed.snapshot_persist_guest_canonical_skipped_partial", 1)
 		return nil
 	}
 	snap := s.feedPageDataToDefaultSeedSnapshot(req, data)
@@ -165,6 +175,11 @@ func (s *Server) mergePersistedDefaultSeedGuestFeedIntoShell(ctx context.Context
 		return false
 	}
 	if snap.RelaysHash != hashStringSlice(req.Relays) {
+		return false
+	}
+	resolved := s.resolveRequestAuthors(ctx, req.Pubkey, req.SeedPubkey, req.Relays, req.WoT)
+	if !defaultSeedGuestSnapshotReadyFromSnapshot(snap, resolved) {
+		s.metrics.Add("feed.snapshot_restore_guest_canonical_skipped_partial", 1)
 		return false
 	}
 	data.Feed = snap.Feed
@@ -204,8 +219,43 @@ func (s *Server) mergePersistedDefaultSeedGuestFeedIntoShell(ctx context.Context
 			NIP05:   row.NIP05,
 		}
 	}
-	// homeOrFeedDocumentData already schedules scheduleGuestFeedFragmentWarm(req).
 	return true
+}
+
+func defaultSeedGuestSnapshotReadyFromSnapshot(snap *store.DefaultSeedGuestFeedSnapshot, resolved requestAuthors) bool {
+	if snap == nil || len(snap.Feed) == 0 {
+		return false
+	}
+	return defaultSeedGuestFeedAuthorsReady(snap.Feed, resolved)
+}
+
+func defaultSeedGuestFeedSnapshotReady(data *FeedPageData, resolved requestAuthors) bool {
+	if data == nil || len(data.Feed) == 0 {
+		return false
+	}
+	return defaultSeedGuestFeedAuthorsReady(data.Feed, resolved)
+}
+
+func defaultSeedGuestFeedAuthorsReady(feed []nostrx.Event, resolved requestAuthors) bool {
+	if len(feed) == 0 {
+		return false
+	}
+	if !resolved.loggedOut || !resolved.wotEnabled {
+		return false
+	}
+	seedViewer := strings.TrimSpace(resolved.wotViewerPubkey)
+	if seedViewer == "" {
+		return false
+	}
+	if len(resolved.allAuthors) <= 1 {
+		return false
+	}
+	for _, event := range feed {
+		if strings.TrimSpace(event.PubKey) != seedViewer {
+			return true
+		}
+	}
+	return false
 }
 
 // tryWarmDeferredGuestFeedFragmentIfCold runs the fragment warm path used by
@@ -230,7 +280,7 @@ func (s *Server) tryWarmDeferredGuestFeedFragmentIfCold(ctx context.Context, req
 	if _, hit := s.guestFeedCache.get(cacheKey, time.Now()); hit {
 		return
 	}
-	data := s.feedPageDataEx(ctx, req, false, feedPageDataOptions{lightStatsOnly: true})
+	data := s.feedPageDataEx(ctx, req, false, feedPageDataOptions{lightStatsOnly: normalizeFeedSort(req.SortMode) == feedSortRecent})
 	if s.isCanonicalDefaultLoggedOutGuestFeedRequest(req) && len(data.Feed) > 0 {
 		_ = s.persistDefaultSeedGuestFeedSnapshot(ctx, req, &data)
 	}
@@ -251,13 +301,16 @@ func (s *Server) warmGuestWoTCohortTrending(ctx context.Context, req feedRequest
 	if !resolved.wotEnabled || len(resolved.allAuthors) == 0 {
 		return
 	}
-	cohortKey := authorsCacheKey(resolved.allAuthors)
+	cohortKey, authors := resolved.trendingScope()
+	if cohortKey == "" || len(authors) == 0 {
+		return
+	}
 	for _, tf := range []string{trending24h, trending1w} {
 		items, _, err := s.store.ReadTrendingCache(ctx, tf, cohortKey)
 		if err == nil && len(items) > 0 {
 			continue
 		}
-		s.refreshTrendingCacheAsync(tf, cohortKey, resolved.allAuthors)
+		s.refreshTrendingCacheAsync(tf, cohortKey, authors)
 	}
 }
 
@@ -269,30 +322,32 @@ func (s *Server) tryPeriodicCanonicalDefaultSeedGuestFeed(ctx context.Context) {
 		return
 	}
 	s.tryRunMaintenanceWork(maintenanceLaneSeed, func() {
-		if s.store != nil && !s.store.ShouldRefresh(ctx, defaultSeedGuestFeedScope, defaultSeedGuestPeriodicAttemptKey, defaultSeedGuestPeriodicThrottle) {
-			return
-		}
-		for _, sort := range []string{feedSortRecent, feedSortTrend24h, feedSortTrend7d} {
-			req := s.canonicalGuestFeedRequestForSort(sort)
-			cacheKey, ok := s.guestFeedFirstPageCacheKey(ctx, req)
-			if !ok || cacheKey == "" {
-				continue
+		s.runWithRelayWriteBudget(ctx, "feed.default_seed_hot", func() {
+			if s.store != nil && !s.store.ShouldRefresh(ctx, defaultSeedGuestFeedScope, defaultSeedGuestPeriodicAttemptKey, defaultSeedGuestPeriodicThrottle) {
+				return
 			}
-			lockKey := defaultSeedGuestWarmLockKey(cacheKey)
-			if !s.beginRefresh(lockKey) {
-				continue
+			for _, sort := range []string{feedSortRecent, feedSortTrend24h, feedSortTrend7d} {
+				req := s.canonicalGuestFeedRequestForSort(sort)
+				cacheKey, ok := s.guestFeedFirstPageCacheKey(ctx, req)
+				if !ok || cacheKey == "" {
+					continue
+				}
+				lockKey := defaultSeedGuestWarmLockKey(cacheKey)
+				if !s.beginRefresh(lockKey) {
+					continue
+				}
+				data := s.feedPageDataEx(ctx, req, false, feedPageDataOptions{lightStatsOnly: sort == feedSortRecent})
+				if len(data.Feed) > 0 {
+					_ = s.persistDefaultSeedGuestFeedSnapshot(ctx, req, &data)
+					resolved := s.resolveRequestAuthors(ctx, req.Pubkey, req.SeedPubkey, req.Relays, req.WoT)
+					s.maybePersistFeedSnapshots(ctx, req, resolved, &data)
+				}
+				s.endRefresh(lockKey)
 			}
-			data := s.feedPageDataEx(ctx, req, false, feedPageDataOptions{lightStatsOnly: true})
-			if len(data.Feed) > 0 {
-				_ = s.persistDefaultSeedGuestFeedSnapshot(ctx, req, &data)
-				resolved := s.resolveRequestAuthors(ctx, req.Pubkey, req.SeedPubkey, req.Relays, req.WoT)
-				s.maybePersistFeedSnapshots(ctx, req, resolved, &data)
+			if s.store != nil {
+				s.store.MarkRefreshed(ctx, defaultSeedGuestFeedScope, defaultSeedGuestPeriodicAttemptKey)
 			}
-			s.endRefresh(lockKey)
-		}
-		if s.store != nil {
-			s.store.MarkRefreshed(ctx, defaultSeedGuestFeedScope, defaultSeedGuestPeriodicAttemptKey)
-		}
+		})
 	})
 }
 
