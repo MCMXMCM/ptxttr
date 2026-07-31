@@ -1,4 +1,5 @@
 import { nip19 } from "../lib/nostr-tools.js";
+import { appFeatures } from "./app/bootstrap.js";
 import { relayFetch } from "./relay-pool.js";
 import { readRelaysForViewer } from "./publish-plan.js";
 import { fetchWithSession } from "./session.js";
@@ -427,7 +428,7 @@ export async function fetchProfileFollowGraph(pubkey, { relays = [], followerLim
 
 export async function fetchDesktopProfileFollowGraph(pubkey) {
   const pk = normalizePubkey(pubkey);
-  if (!pk || document.documentElement?.dataset?.ptxtDesktopMode !== "1") return null;
+	if (!pk || !appFeatures().storageControls) return null;
   const response = await fetchWithSession(`/__ptxt/desktop/follow-graph?pubkey=${encodeURIComponent(pk)}`, {
     headers: { Accept: "application/json" },
   });
@@ -492,7 +493,19 @@ export async function fetchMentions(pubkey, { rootID = "" } = {}) {
     }
   }
   candidates.sort((a, b) => String(a.name).localeCompare(String(b.name)));
-  return { pubkey: pk, root_id: rootID, candidates };
+  return {
+    pubkey: pk,
+    root_id: rootID,
+    candidates,
+    follow_event: followEvent ? {
+      id: String(followEvent.id || ""),
+      created_at: Number(followEvent.created_at || 0),
+      tags: Array.isArray(followEvent.tags)
+        ? followEvent.tags.map((tag) => (Array.isArray(tag) ? [...tag] : tag))
+        : [],
+      content: String(followEvent.content ?? ""),
+    } : null,
+  };
 }
 
 async function distinctAuthorsUnderRoot(rootID) {

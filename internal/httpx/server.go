@@ -70,6 +70,7 @@ type Server struct {
 	maintenanceViewer        atomic.Bool
 	maintenanceHydration     atomic.Bool
 	maintenanceTrending      atomic.Bool
+	backgroundActive         atomic.Bool
 	userAsyncQueue           chan func()
 	relayWriteSem            chan struct{}
 
@@ -129,6 +130,7 @@ func New(cfg config.Config, st *store.Store, nostrClient *nostrx.Client) (*Serve
 	server.store.SetEventRetention(cfg.EventRetention)
 	server.store.SetRetentionPolicy(cfg.RetentionByAccess)
 	server.store.SetDiskRetentionPolicy(cfg.DBDiskMaxPercent, cfg.DBDiskPruneTargetPercent)
+	server.store.SetDiskByteRetentionPolicy(cfg.DBMaxBytes, cfg.DBPruneTargetBytes)
 	if st != nil {
 		st.SetSidecarMetricSink(func(name string, delta int64) {
 			server.metrics.Add(name, delta)
@@ -137,6 +139,7 @@ func New(cfg config.Config, st *store.Store, nostrClient *nostrx.Client) (*Serve
 	// Zero until the first HTTP request: avoids treating a brand-new server as
 	// "foreground hot" for maintenance_gate (see foregroundBusy).
 	server.lastRequestAt.Store(0)
+	server.backgroundActive.Store(true)
 	nostrClient.SetIngestVerifyParallel(cfg.IngestVerifyParallel)
 	nostrClient.SetNegentropyCache(st)
 	nostrClient.SetRelayMaxOutboundConns(cfg.RelayMaxOutboundConns)
@@ -320,8 +323,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/og/", s.handleOGImage)
 	mux.HandleFunc("/services/oembed", s.handleOEmbed)
 	mux.HandleFunc(avatarPathPrefix, s.handleAvatar)
-	if s.cfg.DesktopMode {
-		mux.HandleFunc(desktopOpenExternalPath, s.handleDesktopOpenExternal)
+	if s.runtimeCapabilities().DesktopShell {
+		mux.HandleFunc(desktopActivityPath, s.handleDesktopActivity)
 		mux.HandleFunc(desktopStoragePath, s.handleDesktopStorage)
 		mux.HandleFunc(desktopStorageClearPath, s.handleDesktopStorageClear)
 		mux.HandleFunc(desktopFollowGraphPath, s.handleDesktopFollowGraph)

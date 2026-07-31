@@ -2,33 +2,37 @@ package httpx
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
-	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
-	"os/exec"
-	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
 	"ptxt-nstr/internal/nostrx"
+	"ptxt-nstr/internal/store"
 )
 
 const (
-	desktopOpenExternalPath = "/__ptxt/desktop/open-external"
+	desktopActivityPath     = "/__ptxt/desktop/activity"
 	desktopStoragePath      = "/__ptxt/desktop/storage"
 	desktopStorageClearPath = "/__ptxt/desktop/storage/clear"
 	desktopFollowGraphPath  = "/__ptxt/desktop/follow-graph"
-	maxDesktopOpenURLLen    = 2048
+	desktopCacheMinBytes    = int64(64 * 1024 * 1024)
+	desktopCacheMaxBytes    = int64(1024 * 1024 * 1024 * 1024)
 )
 
-type desktopOpenExternalBody struct {
-	URL string `json:"url"`
+type desktopActivityBody struct {
+	Active bool `json:"active"`
 }
 
 type desktopStorageClearBody struct {
 	Scope string `json:"scope"`
+}
+
+type desktopStorageLimitBody struct {
+	MaxBytes int64 `json:"max_bytes"`
 }
 
 type desktopFollowGraphResponse struct {
@@ -38,11 +42,38 @@ type desktopFollowGraphResponse struct {
 	Relays    []string `json:"relays"`
 }
 
-// handleDesktopFollowGraph is a loopback-only fallback for WebKit relay reads.
+func (s *Server) handleDesktopActivity(w http.ResponseWriter, r *http.Request) {
+	if s == nil || !s.runtimeCapabilities().DesktopShell || s.cfg.DesktopActivityToken == "" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	provided := r.Header.Get("X-Ptxt-Desktop-Token")
+	if len(provided) != len(s.cfg.DesktopActivityToken) || subtle.ConstantTimeCompare([]byte(provided), []byte(s.cfg.DesktopActivityToken)) != 1 {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 256)
+	var body desktopActivityBody
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	s.backgroundActive.Store(body.Active)
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDesktopFollowGraph is a loopback-only fallback for browser relay reads.
 // It asks the local relay client for the profile's current kind-3 event, stores
 // it locally, and returns the graph already available on this device.
 func (s *Server) handleDesktopFollowGraph(w http.ResponseWriter, r *http.Request) {
-	if s == nil || !s.cfg.DesktopMode || s.store == nil {
+	if s == nil || !s.runtimeCapabilities().StorageControls || s.store == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -82,8 +113,12 @@ func (s *Server) handleDesktopFollowGraph(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleDesktopStorage(w http.ResponseWriter, r *http.Request) {
-	if s == nil || !s.cfg.DesktopMode || s.store == nil {
+	if s == nil || !s.runtimeCapabilities().StorageControls || s.store == nil {
 		http.NotFound(w, r)
+		return
+	}
+	if r.Method == http.MethodPut {
+		s.handleDesktopStorageLimit(w, r)
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -101,8 +136,40 @@ func (s *Server) handleDesktopStorage(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(usage)
 }
 
+func (s *Server) handleDesktopStorageLimit(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1024)
+	var body desktopStorageLimitBody
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	if body.MaxBytes < desktopCacheMinBytes || body.MaxBytes > desktopCacheMaxBytes {
+		http.Error(w, "cache limit must be between 64 MiB and 1 TiB", http.StatusBadRequest)
+		return
+	}
+	if err := s.store.SetAppMeta(r.Context(), store.AppMetaKeyCacheMaxBytes, strconv.FormatInt(body.MaxBytes, 10)); err != nil {
+		slog.Warn("desktop cache preference save failed", "err", err)
+		http.Error(w, "cache limit save failed", http.StatusInternalServerError)
+		return
+	}
+	s.store.SetRetentionPolicy(true)
+	s.store.SetDiskByteRetentionPolicy(body.MaxBytes, body.MaxBytes*9/10)
+	s.store.RequestPruneAsync()
+	usage, err := s.store.CacheUsage(r.Context())
+	if err != nil {
+		slog.Warn("desktop storage usage after limit update failed", "err", err)
+		http.Error(w, "storage usage failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(usage)
+}
+
 func (s *Server) handleDesktopStorageClear(w http.ResponseWriter, r *http.Request) {
-	if s == nil || !s.cfg.DesktopMode || s.store == nil {
+	if s == nil || !s.runtimeCapabilities().StorageControls || s.store == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -125,60 +192,4 @@ func (s *Server) handleDesktopStorageClear(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(result)
-}
-
-// handleDesktopOpenExternal opens an http(s) URL in the system browser. It is
-// only registered when cfg.DesktopMode is true (Wails desktop shell). Intended
-// for same-origin fetch from injected UI script on the loopback server.
-func (s *Server) handleDesktopOpenExternal(w http.ResponseWriter, r *http.Request) {
-	if s == nil || !s.cfg.DesktopMode {
-		http.NotFound(w, r)
-		return
-	}
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	const maxBody = 4096
-	r.Body = http.MaxBytesReader(w, r.Body, maxBody)
-	var body desktopOpenExternalBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	raw := strings.TrimSpace(body.URL)
-	if raw == "" || len(raw) > maxDesktopOpenURLLen {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	switch strings.ToLower(u.Scheme) {
-	case "http", "https":
-	default:
-		http.Error(w, "unsupported scheme", http.StatusBadRequest)
-		return
-	}
-	_, _ = io.Copy(io.Discard, r.Body)
-
-	if err := openURLInSystemBrowser(u.String()); err != nil {
-		slog.Warn("desktop open external failed", "url", u.Redacted(), "err", err)
-		http.Error(w, "open failed", http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func openURLInSystemBrowser(raw string) error {
-	switch runtime.GOOS {
-	case "darwin":
-		return exec.Command("open", raw).Start()
-	case "windows":
-		return exec.Command("rundll32", "url.dll,FileProtocolHandler", raw).Start()
-	default:
-		return exec.Command("xdg-open", raw).Start()
-	}
 }

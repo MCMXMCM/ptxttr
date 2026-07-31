@@ -140,16 +140,19 @@ async function publishReaction(noteEl, polarity) {
     return;
   }
   const draft = buildReactionDraft(noteEl, polarity);
-  const signed = await signEventDraft(draft);
   const snap = {
     viewer: noteEl.dataset.asciiReactionViewer || "",
     total: noteEl.dataset.asciiReactionTotal || "0",
   };
-  const requestSeq = nextReactionSequence(noteEl);
-  const next = polarity === "up" ? "+" : "-";
-  optimisticBump(noteEl, next);
-  refreshAsciiAround(noteEl);
+  let requestSeq = 0;
+  let optimistic = false;
   try {
+    const signed = await signEventDraft(draft);
+    requestSeq = nextReactionSequence(noteEl);
+    const next = polarity === "up" ? "+" : "-";
+    optimisticBump(noteEl, next);
+    optimistic = true;
+    refreshAsciiAround(noteEl);
     const plannedRelays = await planPublishTargets(signed).catch(() => []);
     const pendingState = pendingPublishStatus({
       phaseTitle: "Broadcasting reaction",
@@ -166,7 +169,7 @@ async function publishReaction(noteEl, polarity) {
     showPublishStatusSheet(payload, { title: "Reaction publish status", initialState: pendingState });
     clearThreadWarmCache();
   } catch (err) {
-    if (requestSeq === latestReactionSequence(noteEl)) {
+    if (optimistic && requestSeq === latestReactionSequence(noteEl)) {
       rollback(noteEl, snap);
       refreshAsciiAround(noteEl);
     }

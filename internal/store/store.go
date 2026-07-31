@@ -72,13 +72,18 @@ type Store struct {
 
 	retentionMax int
 	// retentionByAccess evicts by last_accessed_at (LRU) instead of inserted_at (FIFO).
-	retentionByAccess bool
+	retentionByAccess atomic.Bool
 	// diskPrunePercent starts deleting old event rows when SQLite files exceed
 	// this percentage of the backing filesystem capacity.
 	diskPrunePercent int
 	// diskPruneTargetPercent is the post-prune target percentage.
 	diskPruneTargetPercent int
-	dbPath                 string
+	diskBytePolicyMu       sync.RWMutex
+	// diskMaxBytes is a fixed upper budget for the SQLite file and sidecars.
+	diskMaxBytes int64
+	// diskPruneTargetBytes is the post-prune target for the fixed byte budget.
+	diskPruneTargetBytes int64
+	dbPath               string
 
 	pruneEvery int64
 	writeCount atomic.Int64
@@ -196,7 +201,7 @@ func (s *Store) SetRetentionPolicy(byAccessTime bool) {
 	if s == nil {
 		return
 	}
-	s.retentionByAccess = byAccessTime
+	s.retentionByAccess.Store(byAccessTime)
 }
 
 // SetDiskRetentionPolicy enables disk-budget pruning. maxPercent is the SQLite
@@ -225,6 +230,41 @@ func (s *Store) SetDiskRetentionPolicy(maxPercent, targetPercent int) {
 	}
 	s.diskPrunePercent = maxPercent
 	s.diskPruneTargetPercent = targetPercent
+}
+
+// SetDiskByteRetentionPolicy enables a fixed SQLite cache budget. A zero max
+// disables it. Invalid targets default to ninety percent of max.
+func (s *Store) SetDiskByteRetentionPolicy(maxBytes, targetBytes int64) {
+	if s == nil {
+		return
+	}
+	s.diskBytePolicyMu.Lock()
+	defer s.diskBytePolicyMu.Unlock()
+	if maxBytes <= 0 {
+		s.diskMaxBytes = 0
+		s.diskPruneTargetBytes = 0
+		return
+	}
+	if targetBytes <= 0 || targetBytes >= maxBytes {
+		targetBytes = maxBytes * 9 / 10
+	}
+	if targetBytes < 1 {
+		targetBytes = 1
+	}
+	s.diskMaxBytes = maxBytes
+	s.diskPruneTargetBytes = targetBytes
+}
+
+// DiskByteRetentionPolicy reports the active fixed cache budget and its
+// post-prune target. It is safe to call while a desktop preference update is
+// changing the policy.
+func (s *Store) DiskByteRetentionPolicy() (maxBytes, targetBytes int64) {
+	if s == nil {
+		return 0, 0
+	}
+	s.diskBytePolicyMu.RLock()
+	defer s.diskBytePolicyMu.RUnlock()
+	return s.diskMaxBytes, s.diskPruneTargetBytes
 }
 
 // DBPath returns the SQLite file path passed to Open.
@@ -295,7 +335,8 @@ func (s *Store) startBackgroundWorkers() {
 	// run it daily and only when retention is active (otherwise there is no
 	// recurring source of free pages to recover).
 	s.runTicker(24*time.Hour, func() {
-		if s.retentionMax <= 0 && s.diskPrunePercent <= 0 {
+		maxBytes, _ := s.DiskByteRetentionPolicy()
+		if s.retentionMax <= 0 && s.diskPrunePercent <= 0 && maxBytes <= 0 {
 			return
 		}
 		timeout := vacuumTimeout()
@@ -321,6 +362,17 @@ func (s *Store) maybeVacuumUnderPressure() {
 			slog.Info("disk budget prune before vacuum complete", "deleted_events", deleted)
 		}
 	}
+	maxBytes, _ := s.DiskByteRetentionPolicy()
+	if maxBytes > 0 {
+		ctx, cancel := context.WithTimeout(s.bgCtx, pruneTimeout())
+		deleted, err := s.PruneEventsToByteTarget(ctx)
+		cancel()
+		if err != nil {
+			slog.Warn("byte budget prune before vacuum failed", "err", err)
+		} else if deleted > 0 {
+			slog.Info("byte budget prune before vacuum complete", "deleted_events", deleted)
+		}
+	}
 	threshold := float64(diskPressureThresholdPercent())
 	if used, ok := DBDiskUsagePercent(s.dbPath); ok && used >= threshold {
 		slog.Warn("disk pressure vacuum", "used_percent", used, "threshold", threshold)
@@ -332,7 +384,12 @@ func (s *Store) maybeVacuumUnderPressure() {
 		s.runVacuumWithTimeout("db_file_budget")
 		return
 	}
-	if s.retentionMax <= 0 && s.diskPrunePercent <= 0 {
+	if bytes := DBFileBytes(s.dbPath); maxBytes > 0 && bytes >= maxBytes {
+		slog.Warn("db byte budget vacuum", "db_bytes", bytes, "threshold_bytes", maxBytes)
+		s.runVacuumWithTimeout("db_byte_budget")
+		return
+	}
+	if s.retentionMax <= 0 && s.diskPrunePercent <= 0 && maxBytes <= 0 {
 		return
 	}
 	ratio, err := s.FreelistRatio(context.Background())
@@ -371,7 +428,7 @@ func (s *Store) FreelistRatio(ctx context.Context) (float64, error) {
 }
 
 func (s *Store) pruneOrderByClause() string {
-	if s.retentionByAccess {
+	if s.retentionByAccess.Load() {
 		return "last_accessed_at ASC, inserted_at ASC, created_at ASC, id ASC"
 	}
 	return "inserted_at ASC, created_at ASC, id ASC"
@@ -956,6 +1013,14 @@ func (s *Store) PruneEvents(ctx context.Context, max int) (int64, error) {
 		WHERE NOT EXISTS (
 			SELECT 1 FROM event_pins ep WHERE ep.event_id = events.id AND ep.expires_at > unixepoch()
 		)
+		AND NOT (
+			events.kind IN (0, 3, 10002)
+			AND events.id = (
+				SELECT newest.id FROM events newest
+				WHERE newest.pubkey = events.pubkey AND newest.kind = events.kind
+				ORDER BY newest.created_at DESC, newest.id DESC LIMIT 1
+			)
+		)
 		ORDER BY %s LIMIT ?
 	)`, orderBy), excess)
 	if err != nil {
@@ -1009,6 +1074,49 @@ func estimateDiskPruneKeepEvents(totalEvents, currentBytes, totalBytes int64, ta
 		keep = 1
 	}
 	return int(keep)
+}
+
+func estimateBytePruneKeepEvents(totalEvents, currentBytes, targetBytes int64) int {
+	if totalEvents <= 0 || currentBytes <= 0 || targetBytes <= 0 {
+		return 0
+	}
+	if currentBytes <= targetBytes {
+		return int(totalEvents)
+	}
+	keep := totalEvents * targetBytes / currentBytes
+	if keep >= totalEvents {
+		keep = totalEvents - 1
+	}
+	if keep < 1 {
+		keep = 1
+	}
+	return int(keep)
+}
+
+// PruneEventsToByteTarget deletes cold events until the event count is
+// estimated to fit the fixed byte budget. A subsequent vacuum reclaims pages.
+func (s *Store) PruneEventsToByteTarget(ctx context.Context) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, nil
+	}
+	maxBytes, targetBytes := s.DiskByteRetentionPolicy()
+	if maxBytes <= 0 {
+		return 0, nil
+	}
+	currentBytes := DBFileBytes(s.dbPath)
+	if currentBytes < maxBytes {
+		return 0, nil
+	}
+	var totalEvents int64
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events`).Scan(&totalEvents); err != nil {
+		return 0, err
+	}
+	keep := estimateBytePruneKeepEvents(totalEvents, currentBytes, targetBytes)
+	if keep >= int(totalEvents) {
+		return 0, nil
+	}
+	slog.Warn("db byte budget prune", "db_bytes", currentBytes, "threshold_bytes", maxBytes, "target_bytes", targetBytes, "events", totalEvents, "keep_events", keep)
+	return s.PruneEvents(ctx, keep)
 }
 
 // PruneEventsToDiskTarget deletes least-recently-used or oldest events until
@@ -1479,7 +1587,8 @@ func (s *Store) maybePruneAsync() {
 }
 
 func (s *Store) requestPruneAsync(force bool) {
-	if s.retentionMax <= 0 && s.diskPrunePercent <= 0 {
+	maxBytes, _ := s.DiskByteRetentionPolicy()
+	if s.retentionMax <= 0 && s.diskPrunePercent <= 0 && maxBytes <= 0 {
 		return
 	}
 	interval := s.pruneEvery
@@ -1491,7 +1600,11 @@ func (s *Store) requestPruneAsync(force bool) {
 	// (e.g. after enabling retention on an already-large DB). After that we
 	// fall back to the regular periodic cadence to avoid counting on every save.
 	if !force && writes != 1 && writes%interval != 0 {
-		return
+		// A fixed byte budget is a hard trigger: check it after each successful
+		// write batch so a busy desktop does not wait for the periodic cadence.
+		if maxBytes <= 0 || DBFileBytes(s.dbPath) < maxBytes {
+			return
+		}
 	}
 	if !s.pruning.CompareAndSwap(false, true) {
 		return
@@ -1507,6 +1620,14 @@ func (s *Store) requestPruneAsync(force bool) {
 				slog.Warn("periodic disk budget prune failed", "err", err)
 			} else if deleted > 0 {
 				slog.Info("periodic disk budget prune complete", "deleted_events", deleted)
+			}
+		}
+		maxBytes, _ := s.DiskByteRetentionPolicy()
+		if maxBytes > 0 {
+			if deleted, err := s.PruneEventsToByteTarget(ctx); err != nil {
+				slog.Warn("periodic byte budget prune failed", "err", err)
+			} else if deleted > 0 {
+				slog.Info("periodic byte budget prune complete", "deleted_events", deleted)
 			}
 		}
 		if s.retentionMax > 0 {

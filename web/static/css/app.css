@@ -56,6 +56,175 @@ body {
   line-height: 1.25;
 }
 
+/* `hiddenInset` extends the renderer under macOS's title bar. Reserve its
+   otherwise-empty center as a real native drag target while keeping the
+   traffic lights clear on the left. Electron continues to own edge resizing. */
+html[data-ptxt-desktop-mode="1"] .desktop-window-drag-region {
+  -webkit-app-region: drag;
+  height: 52px;
+  left: 78px;
+  position: fixed;
+  right: 0;
+  top: 0;
+  z-index: 2147483647;
+}
+
+/* `hiddenInset` leaves the macOS traffic lights over the renderer at the
+   top-left. Without this inset the compact Home (`~`) control is visually
+   present but its hover/click target belongs to the native title bar. */
+html[data-ptxt-desktop-mode="1"] .left-rail {
+  padding-top: calc(52px + 0.75rem);
+}
+
+/* Keep reading content below the native title-bar drag strip. This leaves a
+   generous window-move target and gives every desktop route a consistent top
+   inset instead of letting its first control touch the window edge. */
+@media (min-width: 701px) {
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .app-shell .feed-column,
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .route-keepalive-layer--thread[data-route-keepalive-active="1"] > .feed-column,
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .route-keepalive-layer--feed[data-route-keepalive-active="0"],
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .app-shell .right-rail {
+    padding-top: calc(52px + 1rem);
+  }
+}
+
+html[data-ptxt-desktop-mode="1"] .left-rail .rail-nav a,
+html[data-ptxt-desktop-mode="1"] .left-rail .rail-nav a .rail-icon {
+  -webkit-app-region: no-drag;
+  cursor: pointer;
+}
+
+/* Electron can host AppKit's real sidebar vibrancy material, but it does not
+   expose NSSplitViewController or native sidebar rows to web content. Keep the
+   accessible HTML controls and reveal the native material only beneath them. */
+@media (min-width: 701px) {
+  html[data-ptxt-desktop-mode="1"] body.feed-shell {
+    background-color: transparent;
+  }
+
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .app-shell {
+    --desktop-sidebar-expanded-width: 224px;
+    --desktop-sidebar-width: var(--desktop-sidebar-expanded-width);
+    --desktop-sidebar-edge: var(--desktop-sidebar-width);
+    --desktop-sidebar-surface: color-mix(in srgb, var(--bg) 88%, transparent);
+    --shell-left-rail: var(--desktop-sidebar-width);
+    background:
+      linear-gradient(
+        to right,
+        var(--desktop-sidebar-surface) 0,
+        var(--desktop-sidebar-surface) calc(var(--desktop-sidebar-edge) - 1px),
+        color-mix(in srgb, var(--border) 62%, transparent) calc(var(--desktop-sidebar-edge) - 1px),
+        color-mix(in srgb, var(--border) 62%, transparent) var(--desktop-sidebar-edge),
+        var(--bg) var(--desktop-sidebar-edge),
+        var(--bg) 100%
+      );
+    grid-template-columns:
+      var(--desktop-sidebar-width)
+      minmax(0.75rem, 1fr)
+      minmax(0, var(--shell-feed-max))
+      var(--shell-right-rail)
+      minmax(0.75rem, 1fr);
+    justify-content: stretch;
+  }
+
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .left-rail {
+    align-items: stretch;
+    background: transparent;
+    grid-column: 1;
+    padding-inline: 1rem;
+    text-align: left;
+  }
+
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .app-shell .feed-column,
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .route-keepalive-layer--thread[data-route-keepalive-active="1"] > .feed-column,
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .route-keepalive-layer--feed[data-route-keepalive-active="0"] {
+    grid-column: 3;
+  }
+
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .app-shell .right-rail {
+    grid-column: 4;
+  }
+
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .left-rail .rail-brand,
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .left-rail .rail-label,
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .left-rail .rail-user-copy {
+    display: initial;
+  }
+
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .left-rail .rail-nav a {
+    border-radius: 0.45rem;
+    color: var(--fg);
+    justify-content: flex-start;
+    text-decoration: none;
+  }
+
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .left-rail .rail-nav a:hover {
+    background: color-mix(in srgb, var(--fg) 7%, transparent);
+  }
+
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .left-rail .rail-nav a[aria-current="page"] {
+    background: color-mix(in srgb, var(--fg) 13%, transparent);
+  }
+
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .rail-collapse-toggle {
+    display: inline-flex;
+  }
+
+  html[data-ptxt-desktop-mode="1"][data-ptxt-sidebar-collapsed="1"] body.feed-shell .app-shell {
+    --desktop-sidebar-width: 0px;
+    --shell-left-rail: 0px;
+    background: var(--bg);
+    grid-template-columns:
+      minmax(0.75rem, 1fr)
+      minmax(0, var(--shell-feed-max))
+      var(--shell-right-rail)
+      minmax(0.75rem, 1fr);
+  }
+
+  html[data-ptxt-desktop-mode="1"][data-ptxt-sidebar-collapsed="1"] body.feed-shell .left-rail {
+    display: none;
+  }
+
+  html[data-ptxt-desktop-mode="1"][data-ptxt-sidebar-collapsed="1"] body.feed-shell .app-shell .feed-column,
+  html[data-ptxt-desktop-mode="1"][data-ptxt-sidebar-collapsed="1"] body.feed-shell .route-keepalive-layer--thread[data-route-keepalive-active="1"] > .feed-column,
+  html[data-ptxt-desktop-mode="1"][data-ptxt-sidebar-collapsed="1"] body.feed-shell .route-keepalive-layer--feed[data-route-keepalive-active="0"] {
+    grid-column: 2;
+  }
+
+  html[data-ptxt-desktop-mode="1"][data-ptxt-sidebar-collapsed="1"] body.feed-shell .app-shell .right-rail {
+    grid-column: 3;
+  }
+}
+
+@media (min-width: 701px) and (max-width: 1023px) {
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .app-shell {
+    grid-template-columns:
+      var(--desktop-sidebar-width)
+      minmax(0.75rem, 1fr)
+      minmax(0, var(--shell-feed-max))
+      minmax(0.75rem, 1fr);
+  }
+
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .app-shell .feed-column,
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .route-keepalive-layer--thread[data-route-keepalive-active="1"] > .feed-column,
+  html[data-ptxt-desktop-mode="1"] body.feed-shell .route-keepalive-layer--feed[data-route-keepalive-active="0"] {
+    grid-column: 3;
+  }
+
+  html[data-ptxt-desktop-mode="1"][data-ptxt-sidebar-collapsed="1"] body.feed-shell .app-shell {
+    grid-template-columns:
+      minmax(0.75rem, 1fr)
+      minmax(0, var(--shell-feed-max))
+      minmax(0.75rem, 1fr);
+  }
+
+  html[data-ptxt-desktop-mode="1"][data-ptxt-sidebar-collapsed="1"] body.feed-shell .app-shell .feed-column,
+  html[data-ptxt-desktop-mode="1"][data-ptxt-sidebar-collapsed="1"] body.feed-shell .route-keepalive-layer--thread[data-route-keepalive-active="1"] > .feed-column,
+  html[data-ptxt-desktop-mode="1"][data-ptxt-sidebar-collapsed="1"] body.feed-shell .route-keepalive-layer--feed[data-route-keepalive-active="0"] {
+    grid-column: 2;
+  }
+}
+
 main {
   margin: 0 auto;
   max-width: min(var(--page-max), 100%);
@@ -295,8 +464,55 @@ body.feed-shell main {
   top: 0;
 }
 
+.rail-header {
+  align-items: center;
+  display: flex;
+  gap: 0.5rem;
+  justify-content: space-between;
+  min-height: 2rem;
+}
+
 .rail-brand {
   font-weight: 700;
+}
+
+.rail-collapse-toggle {
+  -webkit-app-region: no-drag;
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0.4rem;
+  color: var(--fg);
+  display: none;
+  height: 2rem;
+  justify-content: center;
+  left: 88px;
+  padding: 0.35rem;
+  position: fixed;
+  top: 5px;
+  width: 2rem;
+  z-index: 2147483647;
+}
+
+.rail-collapse-toggle:hover {
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+
+.rail-collapse-icon {
+  border: 1px solid currentColor;
+  border-radius: 0.25rem;
+  display: block;
+  height: 1rem;
+  opacity: 0.82;
+  position: relative;
+  width: 1.15rem;
+}
+
+.rail-collapse-icon::after {
+  border-left: 1px solid currentColor;
+  content: "";
+  inset: 0 auto 0 0.38rem;
+  position: absolute;
 }
 
 .rail-nav {
@@ -309,6 +525,7 @@ body.feed-shell main {
 .rail-nav a {
   align-items: center;
   border: 0;
+  cursor: pointer;
   display: inline-flex;
   gap: 0.55rem;
   min-height: 2rem;
@@ -1282,6 +1499,23 @@ body.feed-shell main {
   flex-direction: column;
   gap: 0.5rem;
   margin: 0.75rem 0;
+}
+
+.desktop-cache-limit-control {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.75rem;
+}
+
+.desktop-cache-limit-control > span {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.desktop-cache-limit-control input {
+  width: 8rem;
 }
 
 .desktop-storage-actions > button {
@@ -5772,7 +6006,15 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
 
 .ascii-action-menu > summary {
   cursor: pointer;
+  /* Browsers default <summary> to list-item. Inside the preformatted ASCII
+     header that creates its own line box, which moves `[...]` below the
+     right-aligned header instead of leaving it at the end of that line. */
+  display: inline;
   list-style: none;
+  /* Vertical padding on a non-replaced inline expands the clickable box
+     without changing the ASCII header's line layout. */
+  padding-block: 0.125em;
+  vertical-align: baseline;
 }
 
 .ascii-action-menu > summary::-webkit-details-marker {

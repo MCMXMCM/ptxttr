@@ -128,8 +128,12 @@ async function publishViaRelays(event) {
   }
   if (payload.accepted > 0) {
     publishDeps.recordPublishedAt();
-    void publishDeps.putEvents([event]);
-    void publishDeps.invalidatePublishedQueries(event);
+    // A caller may navigate as soon as this resolves. Finish the local write and
+    // cache invalidation first so that navigation cannot repaint stale list state.
+    await Promise.allSettled([
+      Promise.resolve().then(() => publishDeps.putEvents([event])),
+      Promise.resolve().then(() => publishDeps.invalidatePublishedQueries(event)),
+    ]);
     if (shouldFanoutInboxRelays(event)) {
       void publishDeps.sendEventToInboxRelays(event).catch(() => {});
     }

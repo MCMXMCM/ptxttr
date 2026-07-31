@@ -29,17 +29,15 @@ dist/
 /test-results/
 /playwright-report/
 /playwright/.cache/
-deploy/environments/*.env
-!deploy/environments/*.example
-
 # Local profiling output (pprof, runtime snapshots)
 profiles/
 
-# Local Apple signing / notarization (see scripts/desktop/signing.env.example)
+# Local Apple signing / notarization values are never packaged or tracked.
 scripts/desktop/signing.env
 
-# Wails desktop build outputs (see scripts/desktop/build-mac.sh).
-# Track cmd/desktop/build/darwin/*.plist and entitlements; ignore generated bin + icons.
-cmd/desktop/build/*
-!cmd/desktop/build/darwin/
-!cmd/desktop/build/darwin/**
+# Electron Forge and universal sidecar outputs.
+out/
+.webpack/
+
+# Ignore any pre-clean-break generated Wails bundle left in a developer checkout.
+cmd/desktop/build/

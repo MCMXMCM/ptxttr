@@ -66,7 +66,7 @@ var botUserAgentNeedles = []string{
 }
 
 func (s *Server) trafficShield(next http.Handler) http.Handler {
-	if s == nil || s.cfg.DesktopMode {
+	if s == nil || s.runtimeCapabilities().LocalFirst {
 		return next
 	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

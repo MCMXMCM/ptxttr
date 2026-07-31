@@ -76,3 +76,12 @@ func TestEstimateDiskPruneKeepEvents(t *testing.T) {
 		t.Fatalf("keep below target = %d, want all events", got)
 	}
 }
+
+func TestEstimateBytePruneKeepEvents(t *testing.T) {
+	if got := estimateBytePruneKeepEvents(1000, 2_000, 1_800); got != 900 {
+		t.Fatalf("keep = %d, want 900", got)
+	}
+	if got := estimateBytePruneKeepEvents(1000, 1_700, 1_800); got != 1000 {
+		t.Fatalf("keep below target = %d, want all events", got)
+	}
+}

@@ -1,4 +1,5 @@
 import { prefUnset } from "./prefs-utils.js";
+import { appFeatures } from "./app/bootstrap.js";
 
 /** Logged-out WoT defaults (shared by session transport and sort-prefs UI). */
 // Keep this aligned with internal/httpx.defaultLoggedOutWOTDepth. The first
@@ -28,7 +29,7 @@ function hasViewerPubkey() {
 }
 
 export function desktopModeEnabled() {
-  return globalThis.document?.documentElement?.dataset?.ptxtDesktopMode === "1";
+	return Boolean(appFeatures().localFirst);
 }
 
 export function loggedOutWebOfTrustDepthPref() {

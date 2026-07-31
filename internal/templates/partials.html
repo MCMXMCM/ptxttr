@@ -325,8 +325,13 @@
 {{end}}
 
 {{define "left_rail"}}
+<button type="button" class="rail-collapse-toggle" data-sidebar-collapse-toggle aria-label="Collapse sidebar" aria-expanded="true" title="Collapse sidebar">
+  <span class="rail-collapse-icon" aria-hidden="true"></span>
+</button>
 <aside class="left-rail">
-  <a class="rail-brand" href="/" data-relay-aware data-feed-home>Plain Text Nostr</a>
+  <div class="rail-header">
+    <a class="rail-brand" href="/" data-relay-aware data-feed-home>Plain Text Nostr</a>
+  </div>
   <nav class="rail-nav" aria-label="Primary">
     <a href="/" data-relay-aware data-feed-home data-main-menu-link {{if eq .Active "feed"}}aria-current="page"{{end}}><span class="rail-icon" aria-hidden="true">~</span><span class="rail-label">Home</span></a>
     <a href="/reads" data-relay-aware data-session-reads-link data-main-menu-link {{if eq .Active "reads"}}aria-current="page"{{end}}><span class="rail-icon" aria-hidden="true">?</span><span class="rail-label">Reads</span></a>

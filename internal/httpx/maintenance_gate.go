@@ -41,6 +41,10 @@ func (s *Server) tryRunMaintenanceWork(lane maintenanceLane, fn func()) {
 	if s == nil || fn == nil {
 		return
 	}
+	if !s.backgroundActive.Load() {
+		s.metrics.Add("bg.maintenance_paused_shell", 1)
+		return
+	}
 	if s.foregroundBusy() {
 		s.metrics.Add("bg.maintenance_deferred_hot", 1)
 		return
@@ -128,6 +132,10 @@ func (s *Server) runBackgroundUserAsync(fn func()) bool {
 	if s == nil || fn == nil {
 		return false
 	}
+	if !s.backgroundActive.Load() {
+		s.metrics.Add("bg.user_async_dropped_shell_paused", 1)
+		return false
+	}
 	if s.activeRequests.Load() >= userAsyncDropActiveRequestThreshold {
 		s.metrics.Add("bg.user_async_dropped_foreground_hot", 1)
 		return false
@@ -149,6 +157,22 @@ func (s *Server) runBackgroundUserAsync(fn func()) bool {
 		s.metrics.Add("bg.user_async_dropped", 1)
 		return false
 	}
+}
+
+func (s *Server) waitForBackgroundActive(ctx context.Context) bool {
+	if s == nil || !s.runtimeCapabilities().DesktopShell {
+		return true
+	}
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for !s.backgroundActive.Load() {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-ticker.C:
+		}
+	}
+	return true
 }
 
 func (s *Server) runUserAsyncWorker() {

@@ -265,10 +265,38 @@ test.describe("thread touch navigation", () => {
     await expect(page.locator(`#thread-focus #note-${replyID}.is-focused`)).toBeVisible({ timeout: 30_000 });
     await expect(page.locator("#thread-focus .thread-focus-parent")).toBeVisible({ timeout: 30_000 });
 
+    await page.route("**/thread/**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("fragment") === "hydrate" && !url.searchParams.has("selected")) {
+        await new Promise((resolve) => setTimeout(resolve, 1_500));
+      }
+      await route.continue();
+    });
+    const rootHydrateResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.searchParams.get("fragment") === "hydrate" && !url.searchParams.has("selected");
+    });
     await page.locator(`#thread-focus #note-${rootID}`).tap();
 
     await expect(page).toHaveURL(new RegExp(`/thread/${rootID}$`), { timeout: 5_000 });
     await expect(page.locator(`#thread-focus #note-${rootID}.is-focused`)).toBeVisible({ timeout: 30_000 });
+    const optimisticReply = page.locator(`#thread-replies #note-${replyID}.comment`);
+    await expect(optimisticReply).toBeVisible({ timeout: 500 });
+    const avatarBox = await optimisticReply.evaluate((reply) => {
+      const avatar = reply.querySelector(":scope > .comment-avatar");
+      if (!(avatar instanceof HTMLElement)) return null;
+      const image = document.createElement("img");
+      image.alt = "";
+      image.src = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+      avatar.replaceChildren(image);
+      const rect = image.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    });
+    expect(avatarBox).not.toBeNull();
+    expect(avatarBox.width).toBeLessThanOrEqual(48);
+    expect(Math.abs(avatarBox.width - avatarBox.height)).toBeLessThanOrEqual(1);
+    await rootHydrateResponse;
+    await expect(page.locator(`#thread-replies #note-${replyID}`)).toHaveCount(1);
   });
 
   test("desktop click on a child reply changes the focused note", async ({ browser, request }) => {

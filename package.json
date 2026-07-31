@@ -1,22 +1,44 @@
 {
-  "name": "ptxt-nstr",
+  "name": "ptxttr",
+  "productName": "Plain Text Nostr",
+  "version": "0.5.0-alpha.1",
+  "description": "Local-first Plain Text Nostr desktop application",
+  "main": "desktop/main.cjs",
   "private": true,
   "type": "module",
   "scripts": {
     "build:web": "node scripts/build-web-app.mjs",
     "build:web-vendors": "node scripts/build-web-vendors.mjs",
+    "desktop:dev": "npm run build:web && ./scripts/desktop/build-sidecar.sh && node scripts/desktop/build-icon.mjs && electron-forge start",
+    "desktop:build": "npm run build:web && ./scripts/desktop/build-sidecar.sh && node scripts/desktop/build-icon.mjs && electron-forge package --arch=universal",
+    "desktop:package": "npm run build:web && ./scripts/desktop/build-sidecar.sh && node scripts/desktop/build-icon.mjs && electron-forge make --arch=universal",
+    "desktop:smoke": "node scripts/desktop/smoke-packaged.mjs",
+    "desktop:release": "node scripts/desktop/check-release-env.mjs && npm run desktop:package",
+    "check:upstream": "node scripts/check-upstream-sync.mjs",
+    "check:public-tree": "node scripts/check-public-tree.mjs",
+    "check:artifact": "node scripts/check-release-artifact.mjs",
     "check:web-budget": "node scripts/build-web-app.mjs",
-    "test:unit": "node --test web/static/js/*.test.js",
+    "test:unit": "node --test web/static/js/*.test.js desktop/*.test.mjs",
     "test:e2e": "playwright test",
+    "test:electron": "./scripts/desktop/build-sidecar.sh && node --test desktop/e2e/*.test.mjs",
     "test:e2e:ui": "playwright test --ui"
   },
   "devDependencies": {
-    "@playwright/test": "^1.52.0"
+    "@electron-forge/cli": "^7.11.2",
+    "@electron-forge/maker-dmg": "^7.11.2",
+    "@electron-forge/maker-zip": "^7.11.2",
+    "@electron-forge/plugin-fuses": "^7.11.2",
+    "@electron/fuses": "2.1.3",
+    "@playwright/test": "^1.52.0",
+    "electron": "43.2.0"
   },
   "dependencies": {
     "@chenglou/pretext": "^0.0.8",
     "@nostrify/nostrify": "^0.53.0",
     "@tanstack/query-core": "^5.101.1",
     "esbuild": "^0.28.1"
+  },
+  "overrides": {
+    "@electron/fuses": "2.1.3"
   }
 }

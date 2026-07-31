@@ -126,6 +126,37 @@ describe("publishSignedEvent", () => {
     assert.equal(fanoutCount, 0);
   });
 
+  it("waits for local persistence and invalidation before reporting publish completion", async () => {
+    let releasePersistence;
+    let releaseInvalidation;
+    const persistence = new Promise((resolve) => { releasePersistence = resolve; });
+    const invalidation = new Promise((resolve) => { releaseInvalidation = resolve; });
+    setPublishTestHooks({
+      planPublishRelays: async () => ["wss://relay.example"],
+      relayPublish: async () => ({
+        accepted: 1,
+        rejected: 0,
+        planned_relays: ["wss://relay.example"],
+        relay_stats: [{ relay_url: "wss://relay.example", accepted: true, message: "ok", error: "" }],
+      }),
+      recordPublishedAt: () => {},
+      putEvents: async () => persistence,
+      invalidatePublishedQueries: async () => invalidation,
+    });
+
+    let settled = false;
+    const publishing = publishSignedEvent({ id: "aa", kind: 10000, pubkey: "bb" }).finally(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(settled, false);
+
+    releasePersistence();
+    releaseInvalidation();
+    await publishing;
+    assert.equal(settled, true);
+  });
+
   it("ignores inbox fan-out errors after a successful publish", async () => {
     setPublishTestHooks({
       planPublishRelays: async () => ["wss://relay.example"],

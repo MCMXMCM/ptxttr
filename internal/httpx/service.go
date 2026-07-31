@@ -368,7 +368,7 @@ func (s *Server) basePageData(r *http.Request, title, active, pageClass string) 
 		ViewerPubKey:       normalizedViewerPubkey(viewerFromRequest(r)),
 		GuestGeneration:    guestGeneration,
 		GuestSliceV2:       guestSliceV2,
-		DesktopMode:        s.cfg.DesktopMode,
+		DesktopMode:        s.runtimeCapabilities().DesktopShell,
 	}
 }
 
@@ -395,7 +395,7 @@ func (s *Server) userBasePageData(r *http.Request, title, active, pageClass stri
 		ViewerPubKey:       normalizedViewerPubkey(viewerFromRequest(r)),
 		GuestGeneration:    guestGeneration,
 		GuestSliceV2:       guestSliceV2,
-		DesktopMode:        s.cfg.DesktopMode,
+		DesktopMode:        s.runtimeCapabilities().DesktopShell,
 	}
 }
 

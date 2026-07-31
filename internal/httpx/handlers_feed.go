@@ -95,7 +95,7 @@ func (s *Server) feedRequestFromHTTP(r *http.Request) feedRequest {
 		// stay fixed at one hop for shared-cache/resource control; desktop keeps
 		// the user's selected depth because all graph work and storage are local.
 		wot.Enabled = true
-		if !s.cfg.DesktopMode {
+		if s.runtimeCapabilities().HostedGuestAdmission {
 			wot.Depth = defaultLoggedOutWOTDepth
 		}
 		seedPubkey = defaultLoggedOutWOTSeedNPub

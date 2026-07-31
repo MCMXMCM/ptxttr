@@ -76,7 +76,15 @@
                 <strong>Cache Controls</strong>
               </div>
               <div class="settings-mode-row-body">
-                <small class="muted">Desktop cache is unlimited and stays on this device. Clearing cache preserves accounts, private keys, sessions, and settings.</small>
+                <small class="muted">Set the maximum SQLite cache size. At the limit, least-recently-used data is removed first. Clearing cache preserves accounts, private keys, sessions, and settings.</small>
+                <div class="desktop-cache-limit-control">
+                  <label for="desktop-cache-limit-gb">Cache limit</label>
+                  <span>
+                    <input id="desktop-cache-limit-gb" type="number" min="0.0625" max="1024" step="0.0625" value="2" inputmode="decimal" data-desktop-cache-limit-gb>
+                    <span>GB</span>
+                    <button type="button" data-desktop-cache-limit-save>Save Limit</button>
+                  </span>
+                </div>
                 <div class="desktop-storage-actions">
                   <button type="button" data-desktop-storage-refresh>Refresh Usage</button>
                   <button type="button" data-desktop-storage-clear="notes">Clear Note Data</button>

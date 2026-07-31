@@ -227,6 +227,35 @@ func TestPruneEventsEvictsByLastAccessedWhenLRU(t *testing.T) {
 	}
 }
 
+func TestPruneEventsProtectsNewestReplaceableAheadOfColdNote(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, ctx)
+	st.SetRetentionPolicy(true)
+	profile := event("protected-profile", "alice", 1, nostrx.KindProfileMetadata, nil)
+	note := event("disposable-note", "alice", 2, nostrx.KindTextNote, nil)
+	for _, ev := range []nostrx.Event{profile, note} {
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE events SET last_accessed_at = 1 WHERE id = ?`, profile.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE events SET last_accessed_at = 200 WHERE id = ?`, note.ID); err != nil {
+		t.Fatal(err)
+	}
+	if deleted, err := st.PruneEvents(ctx, 1); err != nil || deleted != 1 {
+		t.Fatalf("PruneEvents = %d, %v; want one deletion", deleted, err)
+	}
+	var remaining string
+	if err := st.db.QueryRowContext(ctx, `SELECT id FROM events`).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != profile.ID {
+		t.Fatalf("remaining event = %q, want newest replaceable %q", remaining, profile.ID)
+	}
+}
+
 func TestReplaceableHistoryPruneRemovesOlderProfiles(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t, ctx)

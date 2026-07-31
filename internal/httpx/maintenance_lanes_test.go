@@ -48,3 +48,20 @@ func TestMaintenanceLanesRunConcurrently(t *testing.T) {
 		t.Fatal("expected both maintenance lanes to run")
 	}
 }
+
+func TestMaintenancePausesAndResumesWithDesktopActivity(t *testing.T) {
+	srv, _ := newTestServer(t, testServerOptions{})
+	runs := 0
+
+	srv.backgroundActive.Store(false)
+	srv.tryRunMaintenanceWork(maintenanceLaneSeed, func() { runs++ })
+	if runs != 0 {
+		t.Fatalf("maintenance ran while desktop activity was paused: runs=%d", runs)
+	}
+
+	srv.backgroundActive.Store(true)
+	srv.tryRunMaintenanceWork(maintenanceLaneSeed, func() { runs++ })
+	if runs != 1 {
+		t.Fatalf("maintenance did not resume with desktop activity: runs=%d", runs)
+	}
+}

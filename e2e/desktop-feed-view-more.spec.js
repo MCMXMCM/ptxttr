@@ -63,5 +63,18 @@ test("desktop media and quote cards keep view more in the header", async ({ page
   const mediaHeader = media.locator(":scope > .ascii-card > .ascii-line-feed-header");
   await mediaHeader.getByRole("button", { name: "view more", exact: true }).click();
   await expect(media).toContainText("MEDIA-END");
-  await expect(mediaHeader.locator("[data-ascii-action-menu-trigger]")).toHaveText("[...]");
+  const overflow = mediaHeader.locator("[data-ascii-action-menu-trigger]");
+  await expect(overflow).toHaveText("[...]");
+  const [headerBox, overflowBox, overflowLineHeight] = await Promise.all([
+    mediaHeader.boundingBox(),
+    overflow.boundingBox(),
+    overflow.evaluate((element) => Number.parseFloat(getComputedStyle(element).lineHeight)),
+  ]);
+  expect(headerBox).not.toBeNull();
+  expect(overflowBox).not.toBeNull();
+  // `<summary>` must stay in the ASCII header's line box. Its native
+  // list-item display otherwise places `[...]` on the following line.
+  expect(Math.abs((overflowBox?.y || 0) - (headerBox?.y || 0))).toBeLessThan(2);
+  // The entire line-height, including the brackets, should activate the menu.
+  expect(overflowBox?.height || 0).toBeGreaterThanOrEqual(overflowLineHeight - 1);
 });

@@ -12,7 +12,7 @@ import { initLoginPage } from "../login.js";
 import { pubkeyFromProfilePath, routeKind, withRelays } from "../nav-routing.js";
 import { noteProfilePubkey } from "../note-profiles.js";
 import { initViewMore, interactiveSelector } from "../notes.js";
-import { openImageViewer, refreshAscii } from "../ascii.js";
+import { openImageViewer, refreshAsciiSync } from "../ascii.js";
 import { initRetroLoaders, markRetroLoaderComplete, setRetroLoaderProgress } from "../retro-loader.js";
 import {
   isThreadHydrateComplete,
@@ -959,6 +959,9 @@ function renderOptimisticThreadFocus(href, sourceCard = null) {
   const column = main.querySelector(".feed-column[data-thread-root-id], .feed-column[data-thread-selected-id]");
   const rootID = String(column?.dataset?.threadRootId || "").toLowerCase();
   column?.setAttribute?.("data-thread-selected-id", selectedID);
+  const previousFocused = sourceCard.classList.contains("thread-focus-parent")
+    ? focus.querySelector(".thread-focus-selected, .is-focused")
+    : null;
   main.querySelectorAll(".note.is-focused, .comment.is-focused").forEach((node) => {
     node.classList.remove("is-focused", "thread-focus-selected");
     if (node instanceof HTMLElement && node.dataset.asciiSelected === "true") {
@@ -968,10 +971,13 @@ function renderOptimisticThreadFocus(href, sourceCard = null) {
   const selected = sourceCard.cloneNode(true);
   if (!(selected instanceof HTMLElement)) return false;
   const parentSource = optimisticThreadParentSource(sourceCard, selectedID, rootID, focus);
-  selected.classList.add("is-focused", "thread-focus-selected");
-  selected.classList.remove("thread-focus-parent");
+  selected.classList.remove("comment", "thread-focus-parent");
+  selected.classList.add("note", "is-focused", "thread-focus-selected");
+  normalizeOptimisticThreadAvatar(selected, "note-avatar");
   selected.dataset.asciiKind = "selected";
   selected.dataset.asciiSelected = "true";
+  selected.dataset.depth = "1";
+  selected.style.setProperty("--depth", "1");
   selected.querySelectorAll(":scope > .comments, :scope > .continue-thread").forEach((node) => node.remove());
   focus.replaceChildren();
   if (rootID && selectedID !== rootID) {
@@ -984,15 +990,22 @@ function renderOptimisticThreadFocus(href, sourceCard = null) {
     focus.append(parent);
   }
   focus.append(selected);
-  renderOptimisticThreadReplies(sourceCard, selectedID);
-  refreshAscii(focus);
-  refreshAscii(main.querySelector("#thread-replies"));
+  renderOptimisticThreadReplies(sourceCard, selectedID, previousFocused);
+  refreshAsciiSync(focus);
+  refreshAsciiSync(main.querySelector("#thread-replies"));
   initViewMore(focus);
   initViewMore(main.querySelector("#thread-replies"));
   wireAvatarImageFallbacks(focus);
   wireAvatarImageFallbacks(main.querySelector(".thread-replies"));
   syncMobileAppNavHeight();
   return true;
+}
+
+function normalizeOptimisticThreadAvatar(shell, className) {
+  const avatar = shell?.querySelector?.(":scope > .note-avatar, :scope > .comment-avatar");
+  if (!(avatar instanceof HTMLElement)) return;
+  avatar.classList.remove("note-avatar", "comment-avatar");
+  avatar.classList.add(className);
 }
 
 function optimisticThreadParentSource(sourceCard, selectedID, rootID, focus) {
@@ -1010,19 +1023,41 @@ function optimisticThreadParentClone(source) {
   if (!(parent instanceof HTMLElement)) return document.createElement("div");
   parent.classList.remove("is-focused", "thread-focus-selected", "note");
   parent.classList.add("comment", "thread-focus-parent");
+  normalizeOptimisticThreadAvatar(parent, "comment-avatar");
   parent.dataset.asciiKind = "reply";
   parent.dataset.asciiSelected = "false";
   parent.querySelectorAll(":scope > .comments, :scope > .continue-thread").forEach((node) => node.remove());
   return parent;
 }
 
-function renderOptimisticThreadReplies(sourceCard, selectedID) {
+function optimisticThreadReplyClone(source) {
+  const reply = source?.cloneNode?.(true);
+  if (!(reply instanceof HTMLElement)) return null;
+  reply.classList.remove("is-focused", "thread-focus-selected", "thread-focus-parent", "note");
+  reply.classList.add("comment");
+  normalizeOptimisticThreadAvatar(reply, "comment-avatar");
+  reply.dataset.asciiKind = "reply";
+  reply.dataset.asciiSelected = "false";
+  reply.querySelectorAll(":scope > .comments, :scope > .continue-thread").forEach((node) => node.remove());
+  return reply;
+}
+
+function renderOptimisticThreadReplies(sourceCard, selectedID, previousFocused = null) {
   const replies = main?.querySelector?.("#thread-replies");
   if (!(replies instanceof HTMLElement) || !(sourceCard instanceof HTMLElement)) return;
   const selectedChildren = sourceCard.querySelector(":scope > .comments");
   const nextReplies = selectedChildren instanceof HTMLElement
     ? [...selectedChildren.children].map((node) => node.cloneNode(true)).filter((node) => node instanceof HTMLElement)
     : [];
+  const previousFocusedID = noteIDFromElement(previousFocused);
+  if (
+    previousFocusedID &&
+    previousFocusedID !== selectedID &&
+    !nextReplies.some((node) => noteIDFromElement(node) === previousFocusedID)
+  ) {
+    const previousReply = optimisticThreadReplyClone(previousFocused);
+    if (previousReply) nextReplies.push(previousReply);
+  }
   replies.replaceChildren(...nextReplies);
   replies.classList.remove("thread-replies-skeleton");
   replies.querySelectorAll(`#note-${CSS.escape(selectedID)}`).forEach((node) => node.remove());

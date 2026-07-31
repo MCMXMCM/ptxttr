@@ -109,6 +109,11 @@ type Config struct {
 	DBDiskMaxPercent int
 	// DBDiskPruneTargetPercent is the target SQLite-file usage after disk-budget pruning.
 	DBDiskPruneTargetPercent int
+	// DBMaxBytes starts pruning when SQLite and its sidecars exceed this many
+	// bytes. Zero disables the fixed-size budget.
+	DBMaxBytes int64
+	// DBPruneTargetBytes is the post-prune target for the fixed-size budget.
+	DBPruneTargetBytes int64
 	// DiskPressurePercent triggers automatic compact/vacuum when data volume usage exceeds this.
 	DiskPressurePercent int
 	// VacuumTimeout bounds full VACUUM and startup compact under disk pressure.
@@ -238,8 +243,11 @@ type Config struct {
 	// from on-host triage (SSM/SSH) without flipping Debug. Set empty to
 	// disable. Bind to a non-loopback address only behind explicit auth.
 	PprofAddr string
-	// DesktopMode enables loopback-only helpers used by the Wails desktop shell.
+	// DesktopMode enables loopback-only helpers used by the Electron desktop shell.
 	DesktopMode bool
+	// DesktopActivityToken authenticates shell-only activity updates. It is
+	// deliberately never included in bootstrap data or config logs.
+	DesktopActivityToken string
 }
 
 func Load() Config {
@@ -309,6 +317,8 @@ func Load() Config {
 		RetentionByAccess:                  boolEnv("PTXT_RETENTION_BY_ACCESS", false),
 		DBDiskMaxPercent:                   intEnv("PTXT_DB_MAX_DISK_PERCENT", 0),
 		DBDiskPruneTargetPercent:           intEnv("PTXT_DB_PRUNE_TARGET_PERCENT", 0),
+		DBMaxBytes:                         nonNegativeInt64Env("PTXT_DB_MAX_BYTES", 0),
+		DBPruneTargetBytes:                 nonNegativeInt64Env("PTXT_DB_PRUNE_TARGET_BYTES", 0),
 		DiskPressurePercent:                intEnv("PTXT_DB_DISK_PRESSURE_PERCENT", 85),
 		VacuumTimeout:                      durationEnvDuration("PTXT_VACUUM_TIMEOUT", 60*time.Minute),
 		HydrationEnabled:                   boolEnv("PTXT_HYDRATION_ENABLED", true),
@@ -379,6 +389,7 @@ func Load() Config {
 		HealthProbeDegradedThreshold:       intEnv("PTXT_HEALTH_PROBE_DEGRADED_THRESHOLD", 3),
 		PprofAddr:                          pprofAddrEnv("PTXT_PPROF_ADDR", "127.0.0.1:6060"),
 		DesktopMode:                        boolEnv("PTXT_DESKTOP_MODE", false),
+		DesktopActivityToken:               strings.TrimSpace(os.Getenv("PTXT_DESKTOP_ACTIVITY_TOKEN")),
 	}
 	cfg.ServerMode = serverModeEnv("PTXT_SERVER_MODE", cfg.OptionalRelayBackend)
 
@@ -402,6 +413,8 @@ func Load() Config {
 		"retention_by_access", cfg.RetentionByAccess,
 		"db_disk_max_percent", cfg.DBDiskMaxPercent,
 		"db_disk_prune_target_percent", cfg.DBDiskPruneTargetPercent,
+		"db_max_bytes", cfg.DBMaxBytes,
+		"db_prune_target_bytes", cfg.DBPruneTargetBytes,
 		"disk_pressure_percent", cfg.DiskPressurePercent,
 		"vacuum_timeout", cfg.VacuumTimeout,
 		"hydration_enabled", cfg.HydrationEnabled,
@@ -577,6 +590,18 @@ func nonNegativeIntEnv(key string, fallback int) int {
 		return fallback
 	}
 	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		return fallback
+	}
+	return value
+}
+
+func nonNegativeInt64Env(key string, fallback int64) int64 {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || value < 0 {
 		return fallback
 	}

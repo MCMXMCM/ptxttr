@@ -117,6 +117,38 @@ export function replaceRouteOutletHTML(navRoot, outletHtml) {
   const existingRailUser = outlet.querySelector(".left-rail .rail-user");
   const stage = document.createElement("div");
   stage.innerHTML = outletHtml;
+  const inlineComposer = outlet.querySelector(".thread-inline-reply");
+  const inlineForm = inlineComposer?.querySelector?.("[data-composer-form]");
+  const composerAnchor = inlineComposer?.previousElementSibling;
+  const anchorTargetID = String(
+    composerAnchor?.getAttribute?.("data-reply-target-id") || composerAnchor?.id || "",
+  ).replace(/^note-/, "").toLowerCase();
+  const anchorParentID = String(composerAnchor?.parentElement?.id || "");
+  let nextComposerAnchor = null;
+  if (inlineComposer instanceof HTMLElement && inlineForm instanceof HTMLFormElement && anchorTargetID) {
+    const candidates = stage.querySelectorAll("[id^='note-'], [data-reply-target-id]");
+    nextComposerAnchor = [...candidates].find((candidate) => {
+      const candidateID = String(
+        candidate.getAttribute("data-reply-target-id") || candidate.id || "",
+      ).replace(/^note-/, "").toLowerCase();
+      if (candidateID !== anchorTargetID) return false;
+      return !anchorParentID || candidate.parentElement?.id === anchorParentID;
+    }) || [...candidates].find((candidate) => {
+      const candidateID = String(
+        candidate.getAttribute("data-reply-target-id") || candidate.id || "",
+      ).replace(/^note-/, "").toLowerCase();
+      return candidateID === anchorTargetID;
+    }) || null;
+    if (nextComposerAnchor) {
+      inlineComposer.remove();
+    } else {
+      const dialog = navRoot.querySelector("[data-composer-dialog]");
+      const status = dialog?.querySelector?.("[data-composer-status]");
+      inlineForm.classList.remove("composer-form--thread-inline");
+      if (status?.parentNode === dialog) status.insertAdjacentElement("afterend", inlineForm);
+      else dialog?.append?.(inlineForm);
+    }
+  }
   const nextLeftRail = stage.querySelector(".left-rail");
   if (existingLeftRail && nextLeftRail) {
     syncLeftRailActiveState(existingLeftRail, nextLeftRail);
@@ -126,6 +158,9 @@ export function replaceRouteOutletHTML(navRoot, outletHtml) {
     if (nextRailUser) nextRailUser.replaceWith(existingRailUser);
   }
   outlet.replaceChildren(...Array.from(stage.childNodes));
+  if (nextComposerAnchor && inlineComposer) {
+    nextComposerAnchor.insertAdjacentElement("afterend", inlineComposer);
+  }
 }
 
 function syncLeftRailActiveState(currentShell, nextShell) {

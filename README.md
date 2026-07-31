@@ -1,378 +1,124 @@
 # Plain Text Nostr
 
-A small Go Nostr web app built around server-side relay aggregation, a SQLite event cache (including web-of-trust follow edges), Go HTML templates, vanilla JavaScript, and plain CSS.
+Plain Text Nostr is a local-first Nostr reader and writer. The macOS app runs the Go web application on loopback and presents it in a secure Electron shell, so relay traffic, accounts, preferences, and the SQLite cache stay on the user’s machine while the UI keeps normal browser navigation.
 
-**Try it in the browser:** open [plaintextnostr.com](https://plaintextnostr.com) for a quick look. The hosted site runs the same server-side aggregation and cache as this repo; you are **trusting that server** to connect to relays and aggregate notes on your behalf. If you want relay traffic and SQLite aggregation to stay **on your own machine**, use the **macOS desktop app** below (or run `go run ./cmd/server` locally).
+This repository contains local application and desktop release workflows only. It intentionally does not contain hosted infrastructure or production operator data.
 
-**Operators:** hosted AWS / CloudFront deployment is optional and documented in [`deploy/README.md`](deploy/README.md).
+## macOS desktop app
 
-## Screenshots
-
-<p align="center">
-  <img src="docs/screenshots/feed.png" alt="Home feed with web-of-trust filtering and a trending sidebar" width="920"/>
-</p>
-<p align="center"><em>Home feed — chronological notes, optional web-of-trust depth, trending</em></p>
-
-<table>
-  <tr>
-    <td align="center" width="33%">
-      <b>Thread (linear)</b><br/>
-      <img src="docs/screenshots/thread-tree.png" alt="Thread page in tree layout with participants sidebar" width="400"/>
-    </td>
-    <td align="center" width="33%">
-      <b>Thread (tree)</b><br/>
-      <img src="docs/screenshots/thread-view.png" alt="Thread page in linear reply layout" width="400"/>
-    </td>
-    <td align="center" width="33%">
-      <b>Settings</b><br/>
-      <img src="docs/screenshots/settings.png" alt="Settings for media mode and web-of-trust seed profile" width="400"/>
-    </td>
-  </tr>
-  <tr>
-    <td align="center" colspan="3">
-      <b>Profile</b><br/>
-      <img src="docs/screenshots/profile.png" alt="User profile with posts and suggested relays" width="720"/>
-    </td>
-  </tr>
-</table>
-
-<p align="center"><b>Mobile</b></p>
-
-<table>
-  <tr>
-    <td align="center" width="20%">
-      <b>Thread</b><br/>
-      <img src="docs/screenshots/mobile-thread-tree.png" alt="Mobile thread tree view" width="180"/>
-    </td>
-    <td align="center" width="20%">
-      <b>Thread Trees</b><br/>
-      <img src="docs/screenshots/mobile-thread-view.png" alt="Mobile linear thread view" width="180"/>
-    </td>
-    <td align="center" width="20%">
-      <b>Profile</b><br/>
-      <img src="docs/screenshots/mobile-profile.png" alt="Mobile user profile" width="180"/>
-    </td>
-    <td align="center" width="20%">
-      <b>Settings</b><br/>
-      <img src="docs/screenshots/mobile-settings.png" alt="Mobile settings" width="180"/>
-    </td>
-    <td align="center" width="20%">
-      <b>Bookmarks</b><br/>
-      <img src="docs/screenshots/mobile-bookmarks.png" alt="Mobile bookmarks from NIP-51 lists" width="180"/>
-    </td>
-  </tr>
-</table>
-
-## Try it (macOS desktop)
-
-**Download a build:** open [GitHub Releases](https://github.com/MCMXMCM/ptxttr/releases) and download the latest **`ptxt-nstr-desktop-mac-*.dmg`**, then install from the disk image as usual.
-
-**Build from source** on a Mac:
-
-1. Install [Wails v2](https://wails.io/) (for example `go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0`) and Xcode Command Line Tools.
-2. Clone this repository and from the repo root run:
+Requirements for development are macOS 12 or newer, Go, Node.js/npm, Xcode Command Line Tools, and `lipo`.
 
 ```sh
-make build-desktop
+npm install
+make desktop-dev
 ```
 
-The app bundle is written to `cmd/desktop/build/bin/ptxt-nstr.app`. Open that folder in Finder and double-click the app, or run it from the terminal.
+Useful targets:
 
-The desktop build embeds a short splash, then starts the same HTTP server as `cmd/server` on stable loopback origin `127.0.0.1:24787` and opens it in a native window. Your database defaults to `~/Library/Application Support/ptxt-nstr/ptxt-nstr.sqlite` (override with `PTXT_DB`). The desktop preset also sets `PTXT_DESKTOP_MODE=1` (external links open in the default browser), disables hosted-service request throttles and cache retention limits, and fetches uncached notes directly from the relays you selected. Low-priority background workers progressively refresh relay hints, follow graphs through three hops, recent notes, and their thread context for previously signed-in viewers; the work yields to foreground requests and rotates bounded author batches on each pass. View usage or clear Note Data, Metadata, User Data, or All Cache under **Settings → Local Storage**. These actions preserve accounts, private keys, sessions, and settings.
+- `make desktop-dev` builds the universal Go sidecar and starts Electron Forge.
+- `make desktop-build` creates an ad-hoc-signed universal application bundle for local testing.
+- `make desktop-package` creates universal macOS distributables.
+- `make desktop-release` requires signing and notarization environment variables, then builds the release DMG and ZIP.
 
-**Desktop vs hosted URLs:** OpenGraph and canonical links use the request host. Behind CloudFront, `X-Forwarded-Host` supplies your public domain; in the desktop app the host is `127.0.0.1:<port>`, which is fine for local use.
+The packaged sidecar is `resources/bin/ptxt-nstr-server`. Electron starts exactly one copy on `127.0.0.1:24787`, waits for `/healthz`, and shuts it down when the last window closes. A port collision or startup failure stays on a diagnostic screen with Retry, Open Logs, and Quit actions.
 
-**WebKit note:** the desktop shell uses the system webview and intentionally does not offer browser-extension (NIP-07) login. Use an `npub` for read-only access or an `nsec` stored locally on the device for signing.
+The app uses bundle ID `com.ptxttr.desktop` and stores fresh state under:
 
-**Links:** `http`/`https` links are opened in your **default browser** (not inside the app). Same-origin app links on `127.0.0.1` / `localhost` stay in the window.
+```text
+~/Library/Application Support/Plain Text Nostr/
+├── IndexedDB, Chromium cache, accounts, and preferences
+└── local/ptxt-nstr.sqlite
+```
 
-**Navigation:** use the **ptxt → Back / Forward** menu (or ⌘[ / ⌘]) for history. Native **two-finger swipe to go back** is not enabled by Wails’ macOS WKWebView wrapper today; that would need an upstream Wails change (`allowsBackForwardNavigationGestures`) or a custom fork.
+There is no Wails data migration. Older browser state, keys, accounts, IndexedDB, and SQLite files are not read or copied.
 
-## Run from source (CLI server)
+### Navigation
+
+- ⌘T creates a native macOS tab at Home; ⌘W closes the active tab.
+- ⌘-click, middle-click, `target="_blank"`, and same-origin `window.open()` create native tabs.
+- Tabs share the persistent Chromium session and Go cache, but keep independent history and scroll state.
+- ⌘[, ⌘], Reload, and macOS two-finger Back/Forward swipes use Chromium’s navigation history. The app opts fresh installs into fluid swipe tracking and retains a precise-trackpad fallback for configurations where macOS does not deliver the native swipe event.
+- The macOS title bar uses native hidden-inset, translucent window chrome; its traffic lights, tabbing, and inactive-window appearance remain system-native.
+- Two-finger click on selected text or a link opens a native macOS context menu. Text supports copy, edit commands, Dictionary Look Up, spelling suggestions, and macOS Services; local links can open in a foreground or background native tab.
+- External HTTP(S) links open in the system browser. Non-loopback main-frame navigation and unsupported schemes are blocked.
+
+Renderers use Chromium sandboxing with Node integration disabled, context isolation enabled, no preload bridge, strict window/navigation handlers, and a deny-by-default permission policy.
+
+## Local-first behavior
+
+Desktop mode is selected by an explicit bootstrap capability contract; the UI does not infer Electron from its user agent. It enables direct relay reads and writes, local signing accounts, relay selection, web-of-trust depth 1–3, follow-graph fallback, storage reporting, and scoped cache clearing.
+
+Hosted traffic shielding, guest admission, anonymous cache-only behavior, CDN policies, and per-IP cost throttles are bypassed in desktop mode. Input validation, body limits, signature verification, relay timeouts, fan-out limits, backoff, CSP, same-origin checks, and the process-wide relay concurrency bound remain active.
+
+Desktop defaults are balanced for a modern local machine:
+
+- SQLite cache: user-configurable in Settings, defaulting to 2 GiB with least-recently-used pruning toward 90%.
+- Browser event cache: 20,000 records and 96 MiB.
+- Process-wide relay operations: 16.
+- Warm workers: 2; queue capacity: 128.
+- Go memory limit: 1 GiB.
+
+The cache preserves pinned dependencies and the newest metadata, follow-list, and relay-list events ahead of cold notes. Background hydration, viewer-graph, trending, and recent-note work is bounded, coalesced behind foreground traffic, and paused while every tab is minimized or macOS is suspended.
+
+Settings shows SQLite and Chromium usage, lets the user change the persistent SQLite cache limit, and provides scoped clearing for note data, metadata, user data, or all cache without clearing signing accounts and app preferences.
+
+### Advanced overrides
+
+The desktop sidecar honors the normal `PTXT_*` environment variables. Useful local overrides include:
+
+| Variable | Desktop default | Purpose |
+| --- | ---: | --- |
+| `PTXT_DB_MAX_BYTES` | `2147483648` | Initial SQLite + WAL/SHM byte budget. The desktop Settings preference takes precedence after the user saves a limit. |
+| `PTXT_DB_PRUNE_TARGET_BYTES` | `1932735283` | Target after byte-budget pruning. |
+| `PTXT_EVENT_RETENTION` | `0` | Optional event-count ceiling; `0` disables the count limit. |
+| `PTXT_RELAY_MAX_OUTBOUND_CONNS` | `16` | Process-wide outbound relay operations. |
+| `PTXT_WARM_WORKERS` | `2` | Low-priority warm worker count. |
+| `PTXT_WARM_QUEUE_CAPACITY` | `128` | Coalesced warm queue capacity. |
+| `GOMEMLIMIT` | `1GiB` | Go runtime memory limit override. |
+| `PTXT_MEMORY_LIMIT_BYTES` | `1073741824` | Decimal-byte override when `GOMEMLIMIT` is unset. |
+| `PTXT_DESKTOP_DATA_DIR` | `…/Plain Text Nostr/local` | Test/development-only local SQLite directory override. |
+
+`PTXT_DESKTOP_MODE` and `PTXT_DESKTOP_ACTIVITY_TOKEN` are shell-owned. Do not enable desktop mode on a publicly reachable server, and never expose the per-launch activity token to web content.
+
+## CLI server
+
+The same application can run without Electron:
 
 ```sh
+npm run build:web
 go run ./cmd/server
 ```
 
-Open `http://127.0.0.1:8080` (or the address in `PTXT_ADDR`). Use the same environment variables as production; defaults keep the database under `data/ptxt-nstr.sqlite` relative to the process working directory.
+Open `http://127.0.0.1:8080` unless `PTXT_ADDR` is changed. CLI defaults keep SQLite at `data/ptxt-nstr.sqlite`.
 
 ## Architecture
 
-### Storage layout
+- `desktop/` — Electron main process, native-window policy, startup diagnostics, and shell tests.
+- `cmd/desktop-server` — packaged universal sidecar entrypoint and desktop defaults.
+- `cmd/server` — local CLI entrypoint.
+- `internal/apprun` — reusable Go server lifecycle shared by both entrypoints.
+- `internal/httpx` — routes, templates, capability contract, security middleware, warmers, and relay-backed services.
+- `internal/store` — SQLite events, projections, web-of-trust graph, retention, and scoped storage controls.
+- `internal/nostrx` — validated Nostr events and bounded websocket relay fan-out.
+- `internal/templates` and `web/static` — the shared web experience.
 
-One durable database file lives under `data/` by default:
+The browser talks only to the loopback Go origin. The Go server and browser relay layer fetch from selected Nostr relays, validate events, persist local projections, and render from local cache first. Direct relay paths fill gaps when the local cache is empty or incomplete.
 
-- `data/ptxt-nstr.sqlite` — the canonical event cache and projection database. WAL mode, `synchronous=NORMAL`, 32 MiB page cache, 128 MiB mmap, 5 second busy timeout by default (all tunable via env). Holds raw events, tag rows, per-relay sightings, relay status, profile/follow projections (`follow_edges` for WoT expansion), reply counts, trending cache, hydration targets, bookmarks, and reads.
-
-
-
-### Top-level packages
-
-- `cmd/server` — CLI entrypoint. Applies the runtime memory limit, opens SQLite, builds the `nostrx.Client`, wires the HTTP server, runs startup compaction, and shuts down gracefully on SIGINT/SIGTERM.
-- `cmd/desktop` — macOS Wails wrapper around the same `internal/httpx` stack: loopback HTTP server + native window (see **Try it (macOS desktop)** above).
-- `internal/config` — environment loading, defaults, and the canonical relay list.
-- `internal/nostrx` — typed Nostr events, NIP-19 helpers, NIP-27 mention parsing, websocket relay client with optional NIP-77 negentropy (when the SQLite cache is wired), per-relay metrics, and a backoff penalty box.
-- `internal/store` — SQLite schema, migrations, projections, retention/compaction, hydration target queues, trending cache, WoT reachability over `follow_edges`, and bounded sidecar LRU caches.
-- `internal/httpx` — HTTP server, handlers, render helpers, the warm queue, the hydration sweeper, the trending sweeper, and the outbox routing helpers.
-- `internal/thread` — thread tree assembly from cached events.
-- `internal/templates`, `web/static` — Go HTML templates, vanilla JS, plain CSS.
-- `internal/bloom` — small bloom filter used for fast membership tests against resolved author universes.
-
-## Data flow
-
-```
-                              +-------------------+
-                              |   Browser (UI)    |
-                              |  HTML + vanilla JS|
-                              +---------+---------+
-                                        | HTTP (cookie session, no relay traffic)
-                                        v
-+---------------------------------------+----------------------------------------+
-|                                internal/httpx                                  |
-|                                                                                |
-|   handlers_feed / handlers_api / handlers_debug / handler_user / thread        |
-|        |                |                  |                       |          |
-|        v                v                  v                       v          |
-|   feed pipeline   relay routing       hydrator / warmer       thread builder  |
-|   (service.go)    (service_outbox)    (warmer.go,             (internal/      |
-|        |                |              hydrator.go,            thread)        |
-|        |                |              background_jobs.go)                    |
-|        |                |                                                     |
-+--------+----------------+------------------+--------------------------+-------+
-         |                |                  |                          |
-         | reads          | route fan-out    | enqueue warm jobs        | reads
-         v                v                  v                          v
-+--------+----------------+------------------+-----------------------------------+
-| internal/store (SQLite)                                                         |
-|  events, tags, relay_events, relay_status, follow_edges (WoT),                 |
-|  profiles_cache, follow_list_cache, relay_hints, reply_counts,                |
-|  trending_cache, hydration_targets, bookmarks, reads, cache_events, fetch_log |
-+--------+----------------+------------------+-----------------------------------+
-         ^                ^                  ^
-         | projections    | sightings        | ingest + LRU invalidation
-         |                |                  |
-+--------+----------------+------------------+----------------------------------+
-|                            internal/nostrx (relay client)                      |
-|   websocket fan-out, optional NIP-77 negentropy + REQ fallback, dedupe,      |
-|   per-relay metrics (incl. negentropy counters), penalty backoff               |
-+--------+-----------------------------------------------------------------------+
-         |
-         v
-+--------+-----------------+
-|     Nostr relays         |
-|  primal / damus / nos.lol|
-|  + user-added relays     |
-+--------------------------+
-```
-
-
-The server fans out to a bounded set of relays, persists every raw event into SQLite, projects derived state (profiles, follow lists, relay hints, reply counts, trending, bookmarks, reads) into typed tables, expands web-of-trust reachability from the `follow_edges` projection inside SQLite, and wraps each resolved author set in a small bloom filter for cheap negative membership checks before exact lookups. Hot projection reads also use a bounded in-process LRU (relay hints, profiles, reply stats) with hit/miss counters on `/debug/metrics`. Pages render from local cache first; relay traffic warms the cache in the background.
-
-
-1. The browser issues an HTTP request (`/`, `/feed`, `/u/<id>`, `/thread/<id>`, `/reads`, `/bookmarks`, `/notifications`, `/trending`, `/api/...`). Sessions and the active pubkey live in a cookie; the browser never speaks websocket itself.
-2. `internal/httpx` parses the request into a `feedRequest`, resolves the viewer, and clamps relay/wot parameters.
-3. Authors are resolved through `resolveAuthorsAll`:
-   - viewer's follow list is loaded from the SQLite `follow_list_cache` projection,
-   - if web-of-trust is enabled, `Store.ReachablePubkeysWithin` walks `follow_edges` in a read-only transaction (depth-bounded, same `MaxDepth = 3` ceiling as the UI) and merges its result,
-   - the union is deduped, capped by `WOTMaxAuthors`, and memoized in an in-process `resolvedAuthorsCache`.
-4. The page renders directly from SQLite projections (`events`, `profiles_cache`, `reply_counts`, `trending_cache`, etc.). For the logged-out feed the trending cache is consulted first, then a curated whitelist fallback.
-5. Cache misses or stale entries are pushed into the warm queue (`warmer.go`) and into `hydration_targets` so they're refreshed asynchronously instead of blocking the response.
-
-### Write path (relay → cache)
-
-1. A handler or warmer asks `nostrx.Client` for events. The client fans out to a bounded set of relays (`MaxRelays = 8`), enforcing per-request and per-relay timeouts and tracking per-relay metrics (`queries`, `relay_attempts`, `relay_failures`, `events_seen`, plus `negentropy` counters on `/debug/metrics`). When the server wires SQLite via `SetNegentropyCache`, each relay may first try **NIP-77 negentropy** (download-only via `fiatjaf.com/nostr/nip77`): we reconcile id sets only for filters we can mirror in SQL (event ids and/or authors and kinds with optional `since`/`until`, no `#e`/`#p` tag maps or search), only if `PTXT_NEGENTROPY` is `1`/`true`/`on` (opt-in; default is REQ-only because most relays reject NIP-77) and the local cache has at least one matching row but fewer than 50k (so there is overlap to reconcile without loading an enormous vector). Missing events are fetched on the same relay connection the library opens. **Any** negentropy failure or timeout falls back to the classic `REQ` / `EVENT` / `EOSE` path for that relay only; the negentropy phase uses at most one third of the per-relay timeout so the REQ round trip still has budget. NIP-42 `AUTH` handling on the REQ path may differ from what `nostr.Relay` does during negentropy—treat auth-gated relays as higher risk until aligned. Outbound WebSockets use the stack from `nostr.RelayConnect` (coder/websocket with compression where negotiated) for negentropy, and the same dial style as today for REQ.
-2. Repeated relay failures push that relay into a backoff penalty box, so a flaky relay can't keep extending request latency.
-3. Returned events are deduped by id and persisted via `internal/store.SaveEvents`. Relay `EVENT` frames are staged as raw wire events in `nostrx.Client`, then converted and checked with `nostrx.ValidateIngestEvent(IngestFromRelay, …)` as a batch before they reach SQLite (and the negentropy publisher path uses the same relay validation helper). The HTTP publish API uses `IngestFromHTTPAPI` so kind limits, content size, and kind-specific shape rules stay aligned with `nostrx.ValidateSignedEvent`. When `PTXT_INGEST_VERIFY_PARALLEL` is greater than `1`, that staged relay batch validation runs with concurrent workers for every `FetchFrom` path. For each event the store:
-   - writes the raw JSON, pubkey, kind, created_at, signature, and tag rows,
-   - records a `relay_events` sighting per (event id, relay url),
-   - calls `projectEventTx` to update typed projections — kind 0 → `profiles_cache`, kind 3 → `follow_list_cache` and `follow_edges`, kind 10002 → `relay_hints`, kind 10003 → `bookmarks`, replies → `reply_counts`, etc., and invalidates sidecar LRU keys for affected entities after batch ingest.
-4. Retention runs FIFO by `inserted_at` once the per-process write counter trips `pruneEvery`. `Compact` (one-shot at startup if `PTXT_COMPACT_ON_START=1`) prunes plus vacuums. That FIFO cap can delete arbitrary rows by insertion time; it does not try to preserve one row per replaceable slot.
-
-### Replaceable events (kind 0, 3, 10002)
-
-- Reads pick the newest row per `(pubkey, kind)` using `ORDER BY created_at DESC, id DESC` (`LatestReplaceable`, feeds, etc.).
-- By default (`PTXT_REPLACEABLE_HISTORY=true`), every distinct event id remains in `events` so you keep a full revision history until global retention deletes old rows.
-- Set `PTXT_REPLACEABLE_HISTORY=false` to delete older same-slot rows immediately after a successful insert (same ordering as “newest”): only kinds **0**, **3**, and **10002** are pruned; other kinds are unchanged. Relay hint rows for removed ids are cleared via `DELETE` on `relay_events` first so orphaned relay rows do not accumulate.
-
-### Tag indexing (for contributors)
-
-- Normalized tag rows live in `tags` with `PRIMARY KEY(event_id, idx)` and index `idx_tags_name_value` on `(name, value, event_id)` for `#e` / `#p` / `#t` style lookups (`internal/store/migrate.go`).
-- When adding a query that filters on a new tag name or a new composite shape, add an explicit migration index (or a projection fed from `projectEventTx`) rather than relying on full table scans.
-
-### Denormalization and query planning
-
-Hot paths today include feed timelines (`RecentByAuthors`, `RecentByKinds`, outbox-grouped refresh), `LatestReplaceable*` for profiles and follows, `SearchNoteSummaries` (FTS5 + kind filters), and thread assembly. Projections (`profiles_cache`, `follow_list_cache`, `reply_counts`, `trending_cache`, etc.) already denormalize what those reads need.
-
-When profiling shows a slow plan, prefer (in order): tighten the query, add a **partial** or composite index in `migrate.go`, or extend a projection column updated in `projectEventTx`. Avoid new storage engines unless requirements clearly outgrow SQLite.
-
-### Web-of-trust filter
-
-- Toggle and depth (1–3) are user preferences stored in the browser via `web/static/js/sort-prefs.js` and surfaced server-side as `wot=1&wot_depth=N` query parameters. `store.MaxDepth = 3` is the canonical ceiling and the JS client constant must agree with it (asserted by `wot_depth_sync_test.go`).
-- When the filter is on, feed and profile-feed handlers expand the viewer's follow set using `follow_edges` up to the requested depth, then intersect SQLite event queries with that author universe.
-- The follow universe is capped by `WOTMaxAuthors` (default 240) before SQLite filtering to keep `IN (...)` plans bounded.
-
-### Background loops
-
-`internal/httpx/server.go` spawns these on startup when `HydrationEnabled=true`:
-
-- **Hydration sweeper** (`hydrator.go`, every `PTXT_HYDRATION_SWEEP_INTERVAL`, default 5 min). Pulls stale `hydration_targets` rows for `profile`, `noteReplies`, `followGraph`, and `relayHints` and warms against the metadata + default relay set. Logged-out seed note hydration uses the separate `seedContact` crawler ([`seed_crawler.go`](internal/httpx/seed_crawler.go)); tune it with `PTXT_SEED_CRAWLER_*` in the table below.
-- **Trending sweeper** (`trending.go`, every `PTXT_TRENDING_SWEEP_INTERVAL`, default 5 min). Recomputes the 24h and 1w trending tables from `reply_counts` and persists them into `trending_cache`, but only if the existing cache is older than `PTXT_TRENDING_MIN_RECOMPUTE` (default 20 min).
-- **Hot feed crawler** (`hot_feed_crawler.go`, every `PTXT_HOT_FEED_CRAWLER_INTERVAL`, default 45s). Pulls recent note heads for the default logged-out web-of-trust cohort and recently active signed-in viewers, then refreshes first-page feed snapshots and cohort trending rows. It is bounded by author/cohort/fetch limits and by `PTXT_EVENT_RETENTION`, so it keeps latest browsing fast without trying to mirror deep history.
-- **Projection rebuild** (one-shot, only if `PTXT_REBUILD_PROJECTIONS=1`). Rewrites every projection table from raw events. Useful after schema changes.
-- **Warm queue** (`warmer.go`, 4 workers by default). Coalesces warm requests by key so simultaneous viewers asking for the same author/thread/event only spawn one relay round trip. Each job has a wall-clock timeout and per-kind work caps (`PTXT_WARM_*`); oversized jobs re-enqueue the tail.
-
-### Outbox-style routing
-
-`service_outbox.go` groups authors into route groups before fan-out:
-
-- per-author write-relay hints from `relay_hints` (kind 10002),
-- contact-list relay hints from followers-of-followers (capped by `OutboxFoFSeeds`, default 40),
-- observed relays from `relay_events` for that author's notes/profiles/relay lists,
-- the viewer-supplied / default relay set as a fallback.
-
-Each author is bounded by `OutboxMaxRelaysPerAuthor` (default `MaxRelays = 8`), and the total number of grouped requests is bounded by `OutboxMaxRouteGroups` (default 6).
-
-## Login modes
-
-Private keys never leave the browser:
-
-- read-only pubkey,
-- NIP-07 (browser extension),
-- session-only private key,
-- ephemeral key.
-
-The logged-out feed is seeded from a curated whitelist in `data/curated_pubkeys.json`, not the raw firehose.
-
-
-## Configuration
-
-The **desktop** preset (`cmd/desktop`) sets `PTXT_DB` under the per-user config directory, `PTXT_DESKTOP_MODE=1`, `PTXT_SERVER_MODE=app`, unlimited event/disk retention, `PTXT_COMPACT_ON_START=false`, and `PTXT_PPROF_ADDR=off` when those keys are unset. Hydration, seed, hot-feed, viewer, and active-viewer trending workers stay enabled. Hosted throttles and anonymous cache-only thread admission are bypassed only in desktop mode, while low-priority background crawling builds signed-in viewers' three-hop follow graphs and warms relay hints, notes, and thread context on a rotating schedule.
-
-Useful environment variables (all optional):
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `PTXT_ADDR` | `:8080` | Listen address. |
-| `PTXT_DESKTOP_MODE` | `false` | Set automatically by `cmd/desktop` for the Wails build. Enables local-first relay reads, unlimited local cache, desktop storage controls, and the loopback-only `/__ptxt/desktop/*` helpers. Do not enable on a publicly reachable `cmd/server`. |
-| `PTXT_DB` | `data/ptxt-nstr.sqlite` | SQLite path. |
-| `PTXT_RELAYS` | `wss://relay.primal.net,wss://relay.damus.io,wss://nos.lol` | Default relay set. |
-| `PTXT_METADATA_RELAYS` | `PTXT_RELAYS` | Preferred relays for profile / follow / relay-list hydration. |
-| `PTXT_INDEXER_RELAYS` | `wss://relay.nostr.band,wss://relay.primal.net` | Indexer relays for thread reply discovery (second pass). |
-| `PTXT_INDEXER_NIP50_RELAYS` | `wss://relay.nostr.band,wss://relay.primal.net` | Relays for NIP-50 thread reply fallback (excludes search-only relays). |
-| `PTXT_INDEXER_MAX_RELAYS` | `6` | Cap on indexer relay fan-out per fetch. |
-| `PTXT_CURATED_PUBKEYS` | — | Comma-separated hex pubkeys or npubs added to seed bootstrap and background crawl. |
-| `PTXT_THREAD_MAX_RELAYS` | `16` | Cap on merged relays for thread hydration (primary pass). |
-| `PTXT_THREAD_OUTBOX_MAX_ROUTE_GROUPS` | `8` | Grouped outbox fan-out cap for thread reply authors. |
-| `PTXT_THREAD_OUTBOX_MAX_RELAYS_PER_AUTHOR` | `PTXT_OUTBOX_MAX_RELAYS_PER_AUTHOR` | Per-author relay cap in thread outbox groups. |
-| `PTXT_THREAD_CONTEXT_WARM_MAX_IDS` | `48` | Max ancestor/referenced note IDs warmed after `?fragment=hydrate`. |
-| `PTXT_HYDRATION_NOTE_REPLIES_BATCH` | `32` | `noteReplies` targets processed per hydration sweeper tick. |
-| `PTXT_REQUEST_TIMEOUT_MS` | `3500` | Per-relay timeout in `nostrx.Client`. The outer HTTP handler context uses `max(5s, relayTimeout+2s)` (see `internal/httpx/middleware.go`). |
-| `PTXT_RELAY_MAX_OUTBOUND_CONNS` | `48` | Process-wide cap on concurrent relay WebSocket operations (`nostrx` acquire/release around each dial). Set to `0` for unlimited (tests only). |
-| `PTXT_WARM_JOB_TIMEOUT_MS` | `90000` | Hard wall-clock cap per warm-queue job. |
-| `PTXT_WARM_MAX_AUTHORS_PER_JOB` | `16` | Max authors processed per warm `authors` job; remainder is re-enqueued. |
-| `PTXT_WARM_MAX_NOTE_IDS_PER_JOB` | `32` | Max note IDs per warm `noteReplies` / `noteReactions` job; remainder is re-enqueued. |
-| `PTXT_WARM_WORKERS` | `4` | Warm-queue worker goroutines. |
-| `PTXT_WARM_QUEUE_CAPACITY` | `256` | Warm job channel buffer (jobs dropped when full). |
-| `PTXT_NIP50_FALLBACK_RATE` | `30` | Max background NIP-50 reply fallbacks per minute. |
-| `PTXT_HEALTH_PROBE_ENABLED` | `false` | When `1`/`true`, periodically `GET` the app over loopback (see path/timeout below) and set `degraded` in `/healthz` after repeated failures. |
-| `PTXT_HEALTH_PROBE_INTERVAL` | `30s` | Delay between self-probes. |
-| `PTXT_HEALTH_PROBE_PATH` | `/healthz` | URL path for the self-probe. Keep this cheap; `/healthz` only pings SQLite and does not call relays. |
-| `PTXT_HEALTH_PROBE_TIMEOUT_MS` | `12000` | Per-probe HTTP client timeout. |
-| `PTXT_HEALTH_PROBE_DEGRADED_THRESHOLD` | `3` | Consecutive probe failures before `/healthz` reports `"degraded": true`. |
-| `PTXT_NEGENTROPY` | off | Set to `1`/`true`/`on` to try NIP-77 before REQ on eligible fetches (see write path). Unset or `0`/`false`/`off` keeps REQ-only. |
-| `PTXT_FEED_WINDOW` | `168h` | Logged-out firehose window. |
-| `PTXT_EVENT_RETENTION` | `20000` | FIFO event ceiling for the SQLite cache. |
-| `PTXT_REPLACEABLE_HISTORY` | `true` | When `false`, delete superseded kind 0 / 3 / 10002 rows for the same pubkey after each insert (see “Replaceable events”). |
-| `PTXT_INGEST_VERIFY_PARALLEL` | `0` | When set to an integer `2`–`32`, `nostrx.Client` validates relay `EVENT` batches concurrently after the read loop and before returning them to SQLite-backed paths. `0` or `1` keeps validation sequential. |
-| `PTXT_HYDRATION_ENABLED` | `true` | Run the hydration + trending sweepers. |
-| `PTXT_HYDRATION_SWEEP_INTERVAL` | `5m` | Delay between hydration sweeps. |
-| `PTXT_TRENDING_SWEEP_INTERVAL` | `5m` | Delay between trending sweep passes. |
-| `PTXT_TRENDING_MIN_RECOMPUTE` | `20m` | Minimum age before trending cache recomputes. |
-| `PTXT_ACTIVE_VIEWER_TRENDING` | `true` | Runs the per-active-viewer trending warm loop so signed-in WoT trend feeds and sidebars stay populated. Set to `0`/`false` on very small instances to reduce SQLite load. |
-| `PTXT_HOT_FEED_CRAWLER_ENABLED` | `true` | Continuously warm recent note heads for default-seed WoT and active signed-in cohorts. |
-| `PTXT_HOT_FEED_CRAWLER_INTERVAL` | `45s` | Delay between hot-feed crawl ticks. |
-| `PTXT_HOT_FEED_CRAWLER_COHORT_LIMIT` | `8` | Max cohorts processed per hot-feed tick, including the default guest cohort. |
-| `PTXT_HOT_FEED_CRAWLER_AUTHOR_LIMIT` | `80` | Max authors refreshed per cohort per tick; large WoT cohorts rotate across ticks. |
-| `PTXT_HOT_FEED_CRAWLER_FETCH_LIMIT` | `80` | Max recent notes requested per author batch. |
-| `PTXT_HOT_FEED_CRAWLER_LOOKBACK` | `36h` | Oldest `created_at` for hot note-head relay queries. |
-| `PTXT_HOT_FEED_CRAWLER_SNAPSHOT_THROTTLE` | `2m` | Minimum interval between first-page snapshot rebuilds for a cohort. |
-| `PTXT_WOT_MAX_AUTHORS` | `240` | Cap on direct follows seeded into WoT resolution and on SQL `IN` feed queries; larger cohorts use batched author queries. |
-| `PTXT_SEED_CRAWLER_ENABLED` | `true` | Keep the WoT seed crawler running in the background. |
-| `PTXT_SEED_CRAWLER_INTERVAL` | `20s` | Delay between crawler ticks. |
-| `PTXT_SEED_CRAWLER_AUTHOR_BATCH` | `16` | Stale seed contacts processed per tick. |
-| `PTXT_SEED_CRAWLER_FETCH_LIMIT` | `60` | Max notes fetched per author per seed tick. |
-| `PTXT_SEED_CRAWLER_AUTHOR_NOTE_LOOKBACK` | `2880h` | Oldest `created_at` for those notes (`Since` on the relay filter; default 120 days). Set to `0` or `0s` to disable (count limit still applies). |
-| `PTXT_SEED_CRAWLER_REPLY_WARM_LIMIT` | `48` | Reply threads warmed per author per tick. |
-| `PTXT_SEED_CONTACT_FOLLOW_ENQUEUE_PER_TICK` | `120` | Follow pubkeys enqueued per contact when expanding the seed frontier. |
-| `PTXT_KNOWN_VIEWER_MAX` | `512` | Max durable `knownViewer` rows (signed-in users to background-crawl). |
-| `PTXT_VIEWER_CRAWLER_ENABLED` | `true` | Background crawl for previously signed-in viewers. |
-| `PTXT_VIEWER_CRAWLER_INTERVAL` | `30s` | Delay between viewer crawler ticks. |
-| `PTXT_VIEWER_CRAWLER_BATCH` | `8` | Known viewers processed per tick. |
-| `PTXT_VIEWER_CRAWLER_REPLY_WARM_LIMIT` | `48` | Thread warms per viewer per tick. |
-| `PTXT_VIEWER_CRAWLER_FOLLOW_ENQUEUE_PER_TICK` | `80` | Follow pubkeys enqueued into the seed frontier per viewer tick. |
-| `PTXT_SQLITE_MAX_OPEN_CONNS` | `max(10, runtime.NumCPU())` | SQLite pool max-open when unset (WAL read concurrency). |
-| `PTXT_SQLITE_MAX_IDLE_CONNS` | `max(4, runtime.NumCPU()/2)` | SQLite pool max-idle when unset. |
-| `PTXT_SQLITE_CACHE_KIB` | `32768` | SQLite page-cache target in KiB (`PRAGMA cache_size=-N`). |
-| `PTXT_SQLITE_MMAP_BYTES` | `134217728` | SQLite mmap target bytes (`PRAGMA mmap_size`). |
-| `PTXT_SQLITE_BUSY_TIMEOUT_MS` | `5000` | SQLite busy timeout (ms) for lock retries (`PRAGMA busy_timeout`). |
-| `PTXT_SQLITE_WAL_AUTOCHECKPOINT_PAGES` | `800` | SQLite WAL autocheckpoint page threshold. |
-| `PTXT_SIDECAR_LRU_SIZE` | `2048` | Max entries per sidecar domain (relay hints, profiles, reply stats) for the in-process read-through LRU. |
-| `PTXT_OUTBOX_MAX_RELAYS_PER_AUTHOR` | `8` | Per-author outbox cap. |
-| `PTXT_OUTBOX_MAX_ROUTE_GROUPS` | `6` | Max simultaneous route groups per request. |
-| `PTXT_OUTBOX_FOF_SEEDS` | `40` | Followers-of-followers seed cap for outbox routing. |
-| `PTXT_REBUILD_PROJECTIONS` | `false` | Rewrite all SQLite projections at startup. |
-| `PTXT_COMPACT_ON_START` | `false` | One-shot prune + vacuum at startup. |
-| `PTXT_DEBUG` | `false` | Enable `/debug/*` endpoints. |
-| `PTXT_MEMORY_LIMIT_BYTES` | `1073741824` (1 GiB) | Soft heap ceiling. `GOMEMLIMIT` takes precedence. |
-
-### Health and capacity notes
-
-- **`GET /healthz`** (always on): SQLite `Ping` only — use for **liveness** (process + DB). It does not call relays. JSON includes `degraded` when the optional self-probe has failed repeatedly (see `PTXT_HEALTH_PROBE_*`). **`systemd` `MemoryCurrent` can stay high while RSS is moderate** (e.g. page cache / mmap); treat `/healthz` + probe state as separate from RSS-only signals.
-- **Readiness vs liveness**: `/healthz` may return `200` with `"degraded": true` if the probe path is slow or wedged while SQLite still answers — wire your load balancer to `degraded` for **readiness** if you want to drain traffic before full failure.
-- **`/debug/metrics`** (when `PTXT_DEBUG=1`): includes `relay_queries.outbound` (slot cap, wait counts), `health` (last probe, consecutive failures), and sidecar counters `sidecar.relay_hint.{hit,miss}`, `sidecar.profile.{hit,miss}`, `sidecar.reply_stat.{hit,miss}` (same keys appear in `/debug/cache` under `sidecar_lru` as snapshots). WoT feed tuning: `feed.wot_sql_hit` vs `feed.wot_sql_miss_scan_fallback` (indexed author query vs global scan fallback), `feed.scan_cache_hit_thin`, `feed.snapshot_stale_served`. Trending: `trending.sidebar_global_stale_fallback`, `trending.cache_miss.fast_empty`, `trending.cohort_global_fallback_*`.
-
-## Local checks
+## Testing
 
 ```sh
-go test ./...
-PTXT_DEBUG=1 go run ./cmd/server
+make test
+make test-e2e
+node --test desktop/*.test.mjs
 ```
 
-After `make build-desktop` on macOS, open `cmd/desktop/build/bin/ptxt-nstr.app` once to confirm the splash hands off to the loopback UI (or run `cd cmd/desktop && wails dev` while iterating on the shell).
-
-With debug enabled:
-
-- `/debug/cache` — event, tag, relay-sighting, relay-status, and projection counts.
-- `/debug/metrics` — relay query attempts/failures/event counts (including outbound slot contention), app counters, and health probe snapshot.
-- `/debug/runtime` — Go runtime stats (goroutines, heap, GC).
-- `/debug/event?id=<eventid>` — fetches and returns one cached or relay-backed event with relay sources.
-- `/debug/profile?pubkey=<npub-or-hex>` — refreshes and returns one profile summary.
-- `/debug/firehose` — recent relay activity sample.
-- `/debug/pprof/*` — standard pprof handlers.
-
-## Known limitations
-
-- Publishing exists for a small set of kinds (notes, reactions, bookmarks, reads); zaps, media proxying, and richer notifications are deferred.
-- The curated logged-out feed seed should be reviewed before production use.
-- Feed pagination uses both event timestamp and event id as a cursor tie-breaker.
-- Thread pages render the currently-cached tree with collapse, parent/select, hash focus, and keyboard navigation. Deep branch navigation uses the `continue thread` link rather than a streaming reply loader.
-- WoT depth is capped at 3 and the author universe is capped at `WOTMaxAuthors` before SQLite filtering.
-- Debug metrics are in-memory counters and reset on restart. Relay status is persisted in SQLite.
-
-## Small-server sanity pass
-
-For a constrained local profile, run with a temp database and debug enabled:
+Before a release, also run the upstream parity and tracked-tree checks:
 
 ```sh
-PTXT_DB="$(mktemp -t ptxt-nstr.XXXXXX.sqlite)" PTXT_DEBUG=1 PTXT_REQUEST_TIMEOUT_MS=2500 go run ./cmd/server
+npm run check:upstream
+npm run check:public-tree
 ```
 
-Then repeatedly load `/`, `/feed`, `/relays`, a known `/u/<npub-or-hex>`, and a known `/thread/<eventid>` while watching structured logs plus `/debug/cache` and `/debug/metrics`. Relay fan-out should stay bounded by `MaxRelays`, profile/feed pagination should advance with timestamp + id cursors, repeated requests should grow cache hits, the hydration and trending sweepers should tick on idle gates, and relay failures should not block the whole page.
+The release workflow must additionally verify both architectures, codesigning, notarization, stapling, Gatekeeper acceptance, DMG installation, and sidecar cleanup on a signing-capable macOS runner.
 
-## Hosted deployment (advanced)
-
-For a single-instance AWS deployment, TLS, optional CloudFront in front of the origin, and operational runbooks, see [`deploy/README.md`](deploy/README.md). This path is aimed at operators who want a public site, not at someone who only wants to try the app locally.
-
-## License
-
-[MIT License](LICENSE): 
+See [docs/upstream-sync.md](docs/upstream-sync.md) for the pinned private-source boundary and synchronization policy.

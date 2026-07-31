@@ -16,6 +16,11 @@ const DEFAULT_BOOTSTRAP = Object.freeze({
     relays: [],
   },
   features: {
+	localFirst: false,
+	desktopShell: false,
+	storageControls: false,
+	browserExtensionSigner: true,
+	hostedGuestAdmission: true,
     documentNavigation: true,
     indexedDb: true,
     browserWrites: true,
@@ -113,6 +118,11 @@ export function readAppBootstrap() {
     route: readRouteContext(),
     features: {
       ...DEFAULT_BOOTSTRAP.features,
+	  localFirst: desktopDocumentMode(),
+	  desktopShell: desktopDocumentMode(),
+	  storageControls: desktopDocumentMode(),
+	  browserExtensionSigner: !desktopDocumentMode(),
+	  hostedGuestAdmission: !desktopDocumentMode(),
       directRelayReads: desktopDocumentMode(),
       relayNativeRoutesPrimary: desktopDocumentMode(),
     },
@@ -128,6 +138,25 @@ export function initializeAppBootstrap() {
 export function appBootstrap() {
   if (!cachedBootstrap) return initializeAppBootstrap();
   return cachedBootstrap;
+}
+
+// appFeatures is the single browser-side capability contract. Full server
+// documents carry the object explicitly; the dataset fallback exists only for
+// isolated fragments and unit-test documents that have no bootstrap script.
+export function appFeatures() {
+  const bootstrap = appBootstrap();
+  if (parseJSONScript("ptxt-app-bootstrap")) return bootstrap.features;
+  const desktop = desktopDocumentMode();
+  return {
+    ...bootstrap.features,
+    localFirst: desktop,
+    desktopShell: desktop,
+    directRelayReads: desktop,
+    relayNativeRoutesPrimary: desktop,
+    storageControls: desktop,
+    browserExtensionSigner: !desktop,
+    hostedGuestAdmission: !desktop,
+  };
 }
 
 export function appRouteContext() {

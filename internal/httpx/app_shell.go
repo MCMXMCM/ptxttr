@@ -118,6 +118,7 @@ func appShellRouteContextPayload(r *http.Request) appShellRouteContext {
 }
 
 func (s *Server) appShellBootstrapJSON(r *http.Request, base BasePageData) template.JS {
+	capabilities := s.runtimeCapabilities()
 	payload := appShellBootstrap{
 		Version:       1,
 		AssetBasePath: base.AssetBasePath,
@@ -128,14 +129,19 @@ func (s *Server) appShellBootstrapJSON(r *http.Request, base BasePageData) templ
 			Relays:     s.requestRelays(r),
 		},
 		Features: map[string]bool{
-			"documentNavigation": true,
-			"indexedDb":          true,
-			"browserWrites":      true,
+			"localFirst":             capabilities.LocalFirst,
+			"desktopShell":           capabilities.DesktopShell,
+			"storageControls":        capabilities.StorageControls,
+			"browserExtensionSigner": capabilities.BrowserExtensionSigner,
+			"hostedGuestAdmission":   capabilities.HostedGuestAdmission,
+			"documentNavigation":     true,
+			"indexedDb":              true,
+			"browserWrites":          true,
 			// A desktop package has no production relay cache behind its
 			// loopback origin. Route hydration must therefore fall back to the
 			// browser's selected relays when the local store is empty or partial.
-			"directRelayReads":         s.cfg.DesktopMode,
-			"relayNativeRoutesPrimary": s.cfg.DesktopMode,
+			"directRelayReads":         capabilities.DirectRelayReads,
+			"relayNativeRoutesPrimary": capabilities.RelayNativeRoutesPrimary,
 			"sharePreviewWarm":         true,
 			"crawlerPreviewSSR":        false,
 			"aboutSSR":                 true,
@@ -150,7 +156,7 @@ func (s *Server) appShellBootstrapJSON(r *http.Request, base BasePageData) templ
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return template.JS(`{"version":1,"assetBasePath":"/static","route":{"path":"/","search":"","hash":"","route":"","isCrawler":false},"viewer":{"pubkey":"","seedPubkey":"","relays":[]},"features":{"documentNavigation":true,"indexedDb":true,"browserWrites":true,"directRelayReads":false,"relayNativeRoutesPrimary":false,"sharePreviewWarm":true,"crawlerPreviewSSR":false,"aboutSSR":true},"guest":{"defaultWOTSeedNpub":"","defaultWOTDepth":0}}`)
+		return template.JS(`{"version":1,"assetBasePath":"/static","route":{"path":"/","search":"","hash":"","route":"","isCrawler":false},"viewer":{"pubkey":"","seedPubkey":"","relays":[]},"features":{"localFirst":false,"desktopShell":false,"directRelayReads":false,"relayNativeRoutesPrimary":false,"storageControls":false,"browserExtensionSigner":true,"hostedGuestAdmission":true,"documentNavigation":true,"indexedDb":true,"browserWrites":true,"sharePreviewWarm":true,"crawlerPreviewSSR":false,"aboutSSR":true},"guest":{"defaultWOTSeedNpub":"","defaultWOTDepth":0}}`)
 	}
 	return template.JS(encoded)
 }

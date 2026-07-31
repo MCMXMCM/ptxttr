@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
 
-import { getPublicKey, nip19 } from "../lib/nostr-tools.js";
+import { finalizeEvent, getPublicKey, nip19 } from "../lib/nostr-tools.js";
 
 function makeStorage() {
   const data = new Map();
@@ -138,6 +138,44 @@ describe("session signing account persistence", () => {
 
     assert.deepEqual(withTag.tags, [["client", "Plain Text Nostr"]]);
     assert.notEqual(withTag.tags, draft.tags);
+  });
+
+  it("gives rapid replaceable writes strictly increasing timestamps", async () => {
+    const { session, nsec } = makeSigningSession(98);
+    persistSigningAccount(session, nsec);
+    setSession(session);
+    const draft = { kind: 10042, created_at: 500, tags: [], content: "" };
+
+    const first = await signEventDraft(draft, getSession());
+    const second = await signEventDraft(draft, getSession());
+
+    assert.equal(first.created_at, 500);
+    assert.equal(second.created_at, 501);
+  });
+
+  it("rejects a valid NIP-07 signature from a different account", async () => {
+    const expected = makeSigningSession(97);
+    const other = makeSigningSession(96);
+    setSession({ ...expected.session, method: "nip07" });
+    window.nostr = {
+      async signEvent(draft) {
+        return finalizeEvent(draft, other.secret);
+      },
+    };
+
+    await assert.rejects(
+      signEventDraft({ kind: 1, created_at: 123, tags: [], content: "wrong account" }, getSession()),
+      /signed with a different account/i,
+    );
+  });
+
+  it("treats a corrupt stored nsec as unavailable instead of throwing", () => {
+    const { session } = makeSigningSession(95);
+    setSession(session);
+    sessionStorage.setItem("ptxt_nsec", "not-an-nsec");
+
+    assert.doesNotThrow(() => activeSignerState(getSession()));
+    assert.equal(activeSignerState(getSession()).canSign, false);
   });
 
   it("normalizes NIP-07 extension relay metadata", () => {

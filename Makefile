@@ -1,6 +1,4 @@
-.PHONY: build-web run test test-js test-e2e fmt tidy vet lint check build-cfn-artifact upload-cfn-artifact deploy deploy-infra deploy-cloudfront grow-prod-volume grow-prod-data-volume validate-cfn build-desktop desktop-build desktop-package desktop-sign
-
-ARTIFACT_BUCKET ?= your-artifact-bucket
+.PHONY: build-web run test test-js test-e2e fmt tidy vet lint check desktop-dev desktop-build desktop-package desktop-release
 
 build-web:
 	npm run build:web
@@ -36,44 +34,14 @@ lint: build-web
 
 check: fmt vet lint test
 
-build-cfn-artifact:
-	./scripts/build-cfn-artifact.sh
-
-upload-cfn-artifact:
-	./scripts/upload-cfn-artifact.sh --bucket "$(ARTIFACT_BUCKET)"
-
-deploy:
-	./scripts/deploy-prod.sh
-
-deploy-infra:
-	./scripts/deploy-prod-infra.sh
-
-deploy-cloudfront:
-	./scripts/deploy-prod-cloudfront.sh
-
-# Requires AWS credentials with cloudformation:ValidateTemplate (calls the AWS API).
-validate-cfn:
-	aws cloudformation validate-template \
-		--template-body "file://$(CURDIR)/deploy/cloudformation/ptxt-nstr-single-instance.yaml"
-	aws cloudformation validate-template \
-		--template-body "file://$(CURDIR)/deploy/cloudformation/ptxt-nstr-cloudfront.yaml"
-
-grow-prod-volume:
-	./scripts/grow-prod-volume.sh
-
-grow-prod-data-volume:
-	./scripts/grow-prod-data-volume.sh
-
-# macOS desktop (Wails). Requires: wails CLI, Xcode CLT; run from a Mac for darwin/universal.
-build-desktop: desktop-build
+desktop-dev:
+	npm run desktop:dev
 
 desktop-build:
-	./scripts/desktop/build-mac.sh
+	npm run desktop:build
 
-# Packages whatever .app is already at cmd/desktop/build/bin/ (build first;
-# for signed releases run desktop-build → desktop-sign → desktop-package).
 desktop-package:
-	./scripts/desktop/package-mac.sh
+	npm run desktop:package
 
-desktop-sign:
-	./scripts/desktop/sign-mac.sh
+desktop-release:
+	npm run desktop:release

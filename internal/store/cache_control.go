@@ -9,17 +9,26 @@ import (
 	"ptxt-nstr/internal/nostrx"
 )
 
+const (
+	// AppMetaKeyCacheMaxBytes stores the user-selected desktop SQLite cache
+	// budget. The packaged desktop default remains 2 GiB when this key is absent.
+	AppMetaKeyCacheMaxBytes = "desktop.cache_max_bytes"
+	DefaultCacheMaxBytes    = int64(2 * 1024 * 1024 * 1024)
+)
+
 type CacheCategoryUsage struct {
 	Events int64 `json:"events"`
 	Bytes  int64 `json:"bytes"`
 }
 
 type CacheUsage struct {
-	DiskBytes int64              `json:"disk_bytes"`
-	Notes     CacheCategoryUsage `json:"notes"`
-	Metadata  CacheCategoryUsage `json:"metadata"`
-	UserData  CacheCategoryUsage `json:"user_data"`
-	Other     CacheCategoryUsage `json:"other"`
+	DiskBytes   int64              `json:"disk_bytes"`
+	MaxBytes    int64              `json:"max_bytes"`
+	TargetBytes int64              `json:"target_bytes"`
+	Notes       CacheCategoryUsage `json:"notes"`
+	Metadata    CacheCategoryUsage `json:"metadata"`
+	UserData    CacheCategoryUsage `json:"user_data"`
+	Other       CacheCategoryUsage `json:"other"`
 }
 
 type CacheClearResult struct {
@@ -53,6 +62,7 @@ func (s *Store) CacheUsage(ctx context.Context) (CacheUsage, error) {
 	if s == nil || s.db == nil {
 		return usage, nil
 	}
+	usage.MaxBytes, usage.TargetBytes = s.DiskByteRetentionPolicy()
 	query := fmt.Sprintf(`
 		SELECT CASE
 			WHEN kind IN (%s) THEN 'notes'

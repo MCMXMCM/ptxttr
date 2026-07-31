@@ -103,6 +103,53 @@ test.describe("relay-native client reads", () => {
     });
   });
 
+  test("sidebar Home returns to the local feed without replacing the document", async ({ page, request }) => {
+    await page.setViewportSize({ width: 1120, height: 820 });
+    const seed = await request.post(`/debug/seed-note?id=${ROOT_ID}&pubkey=${AUTHOR_PK}`);
+    expect(seed.ok()).toBeTruthy();
+
+    await installRelayNativeE2E(page, { events: buildThreadFixture(), wotEnabled: false });
+    await navigateToThreadFromFeed(page, ROOT_ID);
+    await expect(page.locator("#thread-focus")).toBeVisible();
+
+    const home = page.locator('.left-rail .rail-nav a[href="/"]').first();
+    await expect(home.locator(".rail-icon")).toHaveText("~");
+    await expect(home.locator(".rail-label")).toBeHidden();
+    await expect(home.locator(".rail-icon")).toHaveCSS("cursor", "pointer");
+    await page.locator("html").evaluate((node) => { node.dataset.ptxtDesktopMode = "1"; });
+    expect(await page.locator(".left-rail").evaluate((node) => (
+      Number.parseFloat(getComputedStyle(node).paddingTop)
+    ))).toBeGreaterThanOrEqual(52);
+    await expect(home.locator(".rail-icon")).toHaveCSS("-webkit-app-region", "no-drag");
+    await expect(page.locator("body")).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+    expect(await page.locator(".app-shell").evaluate((node) => (
+      getComputedStyle(node).backgroundImage
+    ))).toContain("linear-gradient");
+    const sidebarToggle = page.locator("[data-sidebar-collapse-toggle]");
+    await expect(sidebarToggle).toBeVisible();
+    const toggleBox = await sidebarToggle.boundingBox();
+    expect(toggleBox?.x).toBe(88);
+    expect(toggleBox?.y).toBe(5);
+    expect(await page.locator(".left-rail").evaluate((node) => node.getBoundingClientRect().width)).toBe(224);
+    await page.locator("html").evaluate((node) => { node.dataset.ptxtSidebarCollapsed = "1"; });
+    await expect(page.locator(".left-rail")).toBeHidden();
+    await expect(page.locator("[data-sidebar-collapse-toggle]")).toBeVisible();
+    await page.setViewportSize({ width: 800, height: 820 });
+    await expect(page.locator(".left-rail")).toBeHidden();
+    await expect(page.locator("[data-sidebar-collapse-toggle]")).toBeVisible();
+    await page.locator("html").evaluate((node) => { delete node.dataset.ptxtSidebarCollapsed; });
+    await expect(page.locator(".left-rail")).toBeVisible();
+    const documentProbe = await page.evaluate(() => {
+      const value = crypto.randomUUID();
+      window.__ptxtHomeDocumentProbe = value;
+      return value;
+    });
+    await home.locator(".rail-icon").click();
+    await expect(page).toHaveURL(/\/$/);
+    await expect(page.locator("#feed[data-relay-native-feed='1']")).toBeVisible({ timeout: 30_000 });
+    expect(await page.evaluate(() => window.__ptxtHomeDocumentProbe)).toBe(documentProbe);
+  });
+
   test("feed click uses the note relay hint when current relays do not have the thread", async ({ page }) => {
     const viewerRelay = "wss://viewer-only.ptxt.test";
     const noteRelay = "wss://note-hint.ptxt.test";

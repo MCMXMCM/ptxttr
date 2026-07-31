@@ -36,12 +36,59 @@ let mobileMenuEscapeBound = false;
 let mobileAppNavHeightBound = false;
 let blossomVisibilityBound = false;
 let feedWotControlsVisibilityBound = false;
+let desktopSidebarStorageBound = false;
+
+const DESKTOP_SIDEBAR_COLLAPSED_KEY = "ptxt_desktop_sidebar_collapsed";
 
 /** Matches `app.css` @media (max-width: 700px) feed-shell layout. */
 const mobileShellLayoutQuery = window.matchMedia("(max-width: 700px)");
 
 function mobileFeedShellNarrow() {
   return document.body.classList.contains("feed-shell") && mobileShellLayoutQuery.matches;
+}
+
+function storedDesktopSidebarCollapsed() {
+  try {
+    return localStorage.getItem(DESKTOP_SIDEBAR_COLLAPSED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function applyDesktopSidebarState(collapsed) {
+  const isCollapsed = Boolean(collapsed);
+  if (isCollapsed) document.documentElement.dataset.ptxtSidebarCollapsed = "1";
+  else delete document.documentElement.dataset.ptxtSidebarCollapsed;
+  document.querySelectorAll("[data-sidebar-collapse-toggle]").forEach((button) => {
+    const label = isCollapsed ? "Expand sidebar" : "Collapse sidebar";
+    button.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+    button.setAttribute("aria-label", label);
+    button.setAttribute("title", label);
+  });
+}
+
+function bindDesktopSidebar(root = document) {
+  if (!desktopModeEnabled()) return;
+  applyDesktopSidebarState(storedDesktopSidebarCollapsed());
+  root.querySelectorAll("[data-sidebar-collapse-toggle]").forEach((button) => {
+    if (button._ptxtDesktopSidebarBound) return;
+    button._ptxtDesktopSidebarBound = true;
+    button.addEventListener("click", () => {
+      const collapsed = document.documentElement.dataset.ptxtSidebarCollapsed !== "1";
+      try {
+        localStorage.setItem(DESKTOP_SIDEBAR_COLLAPSED_KEY, collapsed ? "1" : "0");
+      } catch {
+        // The layout still toggles when persistent browser storage is unavailable.
+      }
+      applyDesktopSidebarState(collapsed);
+    });
+  });
+  if (desktopSidebarStorageBound) return;
+  desktopSidebarStorageBound = true;
+  window.addEventListener("storage", (event) => {
+    if (event.key !== DESKTOP_SIDEBAR_COLLAPSED_KEY) return;
+    applyDesktopSidebarState(event.newValue === "1");
+  });
 }
 
 /** Sets `--mobile-app-nav-height` from `.mobile-bar` and resizes the thread toolbar spacer (narrow feed-shell only). */
@@ -265,6 +312,7 @@ function ensureMobileMenuEscapeDelegate() {
 }
 
 export function initLayoutUI(root = document) {
+  bindDesktopSidebar(root);
   initDesktopStorage(root);
   initRetroLoaders(root);
   wireAvatarImageFallbacks(root);

@@ -415,8 +415,13 @@ export function shellMobileBar() {
 
 export function leftRail(active = "") {
   return `
+    <button type="button" class="rail-collapse-toggle" data-sidebar-collapse-toggle aria-label="Collapse sidebar" aria-expanded="true" title="Collapse sidebar">
+      <span class="rail-collapse-icon" aria-hidden="true"></span>
+    </button>
     <aside class="left-rail">
-      <a class="rail-brand" href="/" data-relay-aware data-feed-home>Plain Text Nostr</a>
+      <div class="rail-header">
+        <a class="rail-brand" href="/" data-relay-aware data-feed-home>Plain Text Nostr</a>
+      </div>
       <nav class="rail-nav" aria-label="Primary">
         ${navLink("/", "~", "Home", active, " data-feed-home")}
         ${navLink("/reads", "?", "Reads", active, " data-session-reads-link")}

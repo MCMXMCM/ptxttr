@@ -110,13 +110,16 @@ func (q *warmQueue) worker() {
 }
 
 func (q *warmQueue) run(job warmJob) {
+	defer q.finish(job.key)
+	if !q.server.waitForBackgroundActive(q.server.ctx) {
+		return
+	}
 	timeout := q.server.cfg.WarmJobTimeout
 	if timeout <= 0 {
 		timeout = 45 * time.Second
 	}
 	jobCtx, cancel := context.WithTimeout(q.server.ctx, timeout)
 	defer cancel()
-	defer q.finish(job.key)
 	started := time.Now()
 	q.server.runWithRelayWriteBudget(jobCtx, "warm."+job.kind, func() {
 		q.server.handleWarmJob(jobCtx, job)

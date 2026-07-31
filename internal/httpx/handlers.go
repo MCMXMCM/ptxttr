@@ -37,7 +37,7 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 	// A full WebView navigation cannot attach the browser-local viewer header.
 	// Desktop has no shared guest cache boundary, so headerless profile loads
 	// must remain relay-capable (including direct loads of the active account).
-	guestRequest := anonymousRequestFromHTTP(r) && !s.cfg.DesktopMode
+	guestRequest := anonymousRequestFromHTTP(r) && s.runtimeCapabilities().HostedGuestAdmission
 	if guestRequest && !s.anonymousProfileAllowed(r.Context(), pubkey) {
 		w.Header().Set("X-Ptxt-Route-Status", string(ThreadRenderNotFound))
 		s.renderAnonymousScopeNotFound(w, r, "User", "User not found", "This profile is not available in the cached guest slice.")
@@ -186,7 +186,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	relays := s.requestRelays(r)
 	viewerPub, loggedOut := s.resolveViewer(viewerFromRequest(r), relays)
 	anonymousMembership := authorMembership{}
-	if loggedOut && !s.cfg.DesktopMode {
+	if loggedOut && s.runtimeCapabilities().HostedGuestAdmission {
 		anonymousMembership = s.defaultLoggedOutThreadAuthorMembership(r.Context())
 	}
 	// UI fragments use relays for missing ancestry; fragment=replies alone stays
@@ -235,7 +235,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 			ErrorPanelCopy: ErrorPanelCopy{
 				Heading:       "Note not found",
 				Message:       "No note with this id was found in the local cache or on the relays you selected.",
-				ShowLoginHint: !s.cfg.DesktopMode,
+				ShowLoginHint: s.runtimeCapabilities().HostedGuestAdmission,
 				ThreadRail:    true,
 			},
 		})
@@ -331,7 +331,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 			s.metrics.Add("thread.hydrate.store_first", 1)
 		}
 	}
-	if fragment == "" && !s.cfg.DesktopMode && cacheableAnonymousThreadDocument(r) {
+	if fragment == "" && s.runtimeCapabilities().HostedGuestAdmission && cacheableAnonymousThreadDocument(r) {
 		s.renderAnonymousThreadDocument(w, r, base, *root, *selected, parentID, relays, resolveEvent, anonymousMembership)
 		return
 	}
@@ -352,8 +352,8 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	fullReplyWalk := !repliesPaginationFragment && cursor == 0 && cursorID == ""
 	// Guest threads are strictly cache-only. A public hydrate request must not
 	// turn into synchronous relay reads or enqueue relay context work.
-	threadRepliesStoreOnly := (loggedOut && !s.cfg.DesktopMode) || repliesPaginationFragment || hydrateStoreFirst
-	if loggedOut && !s.cfg.DesktopMode && fragment == "hydrate" {
+	threadRepliesStoreOnly := (loggedOut && s.runtimeCapabilities().HostedGuestAdmission) || repliesPaginationFragment || hydrateStoreFirst
+	if loggedOut && s.runtimeCapabilities().HostedGuestAdmission && fragment == "hydrate" {
 		s.metrics.Add("thread.anonymous_hydrate.store_only", 1)
 	}
 	var replies []nostrx.Event
@@ -570,7 +570,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if loggedOut && !s.cfg.DesktopMode && len(anonymousMembership.exact) > 0 {
+	if loggedOut && s.runtimeCapabilities().HostedGuestAdmission && len(anonymousMembership.exact) > 0 {
 		// Logged-out scope filtering must retain every ancestor needed to attach
 		// an in-scope reply to the note it actually answers. Author-only filtering
 		// drops those bridge notes and repairThreadParentMap then promotes their

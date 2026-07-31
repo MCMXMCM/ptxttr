@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline'">
+    <title>Plain Text Nostr</title>
+    <style>
+      :root { color-scheme: light dark; font-family: -apple-system, BlinkMacSystemFont, sans-serif; }
+      body { display: grid; min-height: 100vh; margin: 0; place-items: center; background: Canvas; color: CanvasText; }
+      .window-drag-region { -webkit-app-region: drag; height: 52px; left: 78px; position: fixed; right: 0; top: 0; }
+      main { width: min(31rem, calc(100vw - 4rem)); text-align: center; }
+      .app-icon { display: block; height: 7rem; margin: 0 auto 1.25rem; object-fit: contain; width: 7rem; }
+      .app-icon-dark { display: none; }
+      @media (prefers-color-scheme: dark) {
+        .app-icon-light { display: none; }
+        .app-icon-dark { display: block; }
+      }
+      h1 { font-size: 1.35rem; font-weight: 650; margin: 0; }
+      p { color: color-mix(in srgb, CanvasText 70%, transparent); line-height: 1.5; }
+      nav { display: flex; flex-wrap: wrap; gap: .65rem; justify-content: center; margin-top: 1.5rem; }
+      a { border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); border-radius: .5rem; color: CanvasText; padding: .55rem .85rem; text-decoration: none; }
+      a:first-child { background: AccentColor; border-color: AccentColor; color: AccentColorText; }
+    </style>
+  </head>
+  <body>
+    <div class="window-drag-region" aria-hidden="true"></div>
+    <main>
+      <img class="app-icon app-icon-light" data-startup-icon="light" src="/icon-light.png" alt="">
+      <img class="app-icon app-icon-dark" data-startup-icon="dark" src="/icon-dark.png" alt="">
+      <h1>Plain Text Nostr</h1>
+      <p id="status">The local server is starting…</p>
+      <nav>
+        <a href="ptxt-action://retry">Retry</a>
+        <a href="ptxt-action://logs">Open Logs</a>
+        <a href="ptxt-action://quit">Quit</a>
+      </nav>
+    </main>
+  </body>
+</html>

@@ -28,7 +28,6 @@ import { hydrateRelayInfoCards, relayHostLabel } from "./relays.js";
 const MENTION_LIMIT = 12;
 const MENTION_CACHE_LIMIT = 24;
 const MENTION_MENU_DEBOUNCE_MS = 30;
-const FOLLOW_CONTACT_LIMIT = 600;
 // Must match nostrx.MaxMuteListTagRows (Go publish + store cap).
 const MUTE_TAG_LIMIT = 2000;
 const MUTE_P_TAG_LIMIT = MUTE_TAG_LIMIT - 1;
@@ -56,6 +55,20 @@ const CARET_STYLE_KEYS = [
 const mentionCandidateCache = new Map();
 const followStateCache = new Map();
 const muteStateCache = new Map();
+let followWriteChain = Promise.resolve();
+let muteWriteChain = Promise.resolve();
+
+function runSerializedFollowWrite(fn) {
+  const run = followWriteChain.catch(() => {}).then(fn);
+  followWriteChain = run.catch(() => {});
+  return run;
+}
+
+function runSerializedMuteWrite(fn) {
+  const run = muteWriteChain.catch(() => {}).then(fn);
+  muteWriteChain = run.catch(() => {});
+  return run;
+}
 
 function composeState(root) {
   const dialog = root.querySelector("[data-composer-dialog]");
@@ -276,10 +289,21 @@ function showLoginRequiredFollowPopover(anchor) {
 }
 
 function followStateFor(viewer) {
-  if (!viewer) return { following: new Set(), relayHints: new Map() };
+  if (!viewer) return {
+    following: new Set(), relayHints: new Map(), contactTags: new Map(), preservedTags: [], content: "",
+  };
   const cached = followStateCache.get(viewer);
   if (cached) return cached;
-  const state = { following: new Set(), relayHints: new Map() };
+  const state = {
+    following: new Set(),
+    relayHints: new Map(),
+    contactTags: new Map(),
+    preservedTags: [],
+    content: "",
+    loaded: false,
+    loading: null,
+    loadError: null,
+  };
   followStateCache.set(viewer, state);
   return state;
 }
@@ -296,6 +320,17 @@ async function loadFollowState(viewer) {
       const candidates = Array.isArray(payload?.candidates) ? payload.candidates : [];
       state.following.clear();
       state.relayHints.clear();
+      state.contactTags.clear();
+      const sourceTags = Array.isArray(payload?.follow_event?.tags) ? payload.follow_event.tags : [];
+      state.preservedTags = sourceTags
+        .filter((tag) => !Array.isArray(tag) || tag[0] !== "p")
+        .map((tag) => (Array.isArray(tag) ? [...tag] : tag));
+      state.content = String(payload?.follow_event?.content ?? "");
+      sourceTags.forEach((tag) => {
+        if (!Array.isArray(tag) || tag[0] !== "p") return;
+        const pubkey = normalizePubkey(tag[1]);
+        if (pubkey && !state.contactTags.has(pubkey)) state.contactTags.set(pubkey, [...tag]);
+      });
       candidates.forEach((raw) => {
         if (String(raw?.source || "") !== "contact") return;
         const candidate = normalizeFollowCandidate(raw);
@@ -303,12 +338,15 @@ async function loadFollowState(viewer) {
         state.following.add(candidate.pubkey);
         if (candidate.relays.length > 0) state.relayHints.set(candidate.pubkey, candidate.relays[0]);
       });
+      state.loaded = true;
+      state.loadError = null;
     })
     .catch((error) => {
       console.warn("follow: mention candidates request failed", error);
+      state.loaded = false;
+      state.loadError = error;
     })
     .finally(() => {
-      state.loaded = true;
       state.loading = null;
     });
   await state.loading;
@@ -320,23 +358,25 @@ export async function viewerHasAtLeastOneFollow(viewer) {
   return state.following.size > 0;
 }
 
-function followTagsForState(following, relayHints) {
-  return [...following]
-    .slice(0, FOLLOW_CONTACT_LIMIT)
+function followTagsForState(following, relayHints, contactTags, preservedTags) {
+  const contacts = [...following]
     .sort()
     .map((pubkey) => {
+      const existing = contactTags.get(pubkey);
+      if (existing) return [...existing];
       const relay = relayHints.get(pubkey) || "";
       if (!relay) return ["p", pubkey];
       return ["p", pubkey, relay];
     });
+  return [...contacts, ...preservedTags.map((tag) => (Array.isArray(tag) ? [...tag] : tag))];
 }
 
-async function publishFollowList(viewer, following, relayHints) {
+async function publishFollowList(state, following) {
   const draft = {
     kind: 3,
     created_at: Math.floor(Date.now() / 1000),
-    tags: followTagsForState(following, relayHints),
-    content: "",
+    tags: followTagsForState(following, state.relayHints, state.contactTags, state.preservedTags),
+    content: state.content,
   };
   const signed = await signEventDraft(draft, getSession());
   await publishSignedEvent(signed);
@@ -380,16 +420,23 @@ function bindFollowActions(root) {
     button.dataset.loading = "1";
     button.classList.add("is-pressed");
     button.disabled = true;
-    void loadFollowState(currentViewer)
-      .then(async (state) => {
-        const nextFollowing = new Set(state.following);
-        const isFollowing = nextFollowing.has(target);
-        if (isFollowing) nextFollowing.delete(target);
-        else nextFollowing.add(target);
-        await publishFollowList(currentViewer, nextFollowing, state.relayHints);
-        state.following = nextFollowing;
-        refreshFollowButtons(document, state);
-      })
+    void runSerializedFollowWrite(async () => {
+      const state = await loadFollowState(currentViewer);
+      if (!state.loaded) throw state.loadError || new Error("Could not load the current follow list.");
+      const nextFollowing = new Set(state.following);
+      const isFollowing = nextFollowing.has(target);
+      if (isFollowing) nextFollowing.delete(target);
+      else nextFollowing.add(target);
+      await publishFollowList(state, nextFollowing);
+      if (isFollowing) {
+        state.contactTags.delete(target);
+      } else if (!state.contactTags.has(target)) {
+        const relay = state.relayHints.get(target) || "";
+        state.contactTags.set(target, relay ? ["p", target, relay] : ["p", target]);
+      }
+      state.following = nextFollowing;
+      refreshFollowButtons(document, state);
+    })
       .catch((error) => {
         console.warn("follow: publish failed", error);
       })
@@ -402,10 +449,10 @@ function bindFollowActions(root) {
 }
 
 function muteStateFor(viewer) {
-  if (!viewer) return { muted: new Set(), loaded: false, loading: null };
+  if (!viewer) return { muted: new Set(), loaded: false, loading: null, loadError: null };
   const cached = muteStateCache.get(viewer);
   if (cached) return cached;
-  const state = { muted: new Set(), loaded: false, loading: null };
+  const state = { muted: new Set(), loaded: false, loading: null, loadError: null };
   muteStateCache.set(viewer, state);
   return state;
 }
@@ -462,9 +509,11 @@ async function loadMuteState(viewer) {
         if (h) state.muted.add(h);
       }
       state.loaded = true;
+      state.loadError = null;
     } catch (error) {
       console.warn("mute: mute list request failed", error);
-      muteStateCache.delete(viewer);
+      state.loaded = false;
+      state.loadError = error;
     } finally {
       state.loading = null;
     }
@@ -555,31 +604,32 @@ function bindMuteActions(root) {
     button.dataset.loading = "1";
     button.classList.add("is-pressed");
     button.disabled = true;
-    void loadMuteState(currentViewer)
-      .then(async (state) => {
-        const shouldMute = !state.muted.has(target);
-        const nextMuted = new Set(state.muted);
-        if (shouldMute) {
-          if (nextMuted.size >= MUTE_P_TAG_LIMIT) {
-            throw new Error("mute list exceeds tag limit");
-          }
-          nextMuted.add(target);
-        } else {
-          nextMuted.delete(target);
+    void runSerializedMuteWrite(async () => {
+      const state = await loadMuteState(currentViewer);
+      if (!state.loaded) throw state.loadError || new Error("Could not load the current mute list.");
+      const shouldMute = !state.muted.has(target);
+      const nextMuted = new Set(state.muted);
+      if (shouldMute) {
+        if (nextMuted.size >= MUTE_P_TAG_LIMIT) {
+          throw new Error("mute list exceeds tag limit");
         }
-        const nextTags = tagsFromMutedPubkeys(nextMuted);
-        if (
-          !window.confirm(
-            "Publish this mute list as public hex pubkeys only (p tags). Other fields on your kind 10000 event from other clients (for example encrypted entries) will be removed. Continue?",
-          )
-        ) {
-          return;
-        }
-        await publishMuteList(nextTags, "");
-        state.muted = nextMuted;
-        refreshMuteButtons(root, state);
-        setReplyPubkeyElementsHidden(target, shouldMute);
-      })
+        nextMuted.add(target);
+      } else {
+        nextMuted.delete(target);
+      }
+      const nextTags = tagsFromMutedPubkeys(nextMuted);
+      if (
+        !window.confirm(
+          "Publish this mute list as public hex pubkeys only (p tags). Other fields on your kind 10000 event from other clients (for example encrypted entries) will be removed. Continue?",
+        )
+      ) {
+        return;
+      }
+      await publishMuteList(nextTags, "");
+      state.muted = nextMuted;
+      refreshMuteButtons(root, state);
+      setReplyPubkeyElementsHidden(target, shouldMute);
+    })
       .catch((error) => {
         console.warn("mute: publish failed", error);
       })
