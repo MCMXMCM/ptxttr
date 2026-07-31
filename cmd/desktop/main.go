@@ -81,17 +81,18 @@ func applyDesktopDefaults() error {
 	// inheriting the hosted share server's anonymous cache-only policy.
 	setEnvIfUnset("PTXT_SERVER_MODE", "app")
 	setEnvIfUnset("PTXT_EVENT_RETENTION", "0")
-	setEnvIfUnset("PTXT_DB_DISK_MAX_PERCENT", "0")
-	// Do not start the hosted server's persistent crawler/warming stack: relay
-	// work should be driven by what the desktop user opens.
-	setEnvIfUnset("PTXT_HYDRATION_ENABLED", "false")
-	setEnvIfUnset("PTXT_HOT_FEED_CRAWLER_ENABLED", "false")
-	setEnvIfUnset("PTXT_SEED_CRAWLER_ENABLED", "false")
-	setEnvIfUnset("PTXT_VIEWER_CRAWLER_ENABLED", "false")
+	setEnvIfUnset("PTXT_DB_MAX_DISK_PERCENT", "0")
+	// Desktop storage and compute are local to the user. Keep the background
+	// graph, relay-hint, note, and thread warmers enabled so signed-in viewers'
+	// three-hop follow cohorts are ready before they navigate to them.
+	setEnvIfUnset("PTXT_HYDRATION_ENABLED", "true")
+	setEnvIfUnset("PTXT_HOT_FEED_CRAWLER_ENABLED", "true")
+	setEnvIfUnset("PTXT_SEED_CRAWLER_ENABLED", "true")
+	setEnvIfUnset("PTXT_VIEWER_CRAWLER_ENABLED", "true")
 	// Background compaction can stall first launch on a fresh machine; the
 	// hosted server may compact on boot but desktop users would see a frozen window.
 	setEnvIfUnset("PTXT_COMPACT_ON_START", "false")
-	setEnvIfUnset("PTXT_ACTIVE_VIEWER_TRENDING", "false")
+	setEnvIfUnset("PTXT_ACTIVE_VIEWER_TRENDING", "true")
 	// Avoid clashing with a dev server on 6060; set PTXT_PPROF_ADDR explicitly to enable.
 	setEnvIfUnset("PTXT_PPROF_ADDR", "off")
 	setEnvIfUnset("PTXT_DESKTOP_MODE", "1")

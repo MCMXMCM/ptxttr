@@ -82,6 +82,8 @@ type Server struct {
 	nip50FallbackAt    []time.Time
 	seedCrawlIndex     atomic.Uint64
 	hotFeedCrawlCursor atomic.Uint64
+	viewerGraphCursor  atomic.Uint64
+	viewerNoteCursor   atomic.Uint64
 	// debugAnonymousAuthors keeps notes inserted through /debug/seed-note
 	// reachable under the same anonymous-scope policy exercised by e2e tests.
 	// The endpoint is only registered when Debug is enabled.

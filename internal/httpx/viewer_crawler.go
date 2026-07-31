@@ -10,7 +10,7 @@ import (
 
 const (
 	knownViewerHydrationFailBackoff    = 45 * time.Second
-	knownViewerHydrationSuccessBackoff = 12 * time.Hour
+	knownViewerHydrationSuccessBackoff = 15 * time.Minute
 )
 
 func (s *Server) runViewerCrawler() {
@@ -55,7 +55,11 @@ func (s *Server) crawlViewerTick() {
 		return
 	}
 
-	timeout := seedCrawlerPerTickTimeout(s.cfg.RequestTimeout, len(targets))
+	graphLimit := s.cfg.ViewerCrawlerFollowEnqueuePerTick
+	if graphLimit <= 0 {
+		graphLimit = 80
+	}
+	timeout := seedCrawlerPerTickTimeout(s.cfg.RequestTimeout, len(targets)*(graphLimit+1))
 	ctx, cancel := context.WithTimeout(s.ctx, timeout)
 	defer cancel()
 
@@ -82,29 +86,54 @@ func (s *Server) crawlViewerTick() {
 			break
 		}
 
+		// Refresh the viewer first so a cold cache can discover direct follows.
+		// Owners within two hops are then rotated through author refreshes; their
+		// kind-3 lists materialize the complete third hop in follow_edges.
 		s.refreshAuthor(ctx, viewer, nil)
-		follows := s.following(ctx, viewer, maxFeedAuthors)
-		if len(follows) == 0 {
+		graphOwners, graphErr := s.viewerCrawlerAuthors(ctx, viewer, store.MaxDepth-1, false)
+		if graphErr != nil {
 			_ = s.store.MarkHydrationAttempt(ctx, store.EntityTypeKnownViewer, viewer, false, knownViewerHydrationFailBackoff)
 			s.metrics.Add("crawler.viewer.refresh_error", 1)
 			continue
 		}
+		selectedGraphOwners := rotateHotFeedAuthors(graphOwners, graphLimit, s.viewerGraphCursor.Add(1))
+		for _, author := range selectedGraphOwners {
+			if ctx.Err() != nil {
+				break
+			}
+			s.refreshAuthor(ctx, author, nil)
+		}
+		s.metrics.Add("crawler.viewer.graph_authors", int64(len(selectedGraphOwners)))
 
-		relays := s.filterCrawlerRelays(s.outboxSeedRelays(ctx, viewer, follows, nil))
+		cohort, cohortErr := s.viewerCrawlerAuthors(ctx, viewer, store.MaxDepth, true)
+		if cohortErr != nil || len(cohort) == 0 {
+			_ = s.store.MarkHydrationAttempt(ctx, store.EntityTypeKnownViewer, viewer, false, knownViewerHydrationFailBackoff)
+			s.metrics.Add("crawler.viewer.refresh_error", 1)
+			continue
+		}
+		authorLimit := hotFeedAuthorLimit(s.cfg.HotFeedCrawlerAuthorLimit)
+		selectedAuthors := rotateHotFeedAuthors(cohort, authorLimit, s.viewerNoteCursor.Add(1))
+		s.metrics.Add("crawler.viewer.cohort_authors", int64(len(cohort)))
+		s.metrics.Add("crawler.viewer.note_authors", int64(len(selectedAuthors)))
+
+		s.refreshHotFeedRelayHints(ctx, selectedAuthors, nil)
+		relays := s.filterCrawlerRelays(s.outboxSeedRelays(ctx, viewer, selectedAuthors, nil))
 		if len(relays) == 0 {
 			relays = s.crawlRelays(nil)
 		}
-		n := s.refreshRecent(ctx, viewer, follows, 0, fetchLimit, relays, noteSince)
+		n := s.refreshRecent(ctx, viewer, selectedAuthors, 0, fetchLimit, relays, noteSince)
 		if n > 0 {
 			refreshEvents += int64(n)
 		}
 
-		recent, qerr := s.store.RecentSummariesByAuthorsCursor(ctx, follows, noteTimelineKinds, 0, "", replyWarmLimit)
+		recent, qerr := s.store.RecentSummariesByAuthorsCursor(ctx, selectedAuthors, noteTimelineKinds, 0, "", replyWarmLimit)
 		if qerr == nil && len(recent) > 0 {
 			s.warmThreadsFromRecentSummaries(viewer, relays, recent, replyWarmLimit)
 		}
 
-		success := ctx.Err() == nil && (n > 0 || (qerr == nil && len(recent) > 0))
+		// A valid empty relay response is still a successful crawl. The graph and
+		// routing data were refreshed even when nobody in this slice posted notes.
+		success := ctx.Err() == nil && qerr == nil
 		if !success {
 			_ = s.store.MarkHydrationAttempt(ctx, store.EntityTypeKnownViewer, viewer, false, knownViewerHydrationFailBackoff)
 			s.metrics.Add("crawler.viewer.refresh_error", 1)
@@ -113,6 +142,24 @@ func (s *Server) crawlViewerTick() {
 		_ = s.store.MarkHydrationAttempt(ctx, store.EntityTypeKnownViewer, viewer, true, knownViewerHydrationSuccessBackoff)
 	}
 	s.metrics.Add("crawler.viewer.refresh_events", refreshEvents)
+}
+
+// viewerCrawlerAuthors returns the locally materialized follow graph at depth.
+// The viewer is optionally included for note crawling but omitted while
+// refreshing graph owners because crawlViewerTick refreshes it first.
+func (s *Server) viewerCrawlerAuthors(ctx context.Context, viewer string, depth int, includeViewer bool) ([]string, error) {
+	if s == nil || s.store == nil || viewer == "" {
+		return nil, nil
+	}
+	authors, err := s.store.ReachablePubkeysWithin(ctx, viewer, depth)
+	if err != nil {
+		return nil, err
+	}
+	authors = filterValidFollowPubkeys(authors)
+	if includeViewer {
+		authors = append(authors, viewer)
+	}
+	return uniqueNonEmptyStrings(authors), nil
 }
 
 func (s *Server) touchKnownViewer(ctx context.Context, pubkey string) {
