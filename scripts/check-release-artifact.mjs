@@ -55,7 +55,17 @@ try {
     }
   };
   collect(extracted);
-  const expected = ["desktop/main.cjs", "desktop/main.mjs", "desktop/policy.mjs", "desktop/startup.html", "package.json"];
+  const expected = [
+    "desktop/icon.icns",
+    "desktop/main.cjs",
+    "desktop/main.mjs",
+    "desktop/policy.mjs",
+    "desktop/preload.cjs",
+    "desktop/startup.html",
+    "package.json",
+    "web/static/img/ascritch_icon_black.png",
+    "web/static/img/ascritch_icon_white.png",
+  ];
   if (asarFiles.sort().join("\n") !== expected.sort().join("\n")) {
     findings.push(`app.asar: unexpected files: ${asarFiles.join(", ")}`);
   }

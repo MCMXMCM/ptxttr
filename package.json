@@ -1,7 +1,7 @@
 {
   "name": "ptxttr",
   "productName": "Plain Text Nostr",
-  "version": "0.5.0-alpha.1",
+  "version": "0.5.0",
   "description": "Local-first Plain Text Nostr desktop application",
   "main": "desktop/main.cjs",
   "private": true,
