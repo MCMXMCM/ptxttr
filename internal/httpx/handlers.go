@@ -34,7 +34,10 @@ func (s *Server) handleUser(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	guestRequest := anonymousRequestFromHTTP(r)
+	// A full WebView navigation cannot attach the browser-local viewer header.
+	// Desktop has no shared guest cache boundary, so headerless profile loads
+	// must remain relay-capable (including direct loads of the active account).
+	guestRequest := anonymousRequestFromHTTP(r) && !s.cfg.DesktopMode
 	if guestRequest && !s.anonymousProfileAllowed(r.Context(), pubkey) {
 		w.Header().Set("X-Ptxt-Route-Status", string(ThreadRenderNotFound))
 		s.renderAnonymousScopeNotFound(w, r, "User", "User not found", "This profile is not available in the cached guest slice.")

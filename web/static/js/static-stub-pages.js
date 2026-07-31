@@ -1,4 +1,5 @@
 import { assetURL } from "./asset-paths.js";
+import { desktopModeEnabled } from "./viewer-defaults.js";
 
 function infoPageBrand() {
   return `
@@ -184,6 +185,19 @@ function relayManagerMarkup(options = {}) {
 }
 
 function loginMainMarkup() {
+  const desktop = desktopModeEnabled();
+  const extensionTab = desktop ? "" : `
+              <span class="user-tab-sep" aria-hidden="true">·</span>
+              <label class="user-tab-label" for="login-tab-nip07">Browser Extension</label>`;
+  const extensionPanel = desktop ? "" : `
+            <input type="radio" name="login-tab" id="login-tab-nip07" class="user-tab-state">
+            <section class="user-tab-panel login-tab-panel" aria-label="Browser extension login">
+              <h2>Browser Extension (NIP-07)</h2>
+              <p class="muted">Use a browser extension that exposes <code>window.nostr</code> to connect your account.</p>
+              <div class="login-tab-panel-actions">
+                <button type="button" data-login-nip07>Connect extension</button>
+              </div>
+            </section>`;
   return `
     <section class="feed-column shell-main-top" data-shell-main>
       <section class="page-heading">
@@ -195,7 +209,7 @@ function loginMainMarkup() {
       </section>
 
       <section class="login-intro">
-        <p class="muted">Log in with an existing key or extension, or sign up to create a new keypair in your browser.</p>
+        <p class="muted">${desktop ? "Log in with an existing public or private key, or create a new keypair stored on this device." : "Log in with an existing key or extension, or sign up to create a new keypair in your browser."}</p>
       </section>
 
       <div class="login-split">
@@ -203,8 +217,7 @@ function loginMainMarkup() {
           <div class="user-tabs profile-tabs login-tabs">
             <nav class="user-tab-nav" aria-label="Login methods">
               <label class="user-tab-label" for="login-tab-readonly">Public Key</label>
-              <span class="user-tab-sep" aria-hidden="true">·</span>
-              <label class="user-tab-label" for="login-tab-nip07">Browser Extension</label>
+              ${extensionTab}
               <span class="user-tab-sep" aria-hidden="true">·</span>
               <label class="user-tab-label" for="login-tab-yolo">Private Key</label>
             </nav>
@@ -221,19 +234,12 @@ function loginMainMarkup() {
               </form>
             </section>
 
-            <input type="radio" name="login-tab" id="login-tab-nip07" class="user-tab-state">
-            <section class="user-tab-panel login-tab-panel" aria-label="Browser extension login">
-              <h2>Browser Extension (NIP-07)</h2>
-              <p class="muted">Use a browser extension that exposes <code>window.nostr</code> to connect your account.</p>
-              <div class="login-tab-panel-actions">
-                <button type="button" data-login-nip07>Connect extension</button>
-              </div>
-            </section>
+            ${extensionPanel}
 
             <input type="radio" name="login-tab" id="login-tab-yolo" class="user-tab-state">
-            <section class="user-tab-panel login-tab-panel login-tab-panel-danger" aria-label="Nsec login">
-              <h2>Nsec Login (Private key YOLO)</h2>
-              <p class="muted">Dangerous: your private key is handled in browser JavaScript and stored in this browser so the account can persist across restarts and be switched locally.</p>
+            <section class="user-tab-panel login-tab-panel${desktop ? "" : " login-tab-panel-danger"}" aria-label="Nsec login">
+              <h2>Nsec Login</h2>
+              <p class="muted">${desktop ? "Your private key is stored locally on this device so the account persists across restarts and can be switched locally." : "Your private key is handled in browser JavaScript and stored in this browser so the account can persist across restarts and be switched locally."}</p>
               <form data-login-yolo class="login-tab-stacked-form">
                 <input name="secret" placeholder="nsec or hex private key" autocomplete="off">
                 <div class="login-tab-panel-actions">
@@ -247,7 +253,7 @@ function loginMainMarkup() {
         <div class="login-split-column login-split-column--signup">
           <h2 class="login-split-heading">Sign up</h2>
           <section class="login-signup-panel login-tab-panel login-tab-panel-danger" aria-label="Sign up">
-            <p class="muted" data-signup-intro>Create a new Nostr identity. Your browser generates a keypair, keeps it on this device for future logins, and never sends it anywhere until you choose to post.</p>
+            <p class="muted" data-signup-intro>Create a new Nostr identity. Your ${desktop ? "app" : "browser"} generates a keypair, keeps it on this device for future logins, and never sends it anywhere until you choose to post.</p>
             <div class="login-tab-panel-actions" data-signup-intro-actions>
               <button type="button" data-signup-generate>Create account</button>
             </div>
@@ -285,7 +291,7 @@ function loginMainMarkup() {
           </p>
           <section class="login-recent-accounts-panel" data-recent-accounts-section hidden>
             <h3>Recent accounts</h3>
-            <p class="muted">Stored signing accounts stay available on this browser so you can switch back without re-entering your <code>nsec</code>.</p>
+            <p class="muted">Stored signing accounts stay available on this ${desktop ? "device" : "browser"} so you can switch back without re-entering your <code>nsec</code>.</p>
             <ul class="login-recent-accounts-list" data-recent-accounts-list></ul>
           </section>
           <div class="login-tab-panel-actions" data-session-logout-wrap hidden>

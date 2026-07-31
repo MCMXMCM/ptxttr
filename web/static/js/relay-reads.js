@@ -292,7 +292,12 @@ export async function fetchProfiles(pubkeys, { relays = [] } = {}) {
   const queryKey = queryKeys.profiles(keys, relayList);
   const queryFn = async () => {
     const existing = peekQueryData(queryKey);
-    const events = await relayFetch(relayList, [{ authors: keys, kinds: [KIND_PROFILE], limit: keys.length * 2 }]);
+    const filters = chunkValues(keys, METADATA_BATCH_SIZE).map((authors) => ({
+      authors,
+      kinds: [KIND_PROFILE],
+      limit: authors.length * 2,
+    }));
+    const events = await relayFetch(relayList, filters);
     await putEvents(events);
     const byAuthor = new Map();
     for (const event of dedupeEventsByID(events)) {
@@ -370,15 +375,27 @@ export async function fetchProfileFollowGraph(pubkey, { relays = [], followerLim
             relayHints: new Map(),
           };
         }
-        const events = await relayFetch(relayList, [
-          { authors: [pk], kinds: [KIND_FOLLOW], limit: 3 },
-          { kinds: [KIND_FOLLOW], "#p": [pk], limit: Math.max(1, Number(followerLimit) || 250) },
+        // Author kind-3 data is a replaceable event. Keep this request separate
+        // from the expensive reverse `#p` lookup: several relays return an
+        // empty combined multi-filter response even when they have the
+        // profile's current contact list.
+        const [followEvent, followerEvents] = await Promise.all([
+          fetchReplaceable(pk, KIND_FOLLOW, {
+            relays: relayList,
+            forceRefresh: true,
+            includeViewerRelays: false,
+          }),
+          relayFetch(relayList, [{
+            kinds: [KIND_FOLLOW],
+            "#p": [pk],
+            limit: Math.max(1, Number(followerLimit) || 250),
+          }]),
         ]);
-        await putEvents(events);
-        const deduped = dedupeEventsByID(events);
-        const followEvent = deduped
-          .filter((event) => normalizePubkey(event.pubkey) === pk && Number(event.kind) === KIND_FOLLOW)
-          .sort((a, b) => Number(b.created_at) - Number(a.created_at))[0] || null;
+        const deduped = dedupeEventsByID([
+          ...(followEvent ? [followEvent] : []),
+          ...(Array.isArray(followerEvents) ? followerEvents : []),
+        ]);
+        if (deduped.length) await putEvents(deduped);
         const following = followEvent ? followPubkeys(followEvent) : [];
         const followers = uniqueNonEmpty(
           deduped
@@ -406,6 +423,27 @@ export async function fetchProfileFollowGraph(pubkey, { relays = [], followerLim
       relayHints: new Map(),
     }),
   );
+}
+
+export async function fetchDesktopProfileFollowGraph(pubkey) {
+  const pk = normalizePubkey(pubkey);
+  if (!pk || document.documentElement?.dataset?.ptxtDesktopMode !== "1") return null;
+  const response = await fetchWithSession(`/__ptxt/desktop/follow-graph?pubkey=${encodeURIComponent(pk)}`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!response.ok) return null;
+  const payload = await response.json();
+  if (normalizePubkey(payload?.pubkey) !== pk) return null;
+  const following = uniqueNonEmpty((payload?.following || []).map(normalizePubkey));
+  const followers = uniqueNonEmpty((payload?.followers || []).map(normalizePubkey));
+  return {
+    pubkey: pk,
+    following,
+    followers,
+    followEvent: following.length ? { pubkey: pk } : null,
+    relayHints: new Map(),
+    relays: normalizeRelayList(payload?.relays || []),
+  };
 }
 
 export async function fetchMentions(pubkey, { rootID = "" } = {}) {

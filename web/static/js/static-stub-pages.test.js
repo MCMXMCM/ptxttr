@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
+import { beforeEach, describe, it } from "node:test";
 
 globalThis.document = {
   documentElement: {
@@ -8,6 +8,10 @@ globalThis.document = {
 };
 
 import { renderStaticStubMainContent } from "./static-stub-pages.js";
+
+beforeEach(() => {
+  document.documentElement.dataset = {};
+});
 
 describe("static-stub-pages", () => {
   it("renders settings markup from the client bundle", () => {
@@ -40,6 +44,17 @@ describe("static-stub-pages", () => {
     assert.match(html, /data-login-readonly/);
     assert.match(html, /data-signup-generate/);
     assert.match(html, /data-session-state/);
+    assert.match(html, /Browser Extension \(NIP-07\)/);
+  });
+
+  it("renders a local-only desktop login without extension or YOLO copy", () => {
+    document.documentElement.dataset.ptxtDesktopMode = "1";
+
+    const html = renderStaticStubMainContent("/login");
+
+    assert.match(html, /<h2>Nsec Login<\/h2>/);
+    assert.match(html, /stored locally on this device/);
+    assert.doesNotMatch(html, /Browser Extension|NIP-07|YOLO|Dangerous:/);
   });
 
   it("returns an empty string for unknown stub paths", () => {

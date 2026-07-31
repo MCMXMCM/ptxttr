@@ -29,6 +29,7 @@ import {
 import { setAvatarImageSource } from "./avatar-cache.js";
 import { initRetroLoaders } from "./retro-loader.js";
 import { initDesktopStorage } from "./desktop-storage.js";
+import { desktopModeEnabled } from "./viewer-defaults.js";
 
 let initialized = false;
 let mobileMenuEscapeBound = false;
@@ -635,9 +636,11 @@ function bindWebOfTrustControls(root) {
     });
   };
   const viewer = normalizedPubkey();
-  if (!viewer) {
+  if (!viewer && !desktopModeEnabled()) {
     syncDepth(1);
     setEligible(false);
+  } else if (!viewer) {
+    setEligible(true, { showEligibilityNote: false });
   } else {
     setEligible(true, { showEligibilityNote: false });
 		void import("./mutations.js").then(({ viewerHasAtLeastOneFollow }) => viewerHasAtLeastOneFollow(viewer)).then((hasFollows) => {
@@ -655,7 +658,7 @@ function bindWebOfTrustControls(root) {
 function bindFeedWebOfTrustControls(root) {
   const controls = Array.from(root.querySelectorAll("[data-feed-wot-controls]"));
   if (!controls.length) return;
-  if (!normalizedPubkey()) {
+  if (!normalizedPubkey() && !desktopModeEnabled()) {
     controls.forEach((control) => { control.hidden = true; });
     return;
   }
@@ -681,7 +684,9 @@ function bindFeedWebOfTrustControls(root) {
       detail: { enabled: true, depth: nextDepth },
     }));
   };
-  syncControls(controls[0].dataset.wotDepth || getWebOfTrustDepthPref(), getWebOfTrustEnabledPref());
+  // Server-rendered guest HTML starts at the hosted-safe one-hop default.
+  // Desktop must restore its device-local selection after every full reload.
+  syncControls(getWebOfTrustDepthPref(), getWebOfTrustEnabledPref());
   controls.forEach((control) => {
     if (control._ptxtFeedWotBound) return;
     control._ptxtFeedWotBound = true;

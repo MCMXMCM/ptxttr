@@ -4,6 +4,8 @@ import {
   applyDefaultViewerPrefsIfUnset,
   DEFAULT_LOGGED_OUT_WOT_DEPTH,
   DEFAULT_LOGGED_OUT_WOT_SEED_NPUB,
+  desktopModeEnabled,
+  loggedOutWebOfTrustDepthPref,
 } from "./viewer-defaults.js";
 
 export { isTruthyToken } from "./prefs-utils.js";
@@ -172,7 +174,7 @@ export function setWebOfTrustEnabledPref(enabled) {
 }
 
 export function getWebOfTrustDepthPref() {
-  if (!normalizedPubkey()) return DEFAULT_LOGGED_OUT_WOT_DEPTH;
+  if (!normalizedPubkey()) return loggedOutWebOfTrustDepthPref();
   try {
     const raw = localStorage.getItem(WEB_OF_TRUST_DEPTH_KEY);
     return normalizeWebOfTrustDepth(raw);
@@ -183,7 +185,7 @@ export function getWebOfTrustDepthPref() {
 
 export function setWebOfTrustDepthPref(value) {
   try {
-    if (!normalizedPubkey()) {
+    if (!normalizedPubkey() && !desktopModeEnabled()) {
       localStorage.setItem(WEB_OF_TRUST_DEPTH_KEY, String(DEFAULT_LOGGED_OUT_WOT_DEPTH));
       return;
     }

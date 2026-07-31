@@ -5,8 +5,8 @@ import {
 } from "./viewer-pref-url.js";
 import {
   applyDefaultViewerPrefsIfUnset,
-  DEFAULT_LOGGED_OUT_WOT_DEPTH,
   DEFAULT_LOGGED_OUT_WOT_SEED_NPUB,
+  loggedOutWebOfTrustDepthPref,
 } from "./viewer-defaults.js";
 import { profilePath } from "./relay-utils.js";
 import {
@@ -65,7 +65,7 @@ function loggedOutWotEnabledForTransport() {
 }
 
 function loggedOutWotDepthForTransport() {
-  return String(DEFAULT_LOGGED_OUT_WOT_DEPTH);
+  return String(loggedOutWebOfTrustDepthPref());
 }
 
 const LOGIN_METHOD_META = {
@@ -868,18 +868,6 @@ if (typeof window !== "undefined" && typeof document !== "undefined") {
     }
   });
 
-  document.addEventListener("click", (event) => {
-    const block = event.target.closest(".rail-user");
-    if (!block || event.target.closest("a,button,input,select,textarea,label")) return;
-    const pubkey = normalizedPubkey();
-    if (!pubkey) return;
-    navigateApp(profilePath(pubkey));
-  });
-}
-
-function navigateApp(href) {
-  const target = withRelayParams(href);
-  window.location.assign(target);
 }
 
 function normalizeSessionState(value) {

@@ -53,7 +53,8 @@ async function resolveTagAuthors(viewerPubkey, scope) {
 }
 
 async function filterHashtagResults(events, viewerPubkey, authors) {
-  const muted = viewerPubkey ? new Set((await fetchMuteList(viewerPubkey)).map(normalizePubkey)) : new Set();
+  const muteList = viewerPubkey ? await fetchMuteList(viewerPubkey) : null;
+  const muted = new Set((muteList?.muted_pubkeys || []).map(normalizePubkey).filter(Boolean));
   const membership = authors ? authorMembershipSet(authors) : null;
   return (events || []).filter((event) => {
     const pk = normalizePubkey(event.pubkey);

@@ -7,7 +7,7 @@ import {
   getWebOfTrustEnabledPref,
   WEB_OF_TRUST_SEED_PRESETS,
 } from "./sort-prefs.js";
-import { DEFAULT_LOGGED_OUT_WOT_SEED_NPUB } from "./viewer-defaults.js";
+import { DEFAULT_LOGGED_OUT_WOT_SEED_NPUB, desktopModeEnabled } from "./viewer-defaults.js";
 
 const LOGIN_LINK = '<a href="/login">Login</a>';
 
@@ -106,7 +106,7 @@ export function renderFeedHeadingMarkup(urlLike = window.location.href) {
   const newNoteButton = loggedOut
     ? ""
     : '<button type="button" class="rail-post feed-heading-post" data-post-trigger>New Note</button>';
-  const wotControls = !loggedOut && wotEnabled ? wotControlsMarkup(wotDepth) : "";
+  const wotControls = wotEnabled && (!loggedOut || desktopModeEnabled()) ? wotControlsMarkup(wotDepth) : "";
   const summaryMarkup = loggedOut
     ? `<p class="muted feed-heading-summary">${summary}</p>`
     : "";

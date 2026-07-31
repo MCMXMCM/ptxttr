@@ -83,18 +83,37 @@ export async function fetchInitialProfilePostsAcrossRelayStages(
     kinds = [],
   } = {},
 ) {
-  let latest = [];
-  let relaysUsed = normalizeRelayList(relayStages[0] || []);
-  for (const relays of relayStages) {
-    const normalized = normalizeRelayList(relays);
-    if (!normalized.length) continue;
-    relaysUsed = normalized;
-    latest = await fetchPosts(pubkey, { relays: normalized, kinds });
-    if (latest.length) {
-      return { posts: latest, relaysUsed: normalized };
+  const stages = (Array.isArray(relayStages) ? relayStages : [])
+    .map((relays) => normalizeRelayList(relays))
+    .filter((relays) => relays.length > 0);
+  const results = await Promise.allSettled(
+    stages.map(async (relays) => ({
+      relays,
+      posts: await fetchPosts(pubkey, { relays, kinds }),
+    })),
+  );
+  const byID = new Map();
+  const relaysWithPosts = [];
+  for (const result of results) {
+    if (result.status !== "fulfilled" || !Array.isArray(result.value.posts)) continue;
+    if (result.value.posts.length) relaysWithPosts.push(...result.value.relays);
+    for (const event of result.value.posts) {
+      const id = String(event?.id || "").trim();
+      if (!id) continue;
+      const current = byID.get(id);
+      if (!current || Number(event?.created_at || 0) >= Number(current?.created_at || 0)) {
+        byID.set(id, event);
+      }
     }
   }
-  return { posts: latest, relaysUsed };
+  const posts = [...byID.values()].sort((a, b) => (
+    Number(b?.created_at || 0) - Number(a?.created_at || 0) ||
+    String(b?.id || "").localeCompare(String(a?.id || ""))
+  ));
+  return {
+    posts,
+    relaysUsed: normalizeRelayList(relaysWithPosts.length ? relaysWithPosts : stages.at(-1) || []),
+  };
 }
 
 export async function fetchProfileFollowGraphAcrossRelayStages(
@@ -112,14 +131,20 @@ export async function fetchProfileFollowGraphAcrossRelayStages(
   let latestRelayHints = new Map();
   const followers = new Set();
 
-  for (const relays of stages) {
-    const normalized = normalizeRelayList(relays);
-    if (!normalized.length) continue;
-    const graph = await fetchFollowGraph(pubkey, {
-      relays: normalized,
+  const normalizedStages = stages.map((relays) => normalizeRelayList(relays)).filter((relays) => relays.length > 0);
+  const results = await Promise.allSettled(normalizedStages.map(async (relays) => ({
+    relays,
+    graph: await fetchFollowGraph(pubkey, {
+      relays,
       followerLimit,
       includeViewerRelays: false,
-    });
+    }),
+  })));
+
+  for (const result of results) {
+    if (result.status !== "fulfilled") continue;
+    const normalized = result.value.relays;
+    const graph = result.value.graph;
     relaysUsed = normalized;
     const followEvent = graph?.followEvent || null;
     if (

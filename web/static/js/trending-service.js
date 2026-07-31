@@ -65,7 +65,7 @@ async function resolveMutedPubkeys(viewerPubkey) {
   if (!pk) return new Set();
   try {
     const list = await fetchMuteList(pk);
-    return new Set((list || []).map(normalizePubkey).filter(Boolean));
+    return new Set((list?.muted_pubkeys || []).map(normalizePubkey).filter(Boolean));
   } catch {
     return new Set();
   }

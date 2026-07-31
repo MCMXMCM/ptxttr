@@ -82,7 +82,7 @@ The desktop build embeds a short splash, then starts the same HTTP server as `cm
 
 **Desktop vs hosted URLs:** OpenGraph and canonical links use the request host. Behind CloudFront, `X-Forwarded-Host` supplies your public domain; in the desktop app the host is `127.0.0.1:<port>`, which is fine for local use.
 
-**WebKit note:** the desktop shell uses the system webview. Browser extensions (NIP-07) may behave differently than in Chrome or Safari; read-only and remote-signer flows are the most reliable in embedded WebKit.
+**WebKit note:** the desktop shell uses the system webview and intentionally does not offer browser-extension (NIP-07) login. Use an `npub` for read-only access or an `nsec` stored locally on the device for signing.
 
 **Links:** `http`/`https` links are opened in your **default browser** (not inside the app). Same-origin app links on `127.0.0.1` / `localhost` stay in the window.
 

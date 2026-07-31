@@ -91,10 +91,13 @@ func (s *Server) feedRequestFromHTTP(r *http.Request) feedRequest {
 		loggedOut = err != nil
 	}
 	if loggedOut {
-		// Anonymous feeds are one shared, cacheable cohort. Browser preferences
-		// and legacy query parameters must not split it into custom guest graphs.
+		// Anonymous feeds always use the canonical Gigi seed. Hosted requests
+		// stay fixed at one hop for shared-cache/resource control; desktop keeps
+		// the user's selected depth because all graph work and storage are local.
 		wot.Enabled = true
-		wot.Depth = defaultLoggedOutWOTDepth
+		if !s.cfg.DesktopMode {
+			wot.Depth = defaultLoggedOutWOTDepth
+		}
 		seedPubkey = defaultLoggedOutWOTSeedNPub
 	}
 	return feedRequest{

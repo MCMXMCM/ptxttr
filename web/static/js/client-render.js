@@ -40,6 +40,7 @@ import {
   fetchNotesByAuthors,
   fetchProfile,
   fetchProfileFollowGraph,
+  fetchDesktopProfileFollowGraph,
   fetchProfileRelayHints,
   fetchProfiles,
 } from "./relay-reads.js";
@@ -131,7 +132,7 @@ export { isRelayNativeThread };
 const THREAD_REPLY_PAGE_SIZE = 25;
 const PROFILE_PAGE_SIZE = 25;
 const PROFILE_TIMELINE_KINDS = [KIND_NOTE, KIND_REPOST];
-const PROFILE_FOLLOW_TIMEOUT_MS = 9000;
+const PROFILE_FOLLOW_TIMEOUT_MS = 12_000;
 const FEED_INITIAL_BACKOFF_MS = [0, 500, 1500, 3500];
 const FEED_INITIAL_PAINT_TIMEOUT_MS = 5000;
 const FEED_REFRESH_EMPTY_FALLBACK_MS = 8000;
@@ -140,6 +141,7 @@ const NEVER = new Promise(() => {});
 const PROFILE_INITIAL_POST_BACKOFF_MS = [0, 500, 1500, 3500];
 const PROFILE_METADATA_RETRY_DELAYS_MS = [1200, 3200, 7000];
 const PROFILE_INITIAL_HYDRATE_TIMEOUT_MS = 6_000;
+const PROFILE_HINTED_POSTS_TIMEOUT_MS = 12_000;
 const THREAD_MISSING_BUNDLE_RETRY_DELAYS_MS = [700, 1800, 3500];
 
 let relayNativeProfileState = null;
@@ -200,10 +202,10 @@ function profileHeroMenuListHTML(pubkey) {
 
 function profileHeroOptionsHTML(pubkey) {
   const pk = escapeHTML(pubkey);
-  return `<span class="ascii-action-menu profile-hero-options-menu" data-profile-stats-menu data-profile-actions data-profile-pubkey="${pk}">
-    <button type="button" class="profile-hero-options-trigger" data-ascii-action-menu-trigger="1" aria-haspopup="menu" aria-expanded="false" aria-label="Profile options">...</button>
+  return `<details class="ascii-action-menu profile-hero-options-menu" data-profile-stats-menu data-profile-actions data-profile-pubkey="${pk}">
+    <summary class="profile-hero-options-trigger" data-ascii-action-menu-trigger="1" aria-haspopup="menu" aria-expanded="false" aria-label="Profile options">...</summary>
     <span class="ascii-action-menu-list" role="menu">${profileHeroMenuListHTML(pubkey)}</span>
-  </span>`;
+  </details>`;
 }
 function profileNpubBlockHTML(pubkey) {
   const npub = encodeNpub(pubkey);
@@ -1406,7 +1408,7 @@ function renderProfileFollowPanel(root, kind, pubkeys, profilesByPubkey) {
   panel.dataset.loaded = "1";
   panel.innerHTML = `
     <div class="profile-follow-panel">
-      <p class="muted">Loaded from the relays available in this browser. Nostr does not provide a reliable network-wide ${noun} total.</p>
+      <p class="muted">Loaded from the connected relays. Nostr does not provide a reliable network-wide ${noun} total.</p>
       <p class="muted profile-follow-summary"><strong>${pubkeys.length}</strong> ${countNoun} in this relay view.</p>
       ${pubkeys.length ? `<label class="profile-follow-search">
         <span class="muted">Search this ${noun} list</span>
@@ -1503,13 +1505,11 @@ function renderProfileTabCounts(root, counts) {
       selector: "[data-profile-following-count]",
       value: counts.following,
       wrapperSelector: "[data-profile-following-count-wrap]",
-      hideWhenMissing: true,
     },
     {
       selector: "[data-profile-followers-count]",
       value: counts.followers,
       wrapperSelector: "[data-profile-followers-count-wrap]",
-      hideWhenMissing: true,
     },
   ];
   mapping.forEach(({ selector, value, wrapperSelector, hideWhenMissing }) => {
@@ -1566,6 +1566,11 @@ async function ensureRelayNativeProfileFollowGraph(root, state, options = {}) {
     return Array.isArray(state.following) && Array.isArray(state.followers);
   }
   const hydrationGeneration = options.hydrationGeneration ?? profileHydrationGeneration;
+  // WebKit can occasionally return an empty combined follow query even when
+  // the local desktop relay client can retrieve the author's kind-3 event.
+  // Start that loopback fallback alongside the browser relay reads so it does
+  // not add a second timeout after the first result is empty.
+  const desktopFollowGraphPromise = fetchDesktopProfileFollowGraph(state.pubkey).catch(() => null);
   state.followGraphPromise = withTimeout(
     (async () => {
       const initialStages = Array.isArray(state.followRelayStages) && state.followRelayStages.length
@@ -1585,6 +1590,17 @@ async function ensureRelayNativeProfileFollowGraph(root, state, options = {}) {
     PROFILE_FOLLOW_TIMEOUT_MS,
     "profile follow graph",
   ).then(async (followGraph) => {
+    if (hydrationGeneration !== profileHydrationGeneration || relayNativeProfileState !== state) return false;
+    if (!followGraph?.followEvent) {
+      const localGraph = await desktopFollowGraphPromise;
+      if (localGraph?.followEvent) {
+        followGraph = {
+          ...localGraph,
+          followers: [...new Set([...(followGraph?.followers || []), ...localGraph.followers])],
+          relaysUsed: localGraph.relays,
+        };
+      }
+    }
     if (hydrationGeneration !== profileHydrationGeneration || relayNativeProfileState !== state) return false;
     if (Array.isArray(followGraph?.relaysUsed) && followGraph.relaysUsed.length) {
       applyProfileRelays(root, state, followGraph.relaysUsed, {
@@ -1640,13 +1656,25 @@ export async function hydrateRelayNativeProfileTab(kind, root = document) {
     renderProfileFollowPanel(root, kind, [], state.profiles);
     return true;
   }
+  // Make a large following list usable immediately with npub fallbacks. Profile
+  // metadata can involve hundreds of authors and must not hold the entire tab
+  // behind its loader while relay batches finish.
+  renderProfileFollowPanel(root, kind, pubkeys, state.profiles);
   const missing = pubkeys.filter((pubkey) => !state.profiles[pubkey]);
   if (missing.length) {
-    const profiles = await fetchProfiles(missing, { relays: state.relays }).catch(() => ({}));
-    if (relayNativeProfileState !== state) return false;
-    state.profiles = { ...state.profiles, ...profiles };
+    void fetchProfiles(missing, { relays: state.relays }).then((profiles) => {
+      if (relayNativeProfileState !== state) return;
+      state.profiles = { ...state.profiles, ...profiles };
+      const input = panel.querySelector("[data-profile-follow-search-input]");
+      const searchValue = input instanceof HTMLInputElement ? input.value : "";
+      renderProfileFollowPanel(root, kind, pubkeys, state.profiles);
+      const refreshedInput = panel.querySelector("[data-profile-follow-search-input]");
+      if (refreshedInput instanceof HTMLInputElement && searchValue) {
+        refreshedInput.value = searchValue;
+        refreshedInput.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+    }).catch(() => {});
   }
-  renderProfileFollowPanel(root, kind, pubkeys, state.profiles);
   return true;
 }
 
@@ -2306,6 +2334,7 @@ export async function hydrateProfileRoute(root = document, options = {}) {
       state.followRelayStages = relayStages;
     }
   });
+  void ensureRelayNativeProfileFollowGraph(root, state, { hydrationGeneration });
 
   const initialPostsPromise = withTimeout(fetchInitialProfilePosts(pubkey, {
     relays: initialQueryRelays,
@@ -2316,6 +2345,19 @@ export async function hydrateProfileRoute(root = document, options = {}) {
     forceRefresh: !hasAuthoritativeProfileEvent(cachedProfile),
     includeViewerRelays: false,
   }), PROFILE_INITIAL_HYDRATE_TIMEOUT_MS, "initial profile metadata").catch(() => null);
+  const hintedPostsPromise = withTimeout(
+    followRelayStagesPromise.then((stages) => fetchInitialProfilePostsAcrossRelayStages(pubkey, stages, {
+      kinds: PROFILE_TIMELINE_KINDS,
+      fetchPosts: (targetPubkey, { relays, kinds }) => fetchNotesByAuthors([targetPubkey], {
+        limit: PROFILE_PAGE_SIZE,
+        relays,
+        kinds,
+        includeViewerRelays: false,
+      }),
+    })),
+    PROFILE_HINTED_POSTS_TIMEOUT_MS,
+    "profile outbox posts",
+  ).catch(() => ({ posts: [], relaysUsed: [] }));
 
   updateProfilePostsLoader(root, {
     percent: 34,
@@ -2379,36 +2421,17 @@ export async function hydrateProfileRoute(root = document, options = {}) {
     if (!isCurrent()) return;
     void refreshPostContext(posts);
   } else {
-    const relayHints = await relayHintsPromise;
-    if (!isCurrent()) return;
-    const followContacts = await followContactsPromise;
-    if (!isCurrent()) return;
-    relayStages = buildProfileHydrationRelayStages(
-      initialQueryRelays,
-      relayHints,
-      followContacts?.relayHints,
-      pubkey,
-      fallbackRelays,
-    );
     updateProfilePostsLoader(root, {
       percent: 64,
-      statusMessage: "checking alternate relays...",
+      statusMessage: "checking author outbox relays...",
     });
-    if (relayStages.length > 1) {
-      const recovered = await withTimeout(fetchInitialProfilePostsAcrossRelayStages(pubkey, relayStages.slice(1), {
-        fetchPosts: fetchInitialProfilePosts,
-        kinds: PROFILE_TIMELINE_KINDS,
-      }), PROFILE_INITIAL_HYDRATE_TIMEOUT_MS, "alternate profile posts").catch(() => ({
-        posts: [],
-        relaysUsed: [],
-      }));
-      if (!isCurrent()) return;
-      posts = recovered.posts;
-      if (recovered.relaysUsed.length) {
-        applyProfileRelays(root, state, recovered.relaysUsed, {
-          display: shouldDisplayProfileRelays(state, recovered.relaysUsed),
-        });
-      }
+    const recovered = await hintedPostsPromise;
+    if (!isCurrent()) return;
+    posts = recovered.posts;
+    if (recovered.relaysUsed.length) {
+      applyProfileRelays(root, state, recovered.relaysUsed, {
+        display: shouldDisplayProfileRelays(state, recovered.relaysUsed),
+      });
     }
     updateProfilePostsLoader(root, {
       percent: 88,
@@ -2444,13 +2467,14 @@ export async function hydrateProfileRoute(root = document, options = {}) {
     }
   })();
 
-  void fetchInitialProfilePosts(pubkey, {
-    relays: state.relays,
-    kinds: PROFILE_TIMELINE_KINDS,
-    preferCache: false,
-  }).then(async (freshPosts) => {
+  void hintedPostsPromise.then(async ({ posts: freshPosts, relaysUsed }) => {
     if (hydrationGeneration !== profileHydrationGeneration || relayNativeProfileState !== state) return;
     if (!Array.isArray(freshPosts) || !freshPosts.length) return;
+    if (Array.isArray(relaysUsed) && relaysUsed.length) {
+      applyProfileRelays(root, state, relaysUsed, {
+        display: shouldDisplayProfileRelays(state, relaysUsed),
+      });
+    }
     const merged = mergeEventsNewestFirst(freshPosts, state.timeline);
     if (merged.length === state.timeline.length && merged.every((event, index) => event.id === state.timeline[index]?.id)) return;
     const rendered = await applyPosts(merged);

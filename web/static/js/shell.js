@@ -2,6 +2,7 @@ import { assetURL } from "./asset-paths.js";
 import { shouldShowFirstLoginBootstrap } from "./first-login-bootstrap.js";
 import { normalizedPubkey } from "./session.js";
 import { getWebOfTrustDepthPref, getWebOfTrustEnabledPref } from "./sort-prefs.js";
+import { desktopModeEnabled } from "./viewer-defaults.js";
 
 function navLink(href, icon, label, active, extraAttrs = "") {
   const current = active === href ? ' aria-current="page"' : "";
@@ -397,7 +398,7 @@ export function shellMobileBar() {
     <header class="mobile-bar">
       <a href="/" data-relay-aware class="mobile-brand" data-feed-home><span class="mobile-brand-text">Plain Text Nostr</span></a>
       ${threadViewToggleMobileBarMarkup()}
-      <div class="feed-wot-quick mobile-bar-wot" data-feed-wot-controls data-wot-depth="${wotDepth}"${loggedIn && wotEnabled ? "" : " hidden"}>
+      <div class="feed-wot-quick mobile-bar-wot" data-feed-wot-controls data-wot-depth="${wotDepth}"${wotEnabled && (loggedIn || desktopModeEnabled()) ? "" : " hidden"}>
         <label class="feed-wot-quick-label" for="feed-wot-depth-header">WOT</label>
         <select id="feed-wot-depth-header" class="feed-wot-depth-select" data-feed-wot-depth-select aria-label="Web of Trust depth">
           <option value="1"${d1}>wot: 1°</option>
@@ -426,11 +427,13 @@ export function leftRail(active = "") {
       </nav>
       <button type="button" class="rail-post" data-post-trigger>Post</button>
       <div class="rail-user">
-        <img src="" alt="" loading="lazy" decoding="async" data-session-avatar hidden>
-        <span class="rail-avatar-fallback" data-session-avatar-fallback>@</span>
-        <div class="rail-user-copy" data-session-user-copy hidden>
-          <strong data-session-display-name>Guest</strong>
-        </div>
+        <a href="/login" class="rail-user-profile" data-session-user-link data-relay-aware aria-label="Log in">
+          <img src="" alt="" loading="lazy" decoding="async" data-session-avatar hidden>
+          <span class="rail-avatar-fallback" data-session-avatar-fallback>@</span>
+          <span class="rail-user-copy" data-session-user-copy hidden>
+            <strong data-session-display-name>Guest</strong>
+          </span>
+        </a>
         <a href="/login" class="rail-login" data-session-cta>Login</a>
       </div>
     </aside>

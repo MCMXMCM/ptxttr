@@ -94,8 +94,8 @@
       <div class="profile-hero-head">
         <div class="profile-hero-top">
           <h1 class="profile-display-name">{{if .Profile.Display}}{{.Profile.Display}}{{else if .Profile.Name}}{{.Profile.Name}}{{else}}{{short .Profile.PubKey}}{{end}}</h1>
-          <span class="ascii-action-menu profile-hero-options-menu" data-profile-stats-menu data-profile-actions data-profile-pubkey="{{.Profile.PubKey}}">
-            <button type="button" class="profile-hero-options-trigger" data-ascii-action-menu-trigger="1" aria-haspopup="menu" aria-expanded="false" aria-label="Profile options">...</button>
+          <details class="ascii-action-menu profile-hero-options-menu" data-profile-stats-menu data-profile-actions data-profile-pubkey="{{.Profile.PubKey}}">
+            <summary class="profile-hero-options-trigger" data-ascii-action-menu-trigger="1" aria-haspopup="menu" aria-expanded="false" aria-label="Profile options">...</summary>
             <span class="ascii-action-menu-list" role="menu">
               <span class="profile-follow-mute" data-profile-follow-mute>
                 <button type="button" role="menuitem" class="link-button profile-follow-toggle" data-follow-toggle data-pubkey="{{.Profile.PubKey}}" aria-pressed="false">Follow</button>
@@ -107,7 +107,7 @@
               <a role="menuitem" href="/profile/edit" class="link-button" data-own-profile-edit hidden>Edit profile</a>
               <button type="button" role="menuitem" class="link-button" data-own-profile-logout data-logout data-logout-redirect="/login" hidden>Log out</button>
             </span>
-          </span>
+          </details>
         </div>
       </div>
       <div class="profile-hero-media-row">
@@ -337,11 +337,13 @@
   </nav>
   <button type="button" class="rail-post" data-post-trigger>Post</button>
   <div class="rail-user">
-    <img src="" alt="" loading="lazy" decoding="async" data-session-avatar hidden>
-    <span class="rail-avatar-fallback" data-session-avatar-fallback>@</span>
-    <div class="rail-user-copy" data-session-user-copy hidden>
-      <strong data-session-display-name>Guest</strong>
-    </div>
+    <a href="/login" class="rail-user-profile" data-session-user-link data-relay-aware aria-label="Log in">
+      <img src="" alt="" loading="lazy" decoding="async" data-session-avatar hidden>
+      <span class="rail-avatar-fallback" data-session-avatar-fallback>@</span>
+      <span class="rail-user-copy" data-session-user-copy hidden>
+        <strong data-session-display-name>Guest</strong>
+      </span>
+    </a>
     <a href="/login" class="rail-login" data-session-cta>Login</a>
   </div>
 </aside>
@@ -424,12 +426,14 @@
   {{template "search_form" .}}
   <section class="trending-panel login-help-panel">
     <h2>How login works</h2>
-    <p class="muted">Keys stay in your browser. The server only needs your public key for read paths.</p>
+    <p class="muted">{{if .DesktopMode}}Keys stay on this device.{{else}}Keys stay in your browser. The server only needs your public key for read paths.{{end}}</p>
     <ul class="login-help-list">
       <li><strong>Npub Login:</strong> read-only browsing with a public key (<a href="https://github.com/nostr-protocol/nips/blob/master/19.md" target="_blank" rel="noopener noreferrer">NIP-19</a>).</li>
+      {{if not .DesktopMode}}
       <li><strong>Browser Extension:</strong> connect an extension that exposes <code>window.nostr</code> (<a href="https://github.com/nostr-protocol/nips/blob/master/07.md" target="_blank" rel="noopener noreferrer">NIP-07</a>).</li>
-      <li><strong>Nsec Login:</strong> local private key usage for signing during this login; high risk.</li>
-      <li><strong>Sign up:</strong> the browser generates a new keypair; copy your <code>npub</code> and <code>nsec</code> to a safe place before continuing to the app.</li>
+      {{end}}
+      <li><strong>Nsec Login:</strong> {{if .DesktopMode}}use a private key stored locally on this device.{{else}}local private key usage for signing during this login; high risk.{{end}}</li>
+      <li><strong>Sign up:</strong> the {{if .DesktopMode}}app{{else}}browser{{end}} generates a new keypair; copy your <code>npub</code> and <code>nsec</code> to a safe place before continuing to the app.</li>
     </ul>
   </section>
 </aside>
@@ -572,7 +576,7 @@
   <div class="mobile-bar-center" data-thread-view-mode aria-label="Thread view mode">
     <button type="button" class="link-button thread-view-toggle" data-thread-view-toggle data-thread-view-current="thread" aria-label="Viewing thread. Tap to switch to tree.">thread</button>
   </div>
-  <div class="feed-wot-quick mobile-bar-wot" data-feed-wot-controls data-wot-depth="{{$wotDepth}}"{{if or (not $wotEnabled) (not .ViewerPubKey)}} hidden{{end}}>
+  <div class="feed-wot-quick mobile-bar-wot" data-feed-wot-controls data-wot-depth="{{$wotDepth}}"{{if or (not $wotEnabled) (and (not .ViewerPubKey) (not .DesktopMode))}} hidden{{end}}>
     <label class="feed-wot-quick-label" for="feed-wot-depth-header">WOT</label>
     <select id="feed-wot-depth-header" class="feed-wot-depth-select" data-feed-wot-depth-select aria-label="Web of Trust depth">
       <option value="1" {{if eq $wotDepth 1}}selected{{end}}>wot: 1°</option>

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"ptxt-nstr/internal/config"
 )
@@ -70,5 +71,27 @@ func TestServerAppShellKeepsDirectRelayReadsDisabledByDefault(t *testing.T) {
 	}
 	if payload.Features["relayNativeRoutesPrimary"] {
 		t.Fatal("server app bootstrap relayNativeRoutesPrimary = true, want false")
+	}
+}
+
+func TestDesktopStorageEndpointsBypassRequestTimeout(t *testing.T) {
+	for _, path := range []string{desktopStoragePath, desktopStorageClearPath} {
+		t.Run(path, func(t *testing.T) {
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				select {
+				case <-time.After(30 * time.Millisecond):
+					w.WriteHeader(http.StatusNoContent)
+				case <-r.Context().Done():
+					t.Fatalf("desktop storage request context was unexpectedly cancelled: %v", r.Context().Err())
+				}
+			})
+			handler := withTimeout(5*time.Millisecond, inner)
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusNoContent {
+				t.Fatalf("status = %d, want 204", rec.Code)
+			}
+		})
 	}
 }

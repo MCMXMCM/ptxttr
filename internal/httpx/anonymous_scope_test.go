@@ -39,6 +39,25 @@ func TestAnonymousUserPageRequiresCachedGigiScope(t *testing.T) {
 	}
 }
 
+func TestDesktopUserPageBypassesHostedGuestSliceAdmission(t *testing.T) {
+	srv, _ := testServer(t)
+	srv.cfg.DesktopMode = true
+	pubkey := strings.Repeat("d", 64)
+
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/u/"+pubkey, nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("desktop uncached profile status = %d, want 200: %s", rec.Code, truncateForLog(rec.Body.String(), 800))
+	}
+	if strings.Contains(rec.Body.String(), "cached guest slice") {
+		t.Fatalf("desktop profile rendered hosted guest-slice rejection: %s", truncateForLog(rec.Body.String(), 800))
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("desktop profile Cache-Control = %q, want private, no-store", got)
+	}
+}
+
 func TestAnonymousUserPageAllowsCachedPinnedProfile(t *testing.T) {
 	srv, st := testServer(t)
 	ctx := context.Background()

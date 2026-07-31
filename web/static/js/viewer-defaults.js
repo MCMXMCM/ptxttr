@@ -27,6 +27,21 @@ function hasViewerPubkey() {
   }
 }
 
+export function desktopModeEnabled() {
+  return globalThis.document?.documentElement?.dataset?.ptxtDesktopMode === "1";
+}
+
+export function loggedOutWebOfTrustDepthPref() {
+  if (!desktopModeEnabled()) return DEFAULT_LOGGED_OUT_WOT_DEPTH;
+  try {
+    const raw = Number.parseInt(localStorage.getItem(WEB_OF_TRUST_DEPTH_KEY) || "", 10);
+    if (!Number.isFinite(raw)) return DEFAULT_LOGGED_OUT_WOT_DEPTH;
+    return Math.min(3, Math.max(1, raw));
+  } catch {
+    return DEFAULT_LOGGED_OUT_WOT_DEPTH;
+  }
+}
+
 /** Writes default viewer prefs when keys are unset (logged-out WoT on, media on). */
 export function applyDefaultViewerPrefsIfUnset() {
   if (prefUnset(IMAGE_MODE_KEY)) {
@@ -36,6 +51,8 @@ export function applyDefaultViewerPrefsIfUnset() {
   if (prefUnset(WEB_OF_TRUST_ENABLED_KEY)) {
     localStorage.setItem(WEB_OF_TRUST_ENABLED_KEY, "1");
   }
-  localStorage.setItem(WEB_OF_TRUST_DEPTH_KEY, String(DEFAULT_LOGGED_OUT_WOT_DEPTH));
+  if (!desktopModeEnabled() || prefUnset(WEB_OF_TRUST_DEPTH_KEY)) {
+    localStorage.setItem(WEB_OF_TRUST_DEPTH_KEY, String(DEFAULT_LOGGED_OUT_WOT_DEPTH));
+  }
   localStorage.removeItem(WEB_OF_TRUST_SEED_KEY);
 }

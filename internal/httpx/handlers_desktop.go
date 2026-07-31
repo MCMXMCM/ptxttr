@@ -1,6 +1,7 @@
 package httpx
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -9,12 +10,16 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
+
+	"ptxt-nstr/internal/nostrx"
 )
 
 const (
 	desktopOpenExternalPath = "/__ptxt/desktop/open-external"
 	desktopStoragePath      = "/__ptxt/desktop/storage"
 	desktopStorageClearPath = "/__ptxt/desktop/storage/clear"
+	desktopFollowGraphPath  = "/__ptxt/desktop/follow-graph"
 	maxDesktopOpenURLLen    = 2048
 )
 
@@ -24,6 +29,56 @@ type desktopOpenExternalBody struct {
 
 type desktopStorageClearBody struct {
 	Scope string `json:"scope"`
+}
+
+type desktopFollowGraphResponse struct {
+	Pubkey    string   `json:"pubkey"`
+	Following []string `json:"following"`
+	Followers []string `json:"followers"`
+	Relays    []string `json:"relays"`
+}
+
+// handleDesktopFollowGraph is a loopback-only fallback for WebKit relay reads.
+// It asks the local relay client for the profile's current kind-3 event, stores
+// it locally, and returns the graph already available on this device.
+func (s *Server) handleDesktopFollowGraph(w http.ResponseWriter, r *http.Request) {
+	if s == nil || !s.cfg.DesktopMode || s.store == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	pubkey := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("pubkey")))
+	if !nostrx.IsValidPubKeyHex(pubkey) {
+		http.Error(w, "invalid pubkey", http.StatusBadRequest)
+		return
+	}
+	relays := s.authorMetadataRelays(r.Context(), pubkey, s.requestRelays(r))
+	if s.nostr != nil && len(relays) > 0 {
+		ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
+		fetched, err := s.nostr.FetchFrom(ctx, relays, nostrx.Query{
+			Authors: []string{pubkey},
+			Kinds:   []int{nostrx.KindFollowList},
+			Limit:   3,
+		})
+		cancel()
+		if err == nil && len(fetched) > 0 {
+			_, _ = s.store.SaveEvents(r.Context(), fetched)
+		}
+	}
+	event, _ := s.store.LatestReplaceable(r.Context(), pubkey, nostrx.KindFollowList)
+	following := filterValidFollowPubkeys(nostrx.FollowPubkeys(event))
+	followers := s.followers(r.Context(), pubkey, 250)
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(desktopFollowGraphResponse{
+		Pubkey:    pubkey,
+		Following: following,
+		Followers: followers,
+		Relays:    relays,
+	})
 }
 
 func (s *Server) handleDesktopStorage(w http.ResponseWriter, r *http.Request) {

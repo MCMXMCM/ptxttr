@@ -208,7 +208,11 @@ function profileShell(url) {
           <div class="profile-main"><div class="profile-ident"><p class="text-skeleton text-skeleton-block">-----------------------------</p></div></div>
         </section>
       </section>
-      <section id="user-stats" class="stats profile-stats-row" data-user-fragment="stats"></section>
+      <section id="user-stats" class="stats profile-stats-row" data-user-fragment="stats">
+        <button type="button" class="link-button profile-stat-link" data-profile-tab="user-tab-following" data-profile-following-count-wrap aria-label="Following">Following <span class="muted">(<span data-profile-following-count>...</span>)</span></button>
+        <span class="muted profile-stats-sep" aria-hidden="true">•</span>
+        <button type="button" class="link-button profile-stat-link" data-profile-tab="user-tab-followers" data-profile-followers-count-wrap aria-label="Followed by">Followed <span class="muted">(<span data-profile-followers-count>...</span>)</span></button>
+      </section>
       <div class="user-tabs profile-tabs">
         <nav class="user-tab-nav" aria-label="Profile timeline">
           <label class="user-tab-label" for="user-tab-posts">Posts</label><span class="user-tab-sep" aria-hidden="true">·</span>

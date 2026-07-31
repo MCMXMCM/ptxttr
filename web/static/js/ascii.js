@@ -763,20 +763,20 @@ async function copyText(value, trigger) {
 }
 
 export function closeActionMenus(except = null) {
-  document.querySelectorAll(".ascii-action-menu.is-open").forEach((menu) => {
+  document.querySelectorAll(".ascii-action-menu.is-open, details.ascii-action-menu[open]").forEach((menu) => {
     if (menu !== except) {
       menu.classList.remove("is-open");
+      if (menu instanceof HTMLDetailsElement) menu.open = false;
       menu.querySelector("[aria-haspopup='menu']")?.setAttribute("aria-expanded", "false");
     }
   });
 }
 
 function actionMenu(container, label, items) {
-  const wrap = document.createElement("span");
+  const wrap = document.createElement("details");
   wrap.className = "ascii-action-menu";
-  const trigger = document.createElement("button");
+  const trigger = document.createElement("summary");
   trigger.className = "link-button";
-  trigger.type = "button";
   trigger.textContent = label;
   trigger.dataset.asciiActionMenuTrigger = "1";
   trigger.setAttribute("aria-haspopup", "menu");
@@ -934,14 +934,16 @@ function viewReactionsMenuButton(container) {
   return item;
 }
 
-function toggleActionMenuFromTrigger(trigger) {
-  const wrap = trigger?.closest?.(".ascii-action-menu");
-  if (!wrap) return;
-  const isOpen = !wrap.classList.contains("is-open");
-  closeActionMenus(isOpen ? wrap : null);
-  wrap.classList.toggle("is-open", isOpen);
-  trigger.setAttribute("aria-expanded", isOpen ? "true" : "false");
-}
+// Native <details> controls keep action menus functional in WebKit desktop
+// wrappers even when a client-route capture handler consumes click events.
+// Keep the previous ARIA state and one-menu-at-a-time behavior in sync.
+document.addEventListener("toggle", (event) => {
+  const menu = event.target;
+  if (!(menu instanceof HTMLDetailsElement) || !menu.matches("details.ascii-action-menu")) return;
+  if (menu.open) closeActionMenus(menu);
+  menu.classList.toggle("is-open", menu.open);
+  menu.querySelector("[aria-haspopup='menu']")?.setAttribute("aria-expanded", menu.open ? "true" : "false");
+}, true);
 
 function noteMenuContainerForAction(target) {
   return target?.closest?.("[data-ascii-kind], [data-thread-tree-note]") || null;
@@ -2938,13 +2940,6 @@ new MutationObserver((mutations) => {
 
 document.addEventListener("click", (event) => {
   if (!(event.target instanceof Element)) return;
-  const trigger = event.target.closest("[data-ascii-action-menu-trigger]");
-  if (trigger) {
-    event.preventDefault();
-    event.stopPropagation();
-    toggleActionMenuFromTrigger(trigger);
-    return;
-  }
   const action = event.target.closest("[data-note-menu-action]");
   if (action) {
     event.preventDefault();

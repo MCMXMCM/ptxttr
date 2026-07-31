@@ -345,6 +345,15 @@ body.feed-shell main {
   cursor: pointer;
 }
 
+.rail-user-profile {
+  align-items: center;
+  color: inherit;
+  display: flex;
+  gap: 0.6rem;
+  min-width: 0;
+  text-decoration: none;
+}
+
 .rail-user img,
 .mobile-menu-header [data-session-avatar],
 .mobile-menu-trigger img {
@@ -1269,9 +1278,14 @@ body.feed-shell main {
 
 .desktop-storage-actions {
   display: flex;
-  flex-wrap: wrap;
+  align-items: stretch;
+  flex-direction: column;
   gap: 0.5rem;
   margin: 0.75rem 0;
+}
+
+.desktop-storage-actions > button {
+  align-self: flex-start;
 }
 
 @media (min-width: 1100px) {
@@ -5741,9 +5755,28 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
   z-index: 10;
 }
 
-.ascii-action-menu.is-open .ascii-action-menu-list {
+.ascii-action-menu.is-open .ascii-action-menu-list,
+.ascii-action-menu[open] .ascii-action-menu-list {
   display: grid;
   gap: 0.2rem;
+}
+
+/* Keep menus usable when a WebKit client-route capture handler consumes the
+ * trigger click before JavaScript can set `.is-open`. The trigger retains
+ * focus after a pointer click, so this also gives keyboard users the same
+ * visible menu before focus moves into an action. */
+.ascii-action-menu:focus-within .ascii-action-menu-list {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.ascii-action-menu > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.ascii-action-menu > summary::-webkit-details-marker {
+  display: none;
 }
 
 .ascii-action-menu-list a,
@@ -5760,7 +5793,12 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
     padding: 0.5rem 0.6rem;
   }
 
-  .ascii-action-menu.is-open .ascii-action-menu-list {
+  .ascii-action-menu.is-open .ascii-action-menu-list,
+  .ascii-action-menu[open] .ascii-action-menu-list {
+    gap: 0.35rem;
+  }
+
+  .ascii-action-menu:focus-within .ascii-action-menu-list {
     gap: 0.35rem;
   }
 

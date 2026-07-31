@@ -53,23 +53,49 @@ func (s *Store) CacheUsage(ctx context.Context) (CacheUsage, error) {
 	if s == nil || s.db == nil {
 		return usage, nil
 	}
-	var err error
-	if usage.Notes, err = s.cacheCategoryUsage(ctx, cacheNoteKinds); err != nil {
-		return CacheUsage{}, err
-	}
-	if usage.Metadata, err = s.cacheCategoryUsage(ctx, cacheMetadataKinds); err != nil {
-		return CacheUsage{}, err
-	}
-	if usage.UserData, err = s.cacheCategoryUsage(ctx, cacheUserDataKinds); err != nil {
-		return CacheUsage{}, err
-	}
-	allCategorized := append(append(append([]int{}, cacheNoteKinds...), cacheMetadataKinds...), cacheUserDataKinds...)
-	query := fmt.Sprintf(`SELECT COUNT(*), COALESCE(SUM(LENGTH(raw_json)), 0) FROM events WHERE kind NOT IN (%s)`, placeholders(len(allCategorized)))
-	args := make([]any, 0, len(allCategorized))
-	for _, kind := range allCategorized {
+	query := fmt.Sprintf(`
+		SELECT CASE
+			WHEN kind IN (%s) THEN 'notes'
+			WHEN kind IN (%s) THEN 'metadata'
+			WHEN kind IN (%s) THEN 'user_data'
+			ELSE 'other'
+		END AS category,
+		COUNT(*),
+		COALESCE(SUM(LENGTH(raw_json)), 0)
+		FROM events
+		GROUP BY category`,
+		placeholders(len(cacheNoteKinds)),
+		placeholders(len(cacheMetadataKinds)),
+		placeholders(len(cacheUserDataKinds)),
+	)
+	allKinds := append(append(append([]int{}, cacheNoteKinds...), cacheMetadataKinds...), cacheUserDataKinds...)
+	args := make([]any, 0, len(allKinds))
+	for _, kind := range allKinds {
 		args = append(args, kind)
 	}
-	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&usage.Other.Events, &usage.Other.Bytes); err != nil {
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return CacheUsage{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var category string
+		var categoryUsage CacheCategoryUsage
+		if err := rows.Scan(&category, &categoryUsage.Events, &categoryUsage.Bytes); err != nil {
+			return CacheUsage{}, err
+		}
+		switch category {
+		case "notes":
+			usage.Notes = categoryUsage
+		case "metadata":
+			usage.Metadata = categoryUsage
+		case "user_data":
+			usage.UserData = categoryUsage
+		case "other":
+			usage.Other = categoryUsage
+		}
+	}
+	if err := rows.Err(); err != nil {
 		return CacheUsage{}, err
 	}
 	for _, suffix := range []string{"", "-wal", "-shm"} {
@@ -81,17 +107,6 @@ func (s *Store) CacheUsage(ctx context.Context) (CacheUsage, error) {
 		}
 	}
 	return usage, nil
-}
-
-func (s *Store) cacheCategoryUsage(ctx context.Context, kinds []int) (CacheCategoryUsage, error) {
-	var usage CacheCategoryUsage
-	query := fmt.Sprintf(`SELECT COUNT(*), COALESCE(SUM(LENGTH(raw_json)), 0) FROM events WHERE kind IN (%s)`, placeholders(len(kinds)))
-	args := make([]any, 0, len(kinds))
-	for _, kind := range kinds {
-		args = append(args, kind)
-	}
-	err := s.db.QueryRowContext(ctx, query, args...).Scan(&usage.Events, &usage.Bytes)
-	return usage, err
 }
 
 // ClearCache removes public Nostr cache data while deliberately preserving

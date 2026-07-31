@@ -324,6 +324,7 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc(desktopOpenExternalPath, s.handleDesktopOpenExternal)
 		mux.HandleFunc(desktopStoragePath, s.handleDesktopStorage)
 		mux.HandleFunc(desktopStorageClearPath, s.handleDesktopStorageClear)
+		mux.HandleFunc(desktopFollowGraphPath, s.handleDesktopFollowGraph)
 	}
 	coalesce := newCoalesceMiddleware(coalesceConfig{
 		Enabled: s.cfg.CoalesceEnabled,

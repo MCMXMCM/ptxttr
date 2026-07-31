@@ -64,7 +64,7 @@
                 {{end}}
               </select>
             </label>
-            {{if not .DefaultFeed}}<div class="feed-wot-quick feed-heading-wot" data-feed-wot-controls data-wot-depth="{{.WebOfTrustDepth}}"{{if not .WebOfTrustEnabled}} hidden{{end}}>
+            {{if or (not .DefaultFeed) .DesktopMode}}<div class="feed-wot-quick feed-heading-wot" data-feed-wot-controls data-wot-depth="{{.WebOfTrustDepth}}"{{if not .WebOfTrustEnabled}} hidden{{end}}>
               <label class="feed-wot-quick-label" for="feed-wot-depth-feed">WOT</label>
               <select id="feed-wot-depth-feed" class="feed-wot-depth-select" data-feed-wot-depth-select aria-label="Web of Trust depth">
                 <option value="1" {{if eq .WebOfTrustDepth 1}}selected{{end}}>wot: 1°</option>

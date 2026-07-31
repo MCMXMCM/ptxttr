@@ -45,6 +45,7 @@ globalThis.window = Object.assign(globalThis, {
   },
 });
 globalThis.document = {
+  documentElement: { dataset: {} },
   addEventListener() {},
   querySelector() {
     return null;
@@ -101,6 +102,7 @@ function makeSigningSession(seed, method = "yolo") {
 
 beforeEach(() => {
   delete window.nostr;
+  document.documentElement.dataset = {};
   localStorage.clear();
   sessionStorage.clear();
   clearSession();
@@ -258,6 +260,17 @@ describe("session signing account persistence", () => {
     assert.equal(headers.get("X-Ptxt-Wot"), "1");
     assert.equal(headers.get("X-Ptxt-Wot-Depth"), "1");
     assert.equal(localStorage.getItem("ptxt_wot_depth"), "1");
+  });
+
+  it("sends the selected guest Gigi depth from the desktop app", () => {
+    document.documentElement.dataset.ptxtDesktopMode = "1";
+    localStorage.setItem("ptxt_wot_depth", "3");
+
+    const headers = sessionHeaders(undefined, "/feed");
+
+    assert.equal(headers.get("X-Ptxt-Wot"), "1");
+    assert.equal(headers.get("X-Ptxt-Wot-Depth"), "3");
+    assert.equal(localStorage.getItem("ptxt_wot_depth"), "3");
   });
 
   it("keeps explicit legacy URL preferences authoritative over transport defaults", () => {

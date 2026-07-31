@@ -180,6 +180,29 @@ describe("profile relay-stage hydration", () => {
     });
   });
 
+  it("merges fresh posts from default and author outbox relays while tolerating a failed stage", async () => {
+    const result = await fetchInitialProfilePostsAcrossRelayStages(
+      "ab".repeat(32),
+      [
+        ["wss://base.example"],
+        ["wss://outbox.example"],
+        ["wss://offline.example"],
+      ],
+      {
+        fetchPosts: async (_pubkey, { relays }) => {
+          if (relays[0] === "wss://offline.example") throw new Error("offline");
+          if (relays[0] === "wss://outbox.example") {
+            return [{ id: "new-note", created_at: 20 }];
+          }
+          return [{ id: "old-note", created_at: 10 }];
+        },
+      },
+    );
+
+    assert.deepEqual(result.posts.map((post) => post.id), ["new-note", "old-note"]);
+    assert.deepEqual(result.relaysUsed, ["wss://base.example", "wss://outbox.example"]);
+  });
+
   it("merges follow data across relay stages using the newest follow list and unioned followers", async () => {
     const pubkey = "ab".repeat(32);
     const attempted = [];
@@ -235,5 +258,28 @@ describe("profile relay-stage hydration", () => {
       relayHints: new Map([[pubkey, "wss://fallback.example"]]),
       relaysUsed: ["wss://fallback.example"],
     });
+  });
+
+  it("keeps relationship data when one relay stage fails", async () => {
+    const pubkey = "ab".repeat(32);
+    const result = await fetchProfileFollowGraphAcrossRelayStages(
+      pubkey,
+      [["wss://offline.example"], ["wss://outbox.example"]],
+      {
+        fetchFollowGraph: async (_pubkey, { relays }) => {
+          if (relays[0] === "wss://offline.example") throw new Error("offline");
+          return {
+            pubkey,
+            following: ["22".repeat(32)],
+            followers: ["33".repeat(32)],
+            followEvent: { id: "follow-1", created_at: 10 },
+            relayHints: new Map(),
+          };
+        },
+      },
+    );
+
+    assert.deepEqual(result.following, ["22".repeat(32)]);
+    assert.deepEqual(result.followers, ["33".repeat(32)]);
   });
 });

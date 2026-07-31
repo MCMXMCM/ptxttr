@@ -436,7 +436,8 @@ export async function fetchFeedNotes({
 }
 
 async function filterSearchResults(events, viewerPubkey) {
-  const muted = viewerPubkey ? new Set((await fetchMuteList(viewerPubkey)).map(normalizePubkey)) : new Set();
+  const muteList = viewerPubkey ? await fetchMuteList(viewerPubkey) : null;
+  const muted = new Set((muteList?.muted_pubkeys || []).map(normalizePubkey).filter(Boolean));
   const mode = resolveFeedFetchModeForViewer(viewerPubkey);
   let membership = null;
   if (mode.kind === "wot") {
@@ -626,7 +627,8 @@ async function scanLocalNewerFeedNotes({ viewerPubkey, since, sinceID, sort = "r
     limit: Math.max(limit * 4, 120),
     since: Math.max(0, sinceAt - 300),
   });
-  const muted = viewerPubkey ? new Set((await fetchMuteList(viewerPubkey)).map(normalizePubkey)) : new Set();
+  const muteList = viewerPubkey ? await fetchMuteList(viewerPubkey) : null;
+  const muted = new Set((muteList?.muted_pubkeys || []).map(normalizePubkey).filter(Boolean));
   const membership = mode.kind === "wot" ? authorMembershipSet(authors) : null;
 
   return sortEventsNewestFirst(

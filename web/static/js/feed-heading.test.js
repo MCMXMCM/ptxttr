@@ -27,6 +27,7 @@ globalThis.window = Object.assign(globalThis, {
   location: { href: "https://example.com/" },
 });
 globalThis.document = {
+  documentElement: { dataset: {} },
   addEventListener() {},
   querySelector() {
     return null;
@@ -55,6 +56,7 @@ const GIGI_NPUB = "npub1dergggklka99wwrs92yz8wdjs952h2ux2ha2ed598ngwu9w7a6fsh9xz
 const JACK_NPUB = "npub1sg6plzptd64u62a878hep2kev88swjh3tw00gjsfl8f237lmu63q0uf63m";
 
 beforeEach(() => {
+  document.documentElement.dataset = {};
   localStorage.clear();
   clearSession();
   ensureDefaultViewerPrefs();
@@ -108,12 +110,22 @@ describe("feedHeadingNeedsRefresh", () => {
 });
 
 describe("renderFeedHeadingMarkup", () => {
-  it("omits WOT depth controls for logged-out guests with stale preferences", () => {
+  it("omits WOT depth controls for logged-out hosted guests", () => {
     setWebOfTrustEnabledPref(false);
     setWebOfTrustDepthPref(2);
     const html = renderFeedHeadingMarkup("https://example.com/");
     assert.doesNotMatch(html, /data-feed-wot-controls/);
     assert.doesNotMatch(html, /data-feed-wot-depth-select/);
+  });
+
+  it("includes selectable Gigi WOT depth controls for logged-out desktop users", () => {
+    document.documentElement.dataset.ptxtDesktopMode = "1";
+    setWebOfTrustDepthPref(3);
+
+    const html = renderFeedHeadingMarkup("https://example.com/");
+
+    assert.match(html, /data-feed-wot-controls/);
+    assert.match(html, /<option value="3" selected>wot: 3°<\/option>/);
   });
 
   it("omits New Note for logged-out guests", () => {

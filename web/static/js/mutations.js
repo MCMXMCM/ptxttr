@@ -19,7 +19,7 @@ import { fetchMentions, fetchMuteList, fetchViewerProfile, fetchViewerRelayPrefe
 import { pendingPublishStatus, showPublishStatusSheet } from "./publish-status.js";
 import { blossomUploadBlob } from "./blossom.js";
 import { getBlossomServerURLs } from "./sort-prefs.js";
-import { DEFAULT_LOGGED_OUT_WOT_SEED_NPUB } from "./viewer-defaults.js";
+import { DEFAULT_LOGGED_OUT_WOT_SEED_NPUB, desktopModeEnabled } from "./viewer-defaults.js";
 import { MENTION_TOKEN_RE, mentionPubKey } from "./nip27.js";
 import { DEFAULT_RELAYS } from "./relay-config.js";
 import { effectiveReadRelays, effectiveWriteRelays, loadRelayConfig, saveRelayConfig } from "./relay-state.js";
@@ -1033,7 +1033,9 @@ function applyComposerReadyStatus(state, mode) {
   if (!signer.isLoggedIn) {
     setStatus(state, "Log in first to publish.");
   } else if (!signer.canSign) {
-    setStatus(state, "Use Browser Extension, Nsec login, or Sign up to sign events.");
+    setStatus(state, desktopModeEnabled()
+      ? "Use Nsec login or Sign up to sign events."
+      : "Use Browser Extension, Nsec login, or Sign up to sign events.");
   } else if (mode === "repost") {
     setStatus(state, "Leave content blank for a repost, or add text for a quote post.");
   } else {
