@@ -44,4 +44,7 @@ desktop-package:
 	npm run desktop:package
 
 desktop-release:
-	npm run desktop:release
+	@set -a; \
+	if [ -f scripts/desktop/signing.env ]; then . scripts/desktop/signing.env; fi; \
+	set +a; \
+	APPLE_SIGNING_IDENTITY="$${APPLE_SIGNING_IDENTITY:-$${DEVELOPER_ID_APPLICATION:-}}" npm run desktop:release
