@@ -47,6 +47,7 @@ export function retroLoaderProgressState({
   reduceMotion = false,
   isComplete = false,
   explicitPercent = null,
+  explicitPercentAt = startedAt,
 } = {}) {
   const width = Math.max(1, progressWidth);
   if (isComplete) {
@@ -56,7 +57,15 @@ export function retroLoaderProgressState({
     };
   }
   if (Number.isFinite(explicitPercent)) {
-    const pendingPercent = clamp(Math.round(Number(explicitPercent)), 0, MAX_PENDING_PERCENT);
+    const floorPercent = clamp(Math.round(Number(explicitPercent)), 0, MAX_PENDING_PERCENT);
+    const estimatedDuration = reduceMotion ? 18000 : 45000;
+    const elapsed = Math.max(0, Number(now) - Number(explicitPercentAt));
+    const normalized = clamp(elapsed / estimatedDuration, 0, 1);
+    const eased = 1 - Math.pow(1 - normalized, 1.9);
+    const pendingPercent = Math.min(
+      Math.max(floorPercent, Math.round(floorPercent + ((MAX_PENDING_PERCENT - floorPercent) * eased))),
+      MAX_PENDING_PERCENT,
+    );
     return {
       units: Math.min(width - 1, Math.max(0, Math.floor((pendingPercent / 100) * width))),
       percent: pendingPercent,
@@ -137,6 +146,7 @@ function ensureState(loader) {
     completionMessage: String(loader.dataset.retroLoaderComplete || "").trim(),
     completeAt: 0,
     explicitPercent: null,
+    explicitPercentAt: 0,
     explicitStatusMessage: "",
   };
   loaderState.set(loader, state);
@@ -162,6 +172,7 @@ function renderLoader(loader, state, now, reduceMotion) {
     reduceMotion,
     isComplete,
     explicitPercent: state.explicitPercent,
+    explicitPercentAt: state.explicitPercentAt,
   });
   if (titleNode && loader.dataset.retroLoaderType === "thread") {
     titleNode.textContent = "";
@@ -309,6 +320,7 @@ export function setRetroLoaderProgress(loader, { percent, summary, statusMessage
   loader.dataset.retroLoaderCompleteState = "0";
   if (Number.isFinite(percent)) {
     state.explicitPercent = clamp(Math.round(Number(percent)), 0, MAX_PENDING_PERCENT);
+    state.explicitPercentAt = Date.now();
   }
   if (typeof title === "string" && title.trim()) {
     loader.dataset.retroLoaderTitle = title.trim();

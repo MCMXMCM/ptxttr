@@ -14,7 +14,23 @@ async function loadPanel(fragment) {
 		const response = await fetch(url.pathname + url.search, { headers: { Accept: "text/html" } });
 		if (!response.ok) throw new Error(`HTTP ${response.status}`);
 		const html = await response.text();
-		panel.innerHTML = html.trim() || '<p class="muted">Nothing cached for this tab.</p>';
+		if (fragment === "replies") {
+			const feed = panel.querySelector('[data-profile-feed="replies"]');
+			if (!(feed instanceof HTMLElement)) throw new Error("Missing replies feed");
+			feed.innerHTML = html.trim() || '<p class="muted">Nothing cached for this tab.</p>';
+			const pager = panel.querySelector('[data-load-more][data-fragment="replies"]');
+			if (pager instanceof HTMLButtonElement) {
+				const hasMore = response.headers.get("X-Ptxt-Has-More") === "1";
+				pager.dataset.cursor = response.headers.get("X-Ptxt-Cursor") || "";
+				pager.dataset.cursorId = response.headers.get("X-Ptxt-Cursor-Id") || "";
+				pager.dataset.hasMore = hasMore ? "1" : "0";
+				pager.hidden = !hasMore;
+			}
+			const { initFeedLoadMore } = await import("./feed.js");
+			initFeedLoadMore(panel);
+		} else {
+			panel.innerHTML = html.trim() || '<p class="muted">Nothing cached for this tab.</p>';
+		}
 		loaded.add(fragment);
 		const { refreshAscii } = await import("./ascii.js");
 		refreshAscii(panel);
@@ -25,6 +41,9 @@ async function loadPanel(fragment) {
 }
 
 export function initGuestProfileTabs() {
+	// Profile posts are server-rendered, so initialize their scroll sentinel
+	// without waiting for a manual Load more click.
+	void import("./feed.js").then(({ initFeedLoadMore }) => initFeedLoadMore(document));
 	document.querySelectorAll('input[name="user-tab"]').forEach((input) => {
 		input.addEventListener("change", () => {
 			if (input.checked) void loadPanel(fragmentForInput(input));

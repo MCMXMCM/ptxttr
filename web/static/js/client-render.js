@@ -15,6 +15,9 @@ import {
   feedPageMayHaveMore,
   homeFeedLoadMoreHidden,
   isNewerThanFeedCursor,
+  profilePageEventsToAppend,
+  profilePostsForRender,
+  profileScrollTopAfterRender,
 } from "./feed-pagination.js";
 import { fetchReadDetail, fetchReadsPage } from "./reads-service.js";
 import { renderReadDetailView, renderReadsList } from "./read-event-render.js";
@@ -69,7 +72,7 @@ import {
 } from "./sort-prefs.js";
 import { fetchWithSession, normalizedPubkey, updateRelayAwareLinks, updateSessionLinks } from "./session.js";
 import { pubkeyFromProfilePath, routeKind } from "./nav-routing.js";
-import { replaceRouteOutletHTML } from "./shell-swap.js";
+import { replaceRouteOutletHTML, routeScrollRoot, routeScrollTop, setRouteScrollTop } from "./shell-swap.js";
 import { fetchDirectParentEvent, resolveThreadFromPath, threadParticipantPubkeys, warmThreadFromPath } from "./thread-graph.js";
 import { renderThreadIntoShell, isRelayNativeThread, appendDirectReplyShells, createReplyShell } from "./thread-event-render.js";
 import { threadPathNoteID, isThreadHydrateComplete, threadFocusNeedsFullHydrate } from "./thread-hydrate.js";
@@ -1687,15 +1690,16 @@ function configureProfileLoadMore(root, notes) {
   button.dataset.cursor = cursor.until > 0 ? String(cursor.until) : "";
   button.dataset.cursorId = cursor.cursorId || "";
   button.dataset.hasMore = hasMore ? "1" : "0";
-  button.hidden = !hasMore;
-  button.disabled = false;
-  button.textContent = "Load more";
+  const loading = button.dataset.loading === "1";
+  button.hidden = !hasMore || loading;
+  button.disabled = loading;
+  if (!loading) button.textContent = "Load more";
 }
 
 async function renderProfilePostsFeed(root, postsFeed, state, emptyText = "No posts yet.") {
   const transition = currentThreadTransition();
   const selectedID = transition?.selectedNoteID || "";
-  const visiblePosts = Array.isArray(state.posts) ? state.posts.slice(0, PROFILE_PAGE_SIZE) : [];
+  const visiblePosts = profilePostsForRender(state.posts);
   const carried = selectedID
     ? postsFeed.querySelector(`.ptxt-carried-profile-note#note-${selectedID}, .ptxt-carried-thread-note#note-${selectedID}`)
     : null;
@@ -1746,7 +1750,38 @@ async function renderProfilePostsFeed(root, postsFeed, state, emptyText = "No po
   });
 }
 
+function captureProfileScrollAnchor(root) {
+  const scrollTop = routeScrollTop(root);
+  if (scrollTop <= 0) return null;
+  const scrollRoot = routeScrollRoot(root);
+  const rootTop = scrollRoot?.getBoundingClientRect?.().top || 0;
+  const notes = root.querySelectorAll?.('#user-panel-posts [data-profile-feed="posts"] .note[id]') || [];
+  for (const note of notes) {
+    const rect = note.getBoundingClientRect?.();
+    if (!rect || rect.bottom <= rootTop) continue;
+    return {
+      id: note.id || "",
+      offsetTop: rect.top - rootTop,
+      scrollTop,
+    };
+  }
+  return { id: "", offsetTop: 0, scrollTop };
+}
+
+function restoreProfileScrollAnchor(root, snapshot) {
+  if (!snapshot) return;
+  setRouteScrollTop(root, snapshot.scrollTop);
+  if (!snapshot.id) return;
+  const anchor = root.querySelector?.(`#${CSS.escape(snapshot.id)}`);
+  const rect = anchor?.getBoundingClientRect?.();
+  if (!rect) return;
+  const scrollRoot = routeScrollRoot(root);
+  const rootTop = scrollRoot?.getBoundingClientRect?.().top || 0;
+  setRouteScrollTop(root, profileScrollTopAfterRender(snapshot, rect.top - rootTop));
+}
+
 async function renderProfileNotesPanels(root, state, options = {}) {
+  const scrollSnapshot = options.preserveScroll === true ? captureProfileScrollAnchor(root) : null;
   const postsFeed = profilePostsFeed(root);
   const repliesFeed = root.querySelector('#user-panel-replies [data-profile-feed="replies"]');
   const mediaFeed = root.querySelector('#user-panel-media [data-profile-feed="media"]');
@@ -1782,6 +1817,45 @@ async function renderProfileNotesPanels(root, state, options = {}) {
   }
   if (repliesFeed) refreshAscii(repliesFeed);
   if (mediaFeed) refreshAscii(mediaFeed);
+  restoreProfileScrollAnchor(root, scrollSnapshot);
+}
+
+function appendProfileNotesPanels(root, state, events) {
+  const page = splitProfileTimeline(events);
+  const postsFeed = profilePostsFeed(root);
+  const repliesFeed = root.querySelector('#user-panel-replies [data-profile-feed="replies"]');
+  const mediaFeed = root.querySelector('#user-panel-media [data-profile-feed="media"]');
+  if (postsFeed) {
+    appendNoteFeed(postsFeed, page.posts, state.profiles, {
+      referencedByID: state.referencedByID,
+    });
+  }
+  if (repliesFeed) {
+    appendNoteFeed(repliesFeed, page.replies, state.profiles, {
+      referencedByID: state.referencedByID,
+    });
+  }
+  if (mediaFeed) {
+    appendNoteFeed(mediaFeed, page.media, state.profiles, {
+      referencedByID: state.referencedByID,
+    });
+  }
+  renderProfileTabCounts(root, {
+    posts: state.posts.length,
+    replies: state.replies.length,
+    media: state.media.length,
+    following: profileCount(state.following),
+    followers: profileCount(state.followers),
+  });
+  configureProfileLoadMore(root, state.timeline);
+  if (postsFeed) {
+    refreshAscii(postsFeed);
+    initViewMore(postsFeed);
+    void refreshVisibleFeedNoteMetadata(root, window.location.href, { feedSelector: "#user-panel-posts [data-feed]" });
+    void refreshVisibleNoteProfiles(root);
+  }
+  if (repliesFeed && page.replies.length) refreshAscii(repliesFeed);
+  if (mediaFeed && page.media.length) refreshAscii(mediaFeed);
 }
 
 function currentProfileState(root = document) {
@@ -2372,6 +2446,7 @@ export async function hydrateProfileRoute(root = document, options = {}) {
   );
   const applyPosts = async (nextPosts) => {
     if (!isCurrent()) return false;
+    const preserveScroll = Boolean(profilePostsFeed(root)?.querySelector?.(".note[id]"));
     const split = splitProfileTimeline(nextPosts);
     state.timeline = Array.isArray(nextPosts) ? nextPosts : [];
     state.posts = split.posts;
@@ -2381,7 +2456,7 @@ export async function hydrateProfileRoute(root = document, options = {}) {
     const cachedPostProfiles = await cachedProfilesByPubkey(pubkeys).catch(() => ({}));
     if (!isCurrent()) return false;
     state.profiles = { ...cachedPostProfiles, ...state.profiles };
-    await renderProfileNotesPanels(root, state);
+    await renderProfileNotesPanels(root, state, { preserveScroll });
     return true;
   };
   const refreshPostContext = async (nextPosts = state.posts) => {
@@ -2394,7 +2469,7 @@ export async function hydrateProfileRoute(root = document, options = {}) {
     if (!isCurrent()) return;
     state.profiles = { ...state.profiles, ...profiles };
     state.referencedByID = referencedByID;
-    await renderProfileNotesPanels(root, state);
+    await renderProfileNotesPanels(root, state, { preserveScroll: true });
   };
 
   let criticalProfile = cachedProfile;
@@ -2514,6 +2589,7 @@ export async function appendClientProfilePage(root = document) {
     button.hidden = true;
     return { appended: 0, hasMore: false, cursorAdvanced: false };
   }
+  const pageEventsToAppend = profilePageEventsToAppend(state.timeline, page);
   const previousCount = state.posts.length;
   state.timeline = mergeEventsNewestFirst(state.timeline, page);
   const split = splitProfileTimeline(state.timeline);
@@ -2530,7 +2606,7 @@ export async function appendClientProfilePage(root = document) {
   }
   state.profiles = { ...state.profiles, ...profiles };
   state.referencedByID = new Map([...(state.referencedByID?.entries?.() || []), ...referencedByID.entries()]);
-  await renderProfileNotesPanels(root, state);
+  appendProfileNotesPanels(root, state, pageEventsToAppend);
   const cursorAdvanced = button.dataset.cursor !== before || button.dataset.cursorId !== beforeID;
   return {
     appended: state.posts.length - previousCount,
@@ -2572,7 +2648,7 @@ export async function prependClientProfileNewer(root = document) {
   if (!profileStateIsCurrent(state, root)) return { count: 0 };
   state.profiles = { ...state.profiles, ...profiles };
   state.referencedByID = new Map([...(state.referencedByID?.entries?.() || []), ...referencedByID.entries()]);
-  await renderProfileNotesPanels(root, state);
+  await renderProfileNotesPanels(root, state, { preserveScroll: true });
   return { count: events.length };
 }
 

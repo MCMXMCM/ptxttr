@@ -26,7 +26,17 @@ func (s *Store) queryEvents(ctx context.Context, query string, args ...any) ([]n
 		}
 		events = append(events, *event)
 	}
-	return events, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(events) > 0 {
+		ids := make([]string, 0, len(events))
+		for i := range events {
+			ids = append(ids, events[i].ID)
+		}
+		s.touchEventAccess(ctx, ids)
+	}
+	return events, nil
 }
 
 func (s *Store) queryEventSummaries(ctx context.Context, query string, args ...any) ([]nostrx.Event, error) {
@@ -43,7 +53,17 @@ func (s *Store) queryEventSummaries(ctx context.Context, query string, args ...a
 		}
 		events = append(events, event)
 	}
-	return events, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(events) > 0 {
+		ids := make([]string, 0, len(events))
+		for i := range events {
+			ids = append(ids, events[i].ID)
+		}
+		s.touchEventAccess(ctx, ids)
+	}
+	return events, nil
 }
 
 func decodeEvent(raw string) (*nostrx.Event, error) {

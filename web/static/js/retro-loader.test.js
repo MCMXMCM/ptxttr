@@ -36,6 +36,38 @@ describe("retro loader progress", () => {
     assert.ok(state.units < 30);
   });
 
+  it("continues advancing after an explicit progress milestone", () => {
+    const initial = retroLoaderProgressState({
+      startedAt: 1000,
+      now: 1000,
+      progressWidth: 30,
+      explicitPercent: 18,
+      explicitPercentAt: 1000,
+    });
+    const advanced = retroLoaderProgressState({
+      startedAt: 1000,
+      now: 5000,
+      progressWidth: 30,
+      explicitPercent: 18,
+      explicitPercentAt: 1000,
+    });
+    assert.equal(initial.percent, 18);
+    assert.ok(advanced.percent > initial.percent);
+    assert.ok(advanced.percent <= 84);
+    assert.ok(advanced.units > initial.units);
+  });
+
+  it("uses each explicit milestone as the new progress floor", () => {
+    const state = retroLoaderProgressState({
+      startedAt: 1000,
+      now: 1400,
+      progressWidth: 30,
+      explicitPercent: 68,
+      explicitPercentAt: 1400,
+    });
+    assert.equal(state.percent, 68);
+  });
+
   it("snaps to 100 percent on completion", () => {
     const state = retroLoaderProgressState({
       startedAt: 0,

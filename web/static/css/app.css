@@ -69,6 +69,13 @@ html[data-ptxt-desktop-mode="1"] .desktop-window-drag-region {
   z-index: 2147483647;
 }
 
+/* The fullscreen media viewer uses controls inside the title-bar inset. Stop
+   the native drag strip from claiming those clicks while the dialog is open. */
+html[data-ptxt-desktop-mode="1"]:has(.image-viewer-dialog[open]) .desktop-window-drag-region {
+  -webkit-app-region: no-drag;
+  pointer-events: none;
+}
+
 /* `hiddenInset` leaves the macOS traffic lights over the renderer at the
    top-left. Without this inset the compact Home (`~`) control is visually
    present but its hover/click target belongs to the native title bar. */
@@ -4820,6 +4827,7 @@ button.note-image-toggle {
 }
 
 .image-viewer-close-button {
+  -webkit-app-region: no-drag;
   color: #fff;
   min-width: 2.25rem;
   padding: 0.25rem 0.5rem;
@@ -6099,6 +6107,14 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
 .ascii-action-menu-list button {
   text-align: left;
   white-space: nowrap;
+}
+
+.ascii-action-menu-list a:hover,
+.ascii-action-menu-list a:focus-visible,
+.ascii-action-menu-list button:hover,
+.ascii-action-menu-list button:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 0.12em;
 }
 
 @media (max-width: 700px) {

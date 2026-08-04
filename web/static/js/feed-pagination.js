@@ -44,6 +44,42 @@ export function feedPageMayHaveMore(events) {
   return Boolean(events?.length && cursor.until > 0);
 }
 
+/** Relay-native profiles page through the local client even though hosted profiles use server fragments. */
+export function shouldUseClientProfilePagination({ isProfileRoute = false, relayNativeProfile = false } = {}) {
+  return Boolean(isProfileRoute && relayNativeProfile);
+}
+
+/** Every accumulated profile post remains visible as older pages are appended. */
+export function profilePostsForRender(posts) {
+  return Array.isArray(posts) ? posts : [];
+}
+
+/** Select only immutable events that are new to an already-rendered profile timeline. */
+export function profilePageEventsToAppend(currentEvents, pageEvents) {
+  const seen = new Set(
+    (Array.isArray(currentEvents) ? currentEvents : [])
+      .map((event) => String(event?.id || "").trim().toLowerCase())
+      .filter(Boolean),
+  );
+  return (Array.isArray(pageEvents) ? pageEvents : []).filter((event) => {
+    const id = String(event?.id || "").trim().toLowerCase();
+    if (!id || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
+/** Restore a profile viewport after a full repaint while keeping the same note at the same offset. */
+export function profileScrollTopAfterRender(snapshot, currentAnchorOffsetTop) {
+  const savedScrollTop = Math.max(0, Number(snapshot?.scrollTop) || 0);
+  const savedAnchorOffsetTop = Number(snapshot?.offsetTop);
+  const nextAnchorOffsetTop = Number(currentAnchorOffsetTop);
+  if (!Number.isFinite(savedAnchorOffsetTop) || !Number.isFinite(nextAnchorOffsetTop)) {
+    return savedScrollTop;
+  }
+  return Math.max(0, savedScrollTop + nextAnchorOffsetTop - savedAnchorOffsetTop);
+}
+
 /** Home feed `Load more` stays hidden while pagination is unavailable or a feed refresh is pending. */
 export function homeFeedLoadMoreHidden({
   hasMore = false,

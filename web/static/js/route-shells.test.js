@@ -14,5 +14,6 @@ describe("profile route shell", () => {
     assert.match(html, /data-profile-following-count>\.\.\.<\/span>/);
     assert.match(html, /data-profile-tab="user-tab-followers"/);
     assert.match(html, /data-profile-followers-count>\.\.\.<\/span>/);
+    assert.match(html, /data-profile-feed="replies"[\s\S]*data-fragment="replies"/);
   });
 });

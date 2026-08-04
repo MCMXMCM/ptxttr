@@ -871,6 +871,9 @@ func TestUserPageRendersThinMetadataShell(t *testing.T) {
 	if !strings.Contains(body, `data-retro-loader-type="profile-replies"`) || !strings.Contains(body, `data-retro-loader-type="profile-media"`) {
 		t.Fatalf("initial user document should keep replies/media as lazy panels, got: %s", body)
 	}
+	if !strings.Contains(body, `data-load-more data-feed-url="/u/`+pubkey+`" data-fragment="replies"`) {
+		t.Fatalf("initial user document should include the replies pagination sentinel, got: %s", body)
+	}
 
 	replyReq := httptest.NewRequest(http.MethodGet, "/u/"+pubkey+"?fragment=replies", nil)
 	replyRec := httptest.NewRecorder()
@@ -882,6 +885,9 @@ func TestUserPageRendersThinMetadataShell(t *testing.T) {
 	if !strings.Contains(replyBody, "cached reply") || strings.Contains(replyBody, "hello world") || strings.Contains(replyBody, "cached repost") {
 		t.Fatalf("reply fragment should render cached replies only, got: %s", replyBody)
 	}
+	if replyRec.Header().Get("X-Ptxt-Cursor") == "" || replyRec.Header().Get("X-Ptxt-Cursor-Id") == "" {
+		t.Fatalf("reply fragment should expose its next-page cursor headers")
+	}
 
 	mediaReq := httptest.NewRequest(http.MethodGet, "/u/"+pubkey+"?fragment=media", nil)
 	mediaRec := httptest.NewRecorder()
@@ -892,6 +898,58 @@ func TestUserPageRendersThinMetadataShell(t *testing.T) {
 	mediaBody := mediaRec.Body.String()
 	if !strings.Contains(mediaBody, "cached media") || strings.Contains(mediaBody, "hello world") {
 		t.Fatalf("media fragment should render cached media only, got: %s", mediaBody)
+	}
+}
+
+func TestUserRepliesFragmentPaginatesOlderReplies(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	pubkey := strings.Repeat("e", 64)
+	rootID := strings.Repeat("f", 64)
+	for index := 0; index < 30; index++ {
+		event := nostrx.Event{
+			ID:        fmt.Sprintf("%064x", index+1),
+			PubKey:    pubkey,
+			CreatedAt: int64(1000 + index),
+			Kind:      nostrx.KindTextNote,
+			Content:   fmt.Sprintf("profile reply %d", index),
+			Tags:      [][]string{{"e", rootID, "", "reply"}},
+		}
+		if err := st.SaveEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	allowAnonymousAuthors(t, st, pubkey)
+
+	firstReq := httptest.NewRequest(http.MethodGet, "/u/"+pubkey+"?fragment=replies", nil)
+	firstRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(firstRec, firstReq)
+	if firstRec.Code != http.StatusOK {
+		t.Fatalf("first replies status = %d, want 200", firstRec.Code)
+	}
+	if got := firstRec.Header().Get("X-Ptxt-Has-More"); got != "1" {
+		t.Fatalf("first replies X-Ptxt-Has-More = %q, want 1", got)
+	}
+	if count := strings.Count(firstRec.Body.String(), `id="note-`); count != profileTimelinePageSize {
+		t.Fatalf("first rendered profile replies = %d, want %d", count, profileTimelinePageSize)
+	}
+	cursor := firstRec.Header().Get("X-Ptxt-Cursor")
+	cursorID := firstRec.Header().Get("X-Ptxt-Cursor-Id")
+	if cursor == "" || cursorID == "" {
+		t.Fatalf("expected profile reply cursor headers, got cursor=%q cursor_id=%q", cursor, cursorID)
+	}
+
+	secondReq := httptest.NewRequest(http.MethodGet, "/u/"+pubkey+"?fragment=replies&cursor="+cursor+"&cursor_id="+cursorID, nil)
+	secondRec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(secondRec, secondReq)
+	if secondRec.Code != http.StatusOK {
+		t.Fatalf("second replies status = %d, want 200", secondRec.Code)
+	}
+	if got := secondRec.Header().Get("X-Ptxt-Has-More"); got != "0" {
+		t.Fatalf("second replies X-Ptxt-Has-More = %q, want 0", got)
+	}
+	if count := strings.Count(secondRec.Body.String(), `id="note-`); count != 5 {
+		t.Fatalf("second rendered profile replies = %d, want 5", count)
 	}
 }
 

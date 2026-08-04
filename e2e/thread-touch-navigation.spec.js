@@ -735,7 +735,13 @@ test.describe("thread touch navigation", () => {
 
     await focused.locator(".note-media-tile").first().tap();
 
-    await expect(page.locator("[data-image-viewer-dialog]")).toBeVisible({ timeout: 5_000 });
+    const imageViewer = page.locator("[data-image-viewer-dialog]");
+    await expect(imageViewer).toBeVisible({ timeout: 5_000 });
+    await expect(page).toHaveURL(beforeURL);
+
+    await imageViewer.locator("[data-close-image-viewer]").tap();
+
+    await expect(imageViewer).not.toBeVisible();
     await expect(page).toHaveURL(beforeURL);
   });
 

@@ -45,6 +45,7 @@ import { initThreadIntentWarm } from "../thread-intent-warm.js";
 import { threadParentSkeletonMarkup } from "../shell.js";
 import { parentID, rootIDForEvent } from "../thread-tags.js";
 import { appBootstrap } from "./bootstrap.js";
+import { shouldHydrateClientRoute } from "./route-hydration-policy.js";
 import { renderShellForRoute } from "./route-shells.js";
 import { setCurrentRoute, nextRouteRefreshToken } from "../navigation-route-state.js";
 
@@ -405,12 +406,6 @@ function relayNativeDebugEnabled() {
 function relayNativeRouteOverrideEnabled() {
   return relayNativeDebugEnabled() ||
     appBootstrap().features?.relayNativeRoutesPrimary === true;
-}
-
-function relayNativeFallbackEnabled(route) {
-  if (!route || route === "stub") return false;
-  if (relayNativeRouteOverrideEnabled()) return true;
-  return appBootstrap().features?.directRelayReads === true;
 }
 
 function serverRenderedInitialRouteUsable(route, root, url) {
@@ -1131,10 +1126,13 @@ function renderOptimisticThreadFocus(href, sourceCard = null) {
 }
 
 function normalizeOptimisticThreadAvatar(shell, className) {
-  const avatar = shell?.querySelector?.(":scope > .note-avatar, :scope > .comment-avatar");
+  const avatar = shell?.querySelector?.(
+    ":scope > .note-avatar, :scope > .comment-avatar, :scope > pre .note-feed-avatar, .note-feed-avatar",
+  );
   if (!(avatar instanceof HTMLElement)) return;
-  avatar.classList.remove("note-avatar", "comment-avatar");
+  avatar.classList.remove("note-avatar", "comment-avatar", "note-feed-avatar");
   avatar.classList.add(className);
+  if (avatar.parentElement !== shell) shell.prepend(avatar);
 }
 
 function optimisticThreadParentSource(sourceCard, selectedID, expectedParentID, rootID, focus) {
@@ -1539,11 +1537,13 @@ async function hydrateDocumentRoute(options = {}) {
   // error fallback. This keeps local/debug relay state authoritative even
   // when a server-primary shell or cached fragment happens to be renderable.
   const relayNativeOverride = relayNativeRouteOverrideEnabled();
-  if (
-    route !== "stub" &&
-    relayNativeFallbackEnabled(route) &&
-    (relayNativeOverride || (!serverRenderedInitialRoute && !serverRendered))
-  ) {
+  if (shouldHydrateClientRoute({
+    route,
+    features: appBootstrap().features,
+    relayNativeOverride,
+    serverRenderedInitialRoute,
+    serverRendered,
+  })) {
     await hydrateClientRoute(route, main, {
       forceRefresh: options.forceRefresh === true || initialFeedSessionChanged,
       preserveExistingNotes: route === "feed" && options.initialDocumentLoad === true,

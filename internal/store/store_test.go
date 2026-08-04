@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -25,6 +26,31 @@ func TestDefaultSQLitePoolLargerHost(t *testing.T) {
 	open, idle := defaultSQLitePool(8)
 	if open != 10 || idle != 4 {
 		t.Fatalf("larger-host pool = (%d,%d), want (10,4)", open, idle)
+	}
+}
+
+func TestVacuumFullTruncatesPostVacuumWAL(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, ctx)
+	if _, err := st.db.ExecContext(ctx, `PRAGMA wal_autocheckpoint=0`); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 4; i++ {
+		ev := event(fmt.Sprintf("vacuum-wal-%d", i), "alice", int64(i+1), nostrx.KindTextNote, nil)
+		ev.Content = strings.Repeat(string(rune('a'+i)), 256<<10)
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.VacuumFull(ctx); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(st.dbPath + "-wal")
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err == nil && info.Size() != 0 {
+		t.Fatalf("post-vacuum WAL bytes = %d, want 0", info.Size())
 	}
 }
 
@@ -114,6 +140,35 @@ func TestGetEventsSkipsAccessTouchWhileWriterBusy(t *testing.T) {
 	}
 	if accessedAt != 1 {
 		t.Fatalf("last_accessed_at = %d, want unchanged best-effort value", accessedAt)
+	}
+}
+
+func TestListQueriesTouchEventAccessForLRU(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, ctx)
+	st.SetRetentionPolicy(true)
+
+	ev := event("list-touch-note", "alice", 1, nostrx.KindTextNote, nil)
+	if err := st.SaveEvent(ctx, ev); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE events SET last_accessed_at = 1 WHERE id = ?`, ev.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := st.RecentByAuthors(ctx, []string{"alice"}, []int{nostrx.KindTextNote}, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != ev.ID {
+		t.Fatalf("recent events = %#v, want %q", got, ev.ID)
+	}
+	var accessedAt int64
+	if err := st.db.QueryRowContext(ctx, `SELECT last_accessed_at FROM events WHERE id = ?`, ev.ID).Scan(&accessedAt); err != nil {
+		t.Fatal(err)
+	}
+	if accessedAt <= 1 {
+		t.Fatalf("last_accessed_at = %d, want list read to refresh LRU timestamp", accessedAt)
 	}
 }
 
@@ -253,6 +308,89 @@ func TestPruneEventsProtectsNewestReplaceableAheadOfColdNote(t *testing.T) {
 	}
 	if remaining != profile.ID {
 		t.Fatalf("remaining event = %q, want newest replaceable %q", remaining, profile.ID)
+	}
+}
+
+func TestByteBudgetReclaimsDiskAndFallsBackToColdReplaceables(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, ctx)
+	st.SetRetentionPolicy(true)
+	// Simulate a database created before incremental auto-vacuum was enabled.
+	// DELETE cannot shrink this file without the full-VACUUM compatibility path.
+	if _, err := st.db.ExecContext(ctx, `PRAGMA auto_vacuum=NONE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.VacuumFull(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var autoVacuumMode int
+	if err := st.db.QueryRowContext(ctx, `PRAGMA auto_vacuum`).Scan(&autoVacuumMode); err != nil {
+		t.Fatal(err)
+	}
+	if autoVacuumMode != 0 {
+		t.Fatalf("auto_vacuum mode = %d, want legacy NONE mode", autoVacuumMode)
+	}
+
+	const eventCount = 10
+	for i := 0; i < eventCount; i++ {
+		ev := event(fmt.Sprintf("profile-budget-%02d", i), fmt.Sprintf("author-%02d", i), int64(i+1), nostrx.KindProfileMetadata, nil)
+		ev.Content = fmt.Sprintf(`{"name":"profile-%02d","about":"%s"}`, i, strings.Repeat(string(rune('a'+i)), 128<<10))
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := st.db.ExecContext(ctx, `UPDATE events SET last_accessed_at = ? WHERE id = ?`, i+1, ev.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Prime the projection sidecar with the coldest row; budget fallback must
+	// not continue serving it after deleting its canonical event.
+	if summaries, err := st.ProfileSummariesByPubkeys(ctx, []string{"author-00"}); err != nil || summaries["author-00"].EventID == "" {
+		t.Fatalf("prime profile sidecar: summaries=%#v err=%v", summaries, err)
+	}
+	if _, err := st.db.ExecContext(ctx, `UPDATE events SET last_accessed_at = 1 WHERE id = 'profile-budget-00'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ReclaimFreePages(ctx); err != nil {
+		t.Fatal(err)
+	}
+	before := DBFileBytes(st.dbPath)
+	maxBytes := before * 3 / 4
+	if maxBytes <= 0 {
+		t.Fatalf("unexpected database size %d", before)
+	}
+	st.SetDiskByteRetentionPolicy(maxBytes, maxBytes*9/10)
+
+	deleted, err := st.PruneEventsToByteTarget(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted == 0 {
+		t.Fatal("byte-budget prune deleted no events")
+	}
+	after := DBFileBytes(st.dbPath)
+	if after >= maxBytes {
+		t.Fatalf("database bytes after prune = %d, want below max %d (before %d)", after, maxBytes, before)
+	}
+
+	var coldRemaining, hotRemaining int
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE id = 'profile-budget-00'`).Scan(&coldRemaining); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE id = 'profile-budget-09'`).Scan(&hotRemaining); err != nil {
+		t.Fatal(err)
+	}
+	if coldRemaining != 0 || hotRemaining != 1 {
+		t.Fatalf("LRU survivors: cold=%d hot=%d, want cold=0 hot=1", coldRemaining, hotRemaining)
+	}
+	var orphanProfiles int
+	if err := st.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM profiles_cache pc WHERE NOT EXISTS (SELECT 1 FROM events e WHERE e.id = pc.profile_event_id)`).Scan(&orphanProfiles); err != nil {
+		t.Fatal(err)
+	}
+	if orphanProfiles != 0 {
+		t.Fatalf("orphan profile projections = %d, want 0", orphanProfiles)
+	}
+	if summaries, err := st.ProfileSummariesByPubkeys(ctx, []string{"author-00"}); err != nil || len(summaries) != 0 {
+		t.Fatalf("pruned profile survived projection sidecar: summaries=%#v err=%v", summaries, err)
 	}
 }
 

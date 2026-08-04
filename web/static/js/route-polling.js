@@ -1,4 +1,4 @@
-import { feedTopCursor, profilePostsTopCursor } from "./feed.js";
+import { feedTopCursor, initFeedLoadMore, profilePostsTopCursor } from "./feed.js";
 import { countUnseenFeedEvents } from "./feed-pagination.js";
 import {
   collectVisibleFeedNoteIds,
@@ -1145,8 +1145,19 @@ async function hydrateServerProfileTimelineFragment(url, fragment, panel, scopeR
     const html = await response.text();
     if (!html.trim()) return false;
     feed.innerHTML = html;
+    const pager = panel.querySelector(`[data-load-more][data-fragment="${fragment}"]`);
+    if (pager instanceof HTMLButtonElement) {
+      const hasMore = response.headers.get("X-Ptxt-Has-More") === "1";
+      pager.dataset.cursor = response.headers.get("X-Ptxt-Cursor") || "";
+      pager.dataset.cursorId = response.headers.get("X-Ptxt-Cursor-Id") || "";
+      pager.dataset.hasMore = hasMore ? "1" : "0";
+      pager.hidden = !hasMore;
+      pager.disabled = false;
+      pager.textContent = "Load more";
+    }
     panel.dataset.loaded = "1";
     refreshAscii(feed);
+    initFeedLoadMore(panel);
     updateRelayAwareLinks();
     void refreshVisibleFeedNoteMetadata(scopeRoot, window.location.href, {
       feedSelector: `#${panel.id} [data-profile-feed="${fragment}"]`,

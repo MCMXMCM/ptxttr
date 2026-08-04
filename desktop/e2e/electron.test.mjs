@@ -150,6 +150,24 @@ test("desktop starts one sandboxed sidecar and keeps native tabs session-shared"
   assert.equal(await home.locator("[data-desktop-window-drag-region]").evaluate(
     (node) => getComputedStyle(node).getPropertyValue("-webkit-app-region"),
   ), "drag");
+  await home.evaluate(async () => {
+    const { openImageViewer } = await import("/static/js/ascii.js");
+    openImageViewer("/static/img/ascritch.png");
+  });
+  const imageViewer = home.locator("[data-image-viewer-dialog]");
+  await imageViewer.waitFor({ state: "visible" });
+  assert.equal(await home.locator("[data-desktop-window-drag-region]").evaluate(
+    (node) => getComputedStyle(node).getPropertyValue("-webkit-app-region"),
+  ), "no-drag");
+  const imageViewerClose = imageViewer.locator("[data-close-image-viewer]");
+  assert.equal(await imageViewerClose.evaluate(
+    (node) => getComputedStyle(node).getPropertyValue("-webkit-app-region"),
+  ), "no-drag");
+  await imageViewerClose.click();
+  await imageViewer.waitFor({ state: "hidden" });
+  assert.equal(await home.locator("[data-desktop-window-drag-region]").evaluate(
+    (node) => getComputedStyle(node).getPropertyValue("-webkit-app-region"),
+  ), "drag");
   assert.equal(await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].isResizable()), true);
   assert.equal(await home.evaluate(() => typeof globalThis.require), "undefined");
   assert.equal(await home.evaluate(() => typeof globalThis.process), "undefined");

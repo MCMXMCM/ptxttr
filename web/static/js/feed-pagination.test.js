@@ -8,6 +8,10 @@ import {
   feedPageMayHaveMore,
   feedPaginationCursorFromDatasets,
   homeFeedLoadMoreHidden,
+  profilePageEventsToAppend,
+  profilePostsForRender,
+  profileScrollTopAfterRender,
+  shouldUseClientProfilePagination,
 } from "./feed-pagination.js";
 
 describe("feed pagination cursors", () => {
@@ -39,6 +43,49 @@ describe("feed pagination cursors", () => {
     assert.equal(feedPageMayHaveMore([]), false);
     assert.equal(feedPageMayHaveMore([{ id: "aa".repeat(32), created_at: 0 }]), false);
     assert.equal(feedPageMayHaveMore([{ id: "bb".repeat(32), created_at: 100 }]), true);
+  });
+
+  it("uses client pagination for relay-native profile routes", () => {
+    assert.equal(shouldUseClientProfilePagination({
+      isProfileRoute: true,
+      relayNativeProfile: true,
+    }), true);
+    assert.equal(shouldUseClientProfilePagination({
+      isProfileRoute: true,
+      relayNativeProfile: false,
+    }), false);
+  });
+
+  it("keeps all accumulated profile posts visible after another page is appended", () => {
+    const posts = Array.from({ length: 50 }, (_, index) => ({ id: String(index) }));
+    assert.equal(profilePostsForRender(posts).length, 50);
+    assert.deepEqual(profilePostsForRender(null), []);
+  });
+
+  it("appends only new profile page events without replacing the rendered timeline", () => {
+    const existing = [{ id: "AA", created_at: 30 }];
+    const page = [
+      { id: "aa", created_at: 30 },
+      { id: "bb", created_at: 20 },
+      { id: "BB", created_at: 20 },
+      { id: "cc", created_at: 10 },
+      { id: "", created_at: 5 },
+    ];
+    assert.deepEqual(
+      profilePageEventsToAppend(existing, page).map((event) => event.id),
+      ["bb", "cc"],
+    );
+  });
+
+  it("restores the prior profile scroll anchor after a full repaint", () => {
+    assert.equal(profileScrollTopAfterRender({
+      scrollTop: 1800,
+      offsetTop: 120,
+    }, 120), 1800);
+    assert.equal(profileScrollTopAfterRender({
+      scrollTop: 1800,
+      offsetTop: 120,
+    }, 165), 1845);
   });
 
   it("keeps the home load-more button hidden while a feed refresh is pending", () => {

@@ -281,6 +281,7 @@ func (s *Store) ProfileSummariesByPubkeys(ctx context.Context, pubkeys []string)
 		missing = miss
 	}
 	if len(missing) == 0 {
+		s.touchProfileSummaryEvents(ctx, out)
 		return out, nil
 	}
 	fresh, err := s.profileSummariesFromSQLite(ctx, missing)
@@ -297,7 +298,19 @@ func (s *Store) ProfileSummariesByPubkeys(ctx context.Context, pubkeys []string)
 		toCache = append(toCache, summary)
 	}
 	s.putProfileSummariesBestEffort(toCache)
+	s.touchProfileSummaryEvents(ctx, out)
 	return out, nil
+}
+
+func (s *Store) touchProfileSummaryEvents(ctx context.Context, summaries map[string]ProfileSummary) {
+	if len(summaries) == 0 {
+		return
+	}
+	ids := make([]string, 0, len(summaries))
+	for _, summary := range summaries {
+		ids = append(ids, summary.EventID)
+	}
+	s.touchEventAccess(ctx, ids)
 }
 
 func (s *Store) profileSummariesFromSQLite(ctx context.Context, pubkeys []string) (map[string]ProfileSummary, error) {

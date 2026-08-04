@@ -200,6 +200,7 @@ func (s *Server) profileTimelinePage(ctx context.Context, pubkey string, fragmen
 	events := make([]nostrx.Event, 0, pageLimit)
 	scanCursor := cursor
 	scanCursorID := cursorID
+	sourceExhausted := false
 	for scanned := 0; scanned < profileTimelineCacheScanLimit && len(events) < pageLimit; {
 		need := pageLimit - len(events)
 		fetchN := need * 4
@@ -215,6 +216,7 @@ func (s *Server) profileTimelinePage(ctx context.Context, pubkey string, fragmen
 		}
 		batch, _ := s.store.RecentSummariesByAuthorsCursor(ctx, []string{pubkey}, noteTimelineKinds, scanCursor, scanCursorID, fetchN)
 		if len(batch) == 0 {
+			sourceExhausted = true
 			break
 		}
 		scanned += len(batch)
@@ -240,18 +242,20 @@ func (s *Server) profileTimelinePage(ctx context.Context, pubkey string, fragmen
 			}
 		}
 		if tail.CreatedAt == scanCursor && tail.ID == scanCursorID {
+			sourceExhausted = true
 			break
 		}
 		scanCursor = tail.CreatedAt
 		scanCursorID = tail.ID
 		if len(batch) < fetchN {
+			sourceExhausted = true
 			break
 		}
 	}
 	if len(events) > limit {
 		return events[:limit], true
 	}
-	return events, len(events) > 0
+	return events, len(events) > 0 && !sourceExhausted
 }
 
 func isProfilePostEvent(event nostrx.Event) bool {

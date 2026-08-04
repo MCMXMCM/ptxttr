@@ -13,6 +13,7 @@ import {
 import { wireAvatarImageFallbacks } from "./layout.js";
 import { fetchWithSession, normalizedPubkey } from "./session.js";
 import { refreshVisibleFeedNoteMetadata } from "./feed-metadata.js";
+import { shouldUseClientProfilePagination } from "./feed-pagination.js";
 import { bindProfileStatLinks } from "./profile-tabs.js";
 import { initViewMore } from "./notes.js";
 import { syncBookmarkState } from "./bookmarks.js";
@@ -99,10 +100,8 @@ function appendReadArticles(reads, html) {
   return appended;
 }
 
-export function initFeedLoadMore(root = document) {
+function initFeedLoadMoreButton(root, button) {
   initRetroLoaders(root);
-  const button = root.querySelector("[data-load-more]");
-  if (!button) return;
   const feedPath = button.dataset.feedUrl || "/feed";
   const feedPathname = new URL(feedPath, window.location.origin).pathname;
   const isHomeFeed = feedPath === "/feed" || feedPathname === "/";
@@ -113,9 +112,10 @@ export function initFeedLoadMore(root = document) {
   const isProfile = feedPathname.startsWith("/u/");
   const serverFragmentRoute = isHomeFeed || isReads || isSearch || isTag || isProfile;
   const cursorFromHeaders = isReads || isSearch || isTag || isNotifications || isProfile;
+  const profilePanel = isProfile ? button.closest(".user-tab-panel") : null;
   const feed = isReads
     ? root.querySelector("[data-reads]")
-    : root.querySelector("[data-feed]");
+    : profilePanel?.querySelector("[data-profile-feed]") || root.querySelector("[data-feed]");
   if (!feed) return;
   if (!isReads) void refreshVisibleNoteProfiles(feed);
   if (boundLoadMoreButtons.has(button)) {
@@ -158,6 +158,8 @@ export function initFeedLoadMore(root = document) {
     let doneLabel = "No more notes";
     if (isReads) doneLabel = "No more reads";
     else if (isNotifications) doneLabel = "No more notifications";
+    else if (isProfile && button.dataset.fragment === "replies") doneLabel = "No more replies";
+    else if (isProfile) doneLabel = "No more posts";
     button.textContent = doneLabel;
     button.disabled = true;
     stopLoading();
@@ -170,10 +172,14 @@ export function initFeedLoadMore(root = document) {
     setLoadingState(true);
     const loader = startButtonLoader(button, {
       loaderType: "feed-page",
-      title: isReads ? "loading reads" : "loading notes",
-      summary: isReads ? "pulling the next batch of reads." : "pulling the next batch of notes.",
+      title: isReads ? "loading reads" : isProfile ? "loading profile posts" : "loading notes",
+      summary: isReads
+        ? "pulling the next batch of reads."
+        : isProfile
+          ? "pulling older notes from this user's relays."
+          : "pulling the next batch of notes.",
       statusMessages: ["starting request..."],
-      completionMessage: isReads ? "reads loaded." : "notes loaded.",
+      completionMessage: isReads ? "reads loaded." : isProfile ? "profile posts loaded." : "notes loaded.",
       progressWidth: 24,
       statusWindow: 3,
     });
@@ -283,7 +289,10 @@ export function initFeedLoadMore(root = document) {
         return;
       }
 
-      if (!serverFragmentRoute && isProfile && isRelayNativeProfile(root)) {
+      if (shouldUseClientProfilePagination({
+        isProfileRoute: isProfile,
+        relayNativeProfile: isRelayNativeProfile(root),
+      })) {
         if (loader) {
           setRetroLoaderProgress(loader, {
             percent: 18,
@@ -299,7 +308,7 @@ export function initFeedLoadMore(root = document) {
             reachedEnd = true;
             setNoMore();
             await settleRetroLoader(loader, { completionMessage: "profile is caught up." });
-            hideInlineRetroLoader(button, { keepTargetHidden: true });
+            hideInlineRetroLoader(button);
             return;
           }
           button.textContent = defaultLabel;
@@ -320,7 +329,7 @@ export function initFeedLoadMore(root = document) {
           reachedEnd = true;
           setNoMore();
           await settleRetroLoader(loader, { completionMessage: "profile is caught up." });
-          hideInlineRetroLoader(button, { keepTargetHidden: true });
+          hideInlineRetroLoader(button);
           return;
         }
         if (loader) {
@@ -630,6 +639,13 @@ export function initFeedLoadMore(root = document) {
   });
 
   tryConnectLoadMoreIntersection(feed, button, loadMore);
+}
+
+export function initFeedLoadMore(root = document) {
+  initRetroLoaders(root);
+  root.querySelectorAll("[data-load-more]").forEach((button) => {
+    initFeedLoadMoreButton(root, button);
+  });
 }
 
 if (!initialized) {

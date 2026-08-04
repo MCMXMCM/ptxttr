@@ -1,4 +1,5 @@
 import { fetchWithSession, normalizePubkey } from "./session.js";
+import { desktopModeEnabled } from "./viewer-defaults.js";
 import { compactReplyBadge, padAsciiDecimal, replyLabelForCount } from "./reply-label.js";
 import { getImageModePref } from "./sort-prefs.js";
 import { NOSTR_REF_PATTERN, nostrRefLink } from "./nip27.js";
@@ -772,6 +773,41 @@ export function closeActionMenus(except = null) {
   });
 }
 
+const preparedShareURLs = new WeakMap();
+
+function prepareNoteShareURL(container, trigger) {
+  const href = replyThreadHref(container);
+  if (!href || href === "#") return Promise.resolve("");
+  const fallbackURL = new URL(href, window.location.origin).toString();
+  if (trigger.dataset.shareUrl) return Promise.resolve(trigger.dataset.shareUrl);
+  const existing = preparedShareURLs.get(trigger);
+  if (existing) return existing;
+  const noteID = noteIDForContainer(container);
+  if (!noteID) return Promise.resolve(fallbackURL);
+  const pending = fetchWithSession("/api/shares", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      note_id: noteID,
+      surface: shareSurfaceForContainer(container),
+      root_id: shareRootIDForContainer(container),
+      parent_id: shareParentIDForContainer(container),
+    }),
+  })
+    .then(async (response) => {
+      if (!response.ok) return fallbackURL;
+      const data = await response.json().catch(() => null);
+      return data?.url ? String(data.url) : fallbackURL;
+    })
+    .catch(() => fallbackURL)
+    .then((shareURL) => {
+      if (trigger.isConnected) trigger.dataset.shareUrl = shareURL;
+      return shareURL;
+    });
+  preparedShareURLs.set(trigger, pending);
+  return pending;
+}
+
 function actionMenu(container, label, items) {
   const wrap = document.createElement("details");
   wrap.className = "ascii-action-menu";
@@ -807,6 +843,10 @@ function shareNoteButton(container) {
   item.type = "button";
   item.textContent = "[share]";
   item.dataset.noteMenuAction = "share";
+  const prepareShare = () => void prepareNoteShareURL(container, item);
+  item.addEventListener("pointerenter", prepareShare);
+  item.addEventListener("focus", prepareShare);
+  item.addEventListener("pointerdown", prepareShare);
   const href = replyThreadHref(container);
   if (!href || href === "#") item.disabled = true;
   return item;
@@ -983,43 +1023,24 @@ function handleNoteMenuAction(action, trigger, event) {
     event.stopPropagation();
     const href = replyThreadHref(container);
     if (!href || href === "#") return;
-    const noteID = noteIDForContainer(container);
     const title = container?.dataset?.asciiAuthor
       ? `${container.dataset.asciiAuthor} on ptxt`
       : document.title || "ptxt";
     const fallbackURL = new URL(href, window.location.origin).toString();
-    closeActionMenus();
-    async function runShare() {
-      let shareURL = fallbackURL;
-      if (noteID) {
-        const response = await fetchWithSession("/api/shares", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            note_id: noteID,
-            surface: shareSurfaceForContainer(container),
-            root_id: shareRootIDForContainer(container),
-            parent_id: shareParentIDForContainer(container),
-          }),
-        }).catch(() => null);
-        if (response?.ok) {
-          const data = await response.json().catch(() => null);
-          if (data?.url) shareURL = String(data.url);
-        }
-      }
-      if (typeof navigator.share !== "function") {
-        await copyText(shareURL, trigger);
-        return;
-      }
-      try {
-        await navigator.share({ title, url: shareURL });
-      } catch (error) {
-        if (error?.name !== "AbortError") {
-          await copyText(shareURL, trigger);
-        }
-      }
+    const shareURL = trigger.dataset.shareUrl || fallbackURL;
+    if (desktopModeEnabled() || typeof navigator.share !== "function") {
+      void copyText(shareURL, trigger);
+      return;
     }
-    void runShare();
+    try {
+      const sharing = navigator.share({ title, url: shareURL });
+      closeActionMenus();
+      void Promise.resolve(sharing).catch((error) => {
+        if (error?.name !== "AbortError") void copyText(shareURL, trigger);
+      });
+    } catch (error) {
+      if (error?.name !== "AbortError") void copyText(shareURL, trigger);
+    }
     return;
   }
   if (action === "view-reactions") {
@@ -1395,6 +1416,10 @@ function ensureImageViewer() {
       event.preventDefault();
       stepImageViewer(1);
     }
+  });
+  dialog.querySelector("[data-close-image-viewer]")?.addEventListener("click", (event) => {
+    event.preventDefault();
+    dialog.close();
   });
   dialog.querySelector("[data-image-viewer-prev]")?.addEventListener("click", (event) => {
     event.preventDefault();
@@ -2144,9 +2169,9 @@ function renderNote(container, width) {
   const isLong = allRows.length > collapsedNoteLines;
   const isExpanded = container.dataset.asciiExpanded === "true";
   const collapsing = isLong && !isExpanded;
-  const viewMoreInBody = collapsing && mobileActionsQuery.matches;
+  const viewMoreInBody = collapsing && (mobileActionsQuery.matches || hasMedia);
   const viewMoreInHeader =
-    collapsing && !mobileActionsQuery.matches && (hasReference || hasMediaItems);
+    collapsing && !mobileActionsQuery.matches && hasReference && !hasMedia;
   const congestedMobileFooter = mobileActionsQuery.matches && collapsing && hasMedia;
   const mediaLabel = mediaSummaryLabel(mediaItems, congestedMobileFooter);
   const replyLabel =

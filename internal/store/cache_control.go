@@ -194,16 +194,25 @@ func (s *Store) ClearCache(ctx context.Context, scope string) (CacheClearResult,
 	if err := s.RebuildProjections(ctx); err != nil {
 		return CacheClearResult{}, err
 	}
+	reclaimed := true
 	if err := s.ReclaimFreePages(ctx); err != nil {
 		result.Warning = "Cached data was cleared, but free disk pages could not be reclaimed."
-		return result, nil
+		reclaimed = false
 	}
 	// Databases created before incremental vacuum was enabled retain deleted
 	// pages in the file. A user-initiated clear is the right time to pay the
 	// one-off cost of rewriting that older database and return space to disk.
-	if ratio, err := s.FreelistRatio(ctx); err == nil && ratio >= 0.05 {
+	if ratio, err := s.FreelistRatio(ctx); reclaimed && err == nil && ratio >= 0.05 {
 		if err := s.VacuumFull(ctx); err != nil {
 			result.Warning = "Cached data was cleared, but the database file could not be compacted."
+		}
+	}
+	// A user-selected byte limit is a hard ceiling. Complete that reconciliation
+	// before reporting success so Settings never returns with SQLite still over
+	// the configured limit after a clear/compaction cycle.
+	if maxBytes, _ := s.DiskByteRetentionPolicy(); maxBytes > 0 && DBFileBytes(s.dbPath) >= maxBytes {
+		if _, err := s.PruneEventsToByteTarget(ctx); err != nil {
+			result.Warning = "Cached data was cleared, but SQLite is still over the configured cache limit."
 		}
 	}
 	return result, nil

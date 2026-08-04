@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("desktop media and quote cards keep view more in the header", async ({ page }) => {
+test("desktop media cards put view more between truncated text and media", async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/about");
 
@@ -48,20 +48,28 @@ test("desktop media and quote cards keep view more in the header", async ({ page
 
   const [media, quote, plain] = ids.map((id) => page.locator(`#note-${id}`));
 
-  for (const note of [media, quote]) {
-    const header = note.locator(":scope > .ascii-card > .ascii-line-feed-header");
-    const footer = note.locator(":scope > .ascii-card > .ascii-line").last();
-    await expect(header.getByRole("button", { name: "view more", exact: true })).toHaveCount(1);
-    await expect(footer.getByRole("button", { name: "view more", exact: true })).toHaveCount(0);
-  }
+  const mediaHeader = media.locator(":scope > .ascii-card > .ascii-line-feed-header");
+  const mediaBody = media.locator(":scope > .ascii-card > .note-content");
+  const mediaViewMore = mediaBody.getByRole("button", { name: "view more", exact: true });
+  const mediaGridRow = mediaBody.locator(":scope > .note-media-grid-row");
+  await expect(mediaHeader.getByRole("button", { name: "view more", exact: true })).toHaveCount(0);
+  await expect(mediaViewMore).toHaveCount(1);
+  await expect(mediaGridRow).toHaveCount(1);
+  expect(await mediaViewMore.evaluate((button) =>
+    Boolean(button.closest(".ascii-line-note-view-more")?.nextElementSibling?.matches(".note-media-grid-row")),
+  )).toBe(true);
+
+  const quoteHeader = quote.locator(":scope > .ascii-card > .ascii-line-feed-header");
+  const quoteFooter = quote.locator(":scope > .ascii-card > .ascii-line").last();
+  await expect(quoteHeader.getByRole("button", { name: "view more", exact: true })).toHaveCount(1);
+  await expect(quoteFooter.getByRole("button", { name: "view more", exact: true })).toHaveCount(0);
 
   const plainHeader = plain.locator(":scope > .ascii-card > .ascii-line-feed-header");
   const plainFooter = plain.locator(":scope > .ascii-card > .ascii-line").last();
   await expect(plainHeader.getByRole("button", { name: "view more", exact: true })).toHaveCount(0);
   await expect(plainFooter.getByRole("button", { name: "view more", exact: true })).toHaveCount(1);
 
-  const mediaHeader = media.locator(":scope > .ascii-card > .ascii-line-feed-header");
-  await mediaHeader.getByRole("button", { name: "view more", exact: true }).click();
+  await mediaViewMore.click();
   await expect(media).toContainText("MEDIA-END");
   const overflow = mediaHeader.locator("[data-ascii-action-menu-trigger]");
   await expect(overflow).toHaveText("[...]");

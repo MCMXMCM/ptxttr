@@ -641,12 +641,13 @@ func TestAsciiTemplatesExecute(t *testing.T) {
 		t.Fatalf("execute long media note template: %v", err)
 	}
 	longMediaHTML := longMediaNote.String()
-	if !strings.Contains(longMediaHTML, `ascii-line-feed-header ascii-ssr-desktop-only`) ||
-		!strings.Contains(longMediaHTML, `<button type="button" class="link-button">view more</button>+</span></span>`) {
-		t.Fatalf("long media note first paint did not put desktop view more in its header: %s", longMediaHTML)
+	viewMoreIndex := strings.Index(longMediaHTML, `ascii-line ascii-line-note-view-more">|        <button type="button" class="link-button">view more</button>`)
+	mediaGridIndex := strings.Index(longMediaHTML, `class="ascii-line note-image-boxed-row note-media-grid-row"`)
+	if viewMoreIndex < 0 || mediaGridIndex < 0 || viewMoreIndex >= mediaGridIndex {
+		t.Fatalf("long media note first paint did not put view more between truncated text and media: %s", longMediaHTML)
 	}
-	if strings.Contains(longMediaHTML, `ascii-ssr-desktop-only">+-- [△] 0 [▽] --- <button type="button" class="link-button">view more</button>`) {
-		t.Fatalf("long media note first paint left desktop view more in its footer: %s", longMediaHTML)
+	if strings.Contains(longMediaHTML, `ascii-line-feed-header ascii-ssr-desktop-only`) {
+		t.Fatalf("long media note first paint left desktop view more in its header: %s", longMediaHTML)
 	}
 	if !strings.Contains(longMediaHTML, `data-media-grid-signature="image:https://media.example.test/large.jpg"`) ||
 		!strings.Contains(longMediaHTML, `style="--note-media-image-aspect-ratio: 1200 / 800"`) ||

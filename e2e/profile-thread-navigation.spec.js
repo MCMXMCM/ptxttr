@@ -104,6 +104,45 @@ test.describe("profile note thread navigation", () => {
     }, ROOT_ID)).toBe(true);
   });
 
+  test("profile reply avatar stays bounded while its parent loads", async ({ page, request }) => {
+    const seed = await request.post(`/debug/seed-note?id=${"d".repeat(64)}&pubkey=${REPLY_AUTHOR_PK}`);
+    expect(seed.ok()).toBeTruthy();
+    await installRelayNativeE2E(page, {
+      events: buildThreadFixture(),
+      wotEnabled: false,
+      responseDelayMs: 400,
+    });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.goto(`/u/${REPLY_AUTHOR_PK}`);
+    await page.locator('label[for="user-tab-replies"]').click();
+
+    const replyCard = page.locator(`#user-panel-replies #note-${REPLY_ID}`);
+    await expect(replyCard).toBeVisible({ timeout: 30_000 });
+    await replyCard.evaluate((note) => {
+      const avatar = note.querySelector(":scope > pre .note-feed-avatar");
+      if (!(avatar instanceof HTMLElement)) throw new Error("Missing profile reply avatar");
+      const image = document.createElement("img");
+      image.alt = "";
+      image.src = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='500' height='500'%3E%3Crect width='500' height='500' fill='%23555'/%3E%3C/svg%3E";
+      avatar.replaceChildren(image);
+    });
+
+    await replyCard.locator(".note-content").click();
+
+    await expect(page).toHaveURL(new RegExp(`/thread/${ROOT_ID}\\?selected=${REPLY_ID}#note-${REPLY_ID}$`), {
+      timeout: 5_000,
+    });
+    await expect(page.locator("#thread-focus .thread-focus-parent--skeleton")).toBeVisible({ timeout: 1_000 });
+    const selectedAvatar = page.locator(`#thread-focus #note-${REPLY_ID} > .note-avatar img`);
+    await expect(selectedAvatar).toBeVisible({ timeout: 1_000 });
+    const avatarBox = await selectedAvatar.evaluate((image) => {
+      const rect = image.getBoundingClientRect();
+      return { width: rect.width, height: rect.height };
+    });
+    expect(avatarBox.width).toBeLessThanOrEqual(48);
+    expect(Math.abs(avatarBox.width - avatarBox.height)).toBeLessThanOrEqual(1);
+  });
+
   test("home click interrupts a slow thread navigation instead of getting stuck behind it", async ({ page, request }) => {
     const seed = await request.post(`/debug/seed-note?id=${ROOT_ID}&pubkey=${AUTHOR_PK}`);
     expect(seed.ok()).toBeTruthy();

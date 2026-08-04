@@ -442,6 +442,16 @@ func (s *Store) pruneOrphanProjectionRowsTx(ctx context.Context, tx *sql.Tx) err
 		`DELETE FROM note_stats WHERE note_id NOT IN (SELECT id FROM events)`,
 		`DELETE FROM thread_graph_cache WHERE root_id NOT IN (SELECT id FROM events)`,
 		`DELETE FROM relay_events WHERE event_id NOT IN (SELECT id FROM events)`,
+		`DELETE FROM note_reaction_latest WHERE note_id NOT IN (SELECT id FROM events) OR reaction_event_id NOT IN (SELECT id FROM events)`,
+		`DELETE FROM trending_cache WHERE note_id NOT IN (SELECT id FROM events)`,
+		`DELETE FROM profiles_cache WHERE profile_event_id NOT IN (SELECT id FROM events)`,
+		`DELETE FROM follow_edges WHERE follow_event_id NOT IN (SELECT id FROM events)`,
+		`DELETE FROM mute_list_pubkeys WHERE mute_list_event_id NOT IN (SELECT id FROM events)`,
+		`DELETE FROM relay_hints_cache WHERE relay_event_id NOT IN (SELECT id FROM events)`,
+		`DELETE FROM relay_hints_ranked WHERE relay_event_id NOT IN (SELECT id FROM events)`,
+		`DELETE FROM contact_relay_hints WHERE follow_event_id NOT IN (SELECT id FROM events)`,
+		`DELETE FROM event_pins WHERE event_id NOT IN (SELECT id FROM events)`,
+		`DELETE FROM hot_thread_pins WHERE root_id NOT IN (SELECT id FROM events)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := tx.ExecContext(ctx, stmt); err != nil {
@@ -496,7 +506,11 @@ func (s *Store) ReclaimFreePages(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `PRAGMA incremental_vacuum`); err != nil {
 		return err
 	}
-	return nil
+	// incremental_vacuum itself writes in WAL mode. Checkpoint again so the
+	// main-file truncation is visible before byte-budget code remeasures the
+	// database and decides whether a full VACUUM is necessary.
+	_, err := s.db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
+	return err
 }
 
 // VacuumFull rewrites the entire database file, returning all freelist pages
@@ -516,7 +530,11 @@ func (s *Store) VacuumFull(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `VACUUM`); err != nil {
 		return err
 	}
-	return nil
+	// VACUUM writes the rebuilt database through the WAL. Checkpoint once more
+	// so callers do not temporarily count both the compacted main file and a
+	// full-size WAL, and so the configured byte ceiling is measured accurately.
+	_, err := s.db.ExecContext(ctx, `PRAGMA wal_checkpoint(TRUNCATE)`)
+	return err
 }
 
 func (s *Store) Compact(ctx context.Context, maxEvents int) (int64, error) {
@@ -906,7 +924,17 @@ func (s *Store) EventSummariesByIDs(ctx context.Context, ids []string) (map[stri
 		copyEvent := event
 		out[event.ID] = &copyEvent
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) > 0 {
+		touchIDs := make([]string, 0, len(out))
+		for id := range out {
+			touchIDs = append(touchIDs, id)
+		}
+		s.touchEventAccess(ctx, touchIDs)
+	}
+	return out, nil
 }
 
 func (s *Store) RelaySources(ctx context.Context, eventID string) ([]string, error) {
@@ -935,7 +963,11 @@ func (s *Store) LatestReplaceable(ctx context.Context, pubkey string, kind int) 
 		}
 		return nil, err
 	}
-	return decodeEvent(raw)
+	event, err := decodeEvent(raw)
+	if err == nil {
+		s.touchEventAccess(ctx, []string{event.ID})
+	}
+	return event, err
 }
 
 // RecentByKinds returns the most recent events of the given kinds created
@@ -991,6 +1023,15 @@ func (s *Store) RecentSummariesByKinds(ctx context.Context, kinds []int, since i
 // oldest-first by insertion time (FIFO) or least-recently accessed (LRU),
 // depending on SetRetentionPolicy. Returns the number of events deleted.
 func (s *Store) PruneEvents(ctx context.Context, max int) (int64, error) {
+	return s.pruneEvents(ctx, max, true)
+}
+
+// pruneEvents is the common count and byte-budget eviction primitive. Normal
+// retention protects active pins and the newest replaceable event in each
+// slot. A hard byte budget may make a second pass with protect=false after it
+// has reclaimed pages and established that protected cache rows are all that
+// keep the database over the user-selected limit.
+func (s *Store) pruneEvents(ctx context.Context, max int, protect bool) (int64, error) {
 	if max <= 0 {
 		return 0, nil
 	}
@@ -1010,8 +1051,9 @@ func (s *Store) PruneEvents(ctx context.Context, max int) (int64, error) {
 	}
 	defer func() { _ = tx.Rollback() }()
 	orderBy := s.pruneOrderByClause()
-	result, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM events WHERE id IN (
-		SELECT id FROM events
+	protections := ""
+	if protect {
+		protections = `
 		WHERE NOT EXISTS (
 			SELECT 1 FROM event_pins ep WHERE ep.event_id = events.id AND ep.expires_at > unixepoch()
 		)
@@ -1022,9 +1064,13 @@ func (s *Store) PruneEvents(ctx context.Context, max int) (int64, error) {
 				WHERE newest.pubkey = events.pubkey AND newest.kind = events.kind
 				ORDER BY newest.created_at DESC, newest.id DESC LIMIT 1
 			)
-		)
+		)`
+	}
+	result, err := tx.ExecContext(ctx, fmt.Sprintf(`DELETE FROM events WHERE id IN (
+		SELECT id FROM events
+		%s
 		ORDER BY %s LIMIT ?
-	)`, orderBy), excess)
+)`, protections, orderBy), excess)
 	if err != nil {
 		return 0, err
 	}
@@ -1041,10 +1087,15 @@ func (s *Store) PruneEvents(ctx context.Context, max int) (int64, error) {
 		return 0, err
 	}
 	if deleted > 0 && s.sidecar != nil {
-		// note_stats rows for pruned events were removed in-tx; drop the
-		// reply-stat LRU so cached counts cannot outlive their underlying
-		// SQLite rows. Profiles / relay hints are unaffected by event prune.
-		s.sidecar.purgeReply()
+		if protect {
+			// Normal retention preserves the canonical profile and relay-list
+			// revisions, so only reply projections can become stale.
+			s.sidecar.purgeReply()
+		} else {
+			// Hard byte-budget fallback can remove those protected revisions;
+			// purge every read-through projection cache with its SQLite rows.
+			s.sidecar.purgeAll()
+		}
 	}
 	if deleted > 0 {
 		// Return freed pages to the OS where possible. This is a no-op on
@@ -1095,8 +1146,11 @@ func estimateBytePruneKeepEvents(totalEvents, currentBytes, targetBytes int64) i
 	return int(keep)
 }
 
-// PruneEventsToByteTarget deletes cold events until the event count is
-// estimated to fit the fixed byte budget. A subsequent vacuum reclaims pages.
+// PruneEventsToByteTarget deletes cold events and reclaims their SQLite pages
+// in the same maintenance run. Measuring only the physical file after DELETE
+// is not sufficient: on older databases it stays unchanged until VACUUM and
+// used to make every subsequent write launch another prune against the same
+// apparent overflow.
 func (s *Store) PruneEventsToByteTarget(ctx context.Context) (int64, error) {
 	if s == nil || s.db == nil {
 		return 0, nil
@@ -1109,16 +1163,83 @@ func (s *Store) PruneEventsToByteTarget(ctx context.Context) (int64, error) {
 	if currentBytes < maxBytes {
 		return 0, nil
 	}
-	var totalEvents int64
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events`).Scan(&totalEvents); err != nil {
+	// The WAL and already-free database pages are reclaimable without evicting
+	// any live cache entry. Account for those first so a checkpoint-sized burst
+	// cannot make the LRU discard useful events unnecessarily.
+	if err := s.ReclaimFreePages(ctx); err != nil {
 		return 0, err
 	}
-	keep := estimateBytePruneKeepEvents(totalEvents, currentBytes, targetBytes)
-	if keep >= int(totalEvents) {
+	currentBytes = DBFileBytes(s.dbPath)
+	if currentBytes < maxBytes {
 		return 0, nil
 	}
-	slog.Warn("db byte budget prune", "db_bytes", currentBytes, "threshold_bytes", maxBytes, "target_bytes", targetBytes, "events", totalEvents, "keep_events", keep)
-	return s.PruneEvents(ctx, keep)
+
+	const maxPasses = 8
+	var deletedTotal int64
+	for pass := 0; pass < maxPasses && currentBytes >= maxBytes; pass++ {
+		var totalEvents int64
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events`).Scan(&totalEvents); err != nil {
+			return deletedTotal, err
+		}
+		keep := estimateBytePruneKeepEvents(totalEvents, currentBytes, targetBytes)
+		if keep >= int(totalEvents) {
+			break
+		}
+		slog.Warn("db byte budget prune",
+			"db_bytes", currentBytes,
+			"threshold_bytes", maxBytes,
+			"target_bytes", targetBytes,
+			"events", totalEvents,
+			"keep_events", keep,
+			"pass", pass+1,
+		)
+
+		deleted, err := s.pruneEvents(ctx, keep, pass == 0)
+		if err != nil {
+			return deletedTotal, err
+		}
+		// If the first pass consisted entirely of protected replaceable or
+		// pinned cache rows, the byte limit still takes precedence.
+		if deleted == 0 && pass == 0 {
+			deleted, err = s.pruneEvents(ctx, keep, false)
+			if err != nil {
+				return deletedTotal, err
+			}
+		}
+		if deleted == 0 {
+			break
+		}
+		deletedTotal += deleted
+
+		// New databases use incremental auto-vacuum; older databases may not.
+		// Checkpoint first so WAL bytes and freed main-file pages are both
+		// reflected in the next measurement.
+		reclaimErr := s.ReclaimFreePages(ctx)
+		currentBytes = DBFileBytes(s.dbPath)
+		if currentBytes >= maxBytes {
+			// A full VACUUM is the compatibility path for databases created
+			// before auto_vacuum=INCREMENTAL. Doing it here prevents repeated
+			// write-triggered DELETE passes from evicting the whole cache while
+			// the physical file remains unchanged.
+			if err := s.VacuumFull(ctx); err != nil {
+				if reclaimErr != nil {
+					return deletedTotal, fmt.Errorf("reclaim free pages: %v; vacuum: %w", reclaimErr, err)
+				}
+				return deletedTotal, err
+			}
+			currentBytes = DBFileBytes(s.dbPath)
+		} else if reclaimErr != nil {
+			return deletedTotal, reclaimErr
+		}
+	}
+
+	if currentBytes >= maxBytes {
+		return deletedTotal, fmt.Errorf("sqlite cache remains over byte budget after pruning: %d >= %d", currentBytes, maxBytes)
+	}
+	if deletedTotal > 0 {
+		slog.Info("db byte budget satisfied", "db_bytes", currentBytes, "threshold_bytes", maxBytes, "deleted_events", deletedTotal)
+	}
+	return deletedTotal, nil
 }
 
 // PruneEventsToDiskTarget deletes least-recently-used or oldest events until
@@ -1424,7 +1545,17 @@ func (s *Store) LatestReplaceableByPubkeys(ctx context.Context, pubkeys []string
 		}
 		out[pubkey] = event
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) > 0 {
+		ids := make([]string, 0, len(out))
+		for _, event := range out {
+			ids = append(ids, event.ID)
+		}
+		s.touchEventAccess(ctx, ids)
+	}
+	return out, nil
 }
 
 func (s *Store) LatestReplaceablesByKind(ctx context.Context, kind int) ([]nostrx.Event, error) {

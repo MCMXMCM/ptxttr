@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"ptxt-nstr/internal/nostrx"
@@ -79,5 +81,43 @@ func TestClearCacheRejectsUnknownScope(t *testing.T) {
 	st := openTestStore(t, context.Background())
 	if _, err := st.ClearCache(context.Background(), "accounts"); err == nil {
 		t.Fatal("expected unknown scope error")
+	}
+}
+
+func TestClearCacheFinishesUnderConfiguredByteLimit(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, ctx)
+	st.SetRetentionPolicy(true)
+	if _, err := st.db.ExecContext(ctx, `PRAGMA auto_vacuum=NONE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.VacuumFull(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	note := event("clear-budget-note", "alice", 1, nostrx.KindTextNote, nil)
+	note.Content = "clear me"
+	if err := st.SaveEvent(ctx, note); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 10; i++ {
+		ev := event(fmt.Sprintf("clear-budget-profile-%02d", i), fmt.Sprintf("author-%02d", i), int64(i+2), nostrx.KindProfileMetadata, nil)
+		ev.Content = fmt.Sprintf(`{"name":"profile-%02d","about":"%s"}`, i, strings.Repeat(string(rune('a'+i)), 128<<10))
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.ReclaimFreePages(ctx); err != nil {
+		t.Fatal(err)
+	}
+	before := DBFileBytes(st.dbPath)
+	maxBytes := before * 3 / 4
+	st.SetDiskByteRetentionPolicy(maxBytes, maxBytes*9/10)
+
+	if _, err := st.ClearCache(ctx, "notes"); err != nil {
+		t.Fatal(err)
+	}
+	if after := DBFileBytes(st.dbPath); after >= maxBytes {
+		t.Fatalf("database bytes after clear = %d, want below configured max %d (before %d)", after, maxBytes, before)
 	}
 }
