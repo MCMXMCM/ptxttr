@@ -48,6 +48,7 @@ function trackpadHistoryAction(gesture, input, now = Date.now()) {
 }
 
 if (typeof window !== "undefined") {
+  const { ipcRenderer } = require("electron");
   const gesture = createTrackpadHistoryGesture();
   window.addEventListener("wheel", (event) => {
     const action = trackpadHistoryAction(gesture, event);
@@ -57,6 +58,17 @@ if (typeof window !== "undefined") {
     if (action === "back") window.history.back();
     if (action === "forward") window.history.forward();
   }, { capture: true, passive: false });
+
+  window.addEventListener("DOMContentLoaded", () => {
+    if (window.location.protocol !== "ptxt-startup:") return;
+    document.addEventListener("click", (event) => {
+      const control = event.target.closest?.("[data-ptxt-action]");
+      const action = control?.dataset.ptxtAction;
+      if (!action) return;
+      event.preventDefault();
+      ipcRenderer.send("ptxt-startup-action", action);
+    }, { capture: true });
+  });
 }
 
 module.exports = { createTrackpadHistoryGesture, trackpadHistoryAction };

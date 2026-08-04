@@ -16,6 +16,7 @@ async function launch(userData, extraEnv = {}) {
     env: {
       ...process.env,
       PTXT_ELECTRON_USER_DATA: userData,
+      PTXT_ELECTRON_LOG_DIR: path.join(userData, "logs"),
       PTXT_DESKTOP_SERVER_BINARY: path.join(root, ".tmp", "desktop", "bin", "ptxt-nstr-server"),
       PTXT_REQUEST_TIMEOUT_MS: "1000",
       ...extraEnv,
@@ -51,6 +52,42 @@ async function portIsAvailable() {
     probe.once("error", () => resolve(false));
     probe.listen(24787, "127.0.0.1", () => probe.close(() => resolve(true)));
   });
+}
+
+async function waitForPath(target, timeout = 10_000) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(target)) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`timed out waiting for ${target}`);
+}
+
+function writeSlowSidecar(userData) {
+  const binary = path.join(userData, "slow-sidecar.cjs");
+  const rootRequestMarker = path.join(userData, "root-requested");
+  fs.writeFileSync(binary, [
+    "#!/usr/bin/env node",
+    'const fs = require("node:fs");',
+    'const http = require("node:http");',
+    `const rootRequestMarker = ${JSON.stringify(rootRequestMarker)};`,
+    'const port = Number(process.env.PTXT_ADDR.split(":").pop());',
+    "const readyAt = Date.now() + 1000;",
+    "const server = http.createServer((request, response) => {",
+    '  if (request.url === "/healthz") { response.writeHead(Date.now() >= readyAt ? 200 : 503); response.end("ok"); return; }',
+    '  if (request.url === "/") {',
+    '    fs.writeFileSync(rootRequestMarker, "requested");',
+    '    setTimeout(() => { response.writeHead(200, { "Content-Type": "text/html" }); response.end("<!doctype html><title>Plain Text Nostr</title><main>Ready</main>"); }, 1500);',
+    "    return;",
+    "  }",
+    '  response.writeHead(request.url === "/__ptxt/desktop/activity" ? 204 : 200);',
+    "  response.end();",
+    "});",
+    'server.listen(port, "127.0.0.1");',
+    'for (const signal of ["SIGINT", "SIGTERM"]) process.on(signal, () => process.exit(0));',
+    "",
+  ].join("\n"), { mode: 0o755 });
+  return { binary, rootRequestMarker };
 }
 
 async function measureWideTreeLayout(page) {
@@ -262,6 +299,16 @@ test("port collision stays on the diagnostic startup screen", { timeout: 30_000 
   assert.equal(await lightIcon.evaluate((icon) => getComputedStyle(icon).display), "none");
   assert.equal(await darkIcon.evaluate((icon) => getComputedStyle(icon).display), "block");
   assert.match(await page.textContent("body"), /Retry.*Open Logs.*Quit/s);
+  await page.evaluate(() => { document.body.dataset.retryProbe = "before"; });
+  await page.getByRole("button", { name: "Retry" }).click();
+  await page.waitForFunction(
+    () => document.body.dataset.retryProbe !== "before"
+      && document.getElementById("status")?.textContent.includes("Port 24787 is already in use."),
+  );
+  assert.doesNotMatch(
+    fs.readFileSync(path.join(userData, "logs", "desktop.log"), "utf8"),
+    /ERR_ABORTED.*ptxt-action:\/\/retry/,
+  );
 });
 
 test("missing sidecar stays on a diagnostic screen", { timeout: 20_000 }, async (t) => {
@@ -276,6 +323,50 @@ test("missing sidecar stays on a diagnostic screen", { timeout: 20_000 }, async 
   const page = await electronApp.firstWindow();
   await page.waitForSelector("text=Local server is missing:");
   assert.match(await page.textContent("body"), /Retry.*Open Logs.*Quit/s);
+});
+
+test("startup actions do not abort a slow initial application navigation", { timeout: 45_000 }, async (t) => {
+  const userData = fs.mkdtempSync(path.join(os.tmpdir(), "ptxttr-slow-startup-"));
+  t.after(() => removeTree(userData));
+  const { binary, rootRequestMarker } = writeSlowSidecar(userData);
+  const electronApp = await step(
+    "slow-startup Electron launch",
+    launch(userData, { PTXT_DESKTOP_SERVER_BINARY: binary }),
+    30_000,
+  );
+  t.after(async () => closeElectron(electronApp).catch(() => {}));
+  const page = await electronApp.firstWindow();
+  await page.waitForURL("ptxt-startup://app/index.html");
+
+  const retry = page.locator('[data-ptxt-action="retry"]');
+  assert.equal(await retry.getAttribute("type"), "button");
+  assert.equal(await page.locator('[data-ptxt-action="logs"]').getAttribute("type"), "button");
+  assert.equal(await page.locator('[data-ptxt-action="quit"]').getAttribute("type"), "button");
+  const retryBox = await retry.boundingBox();
+  assert.ok(retryBox);
+  await waitForPath(rootRequestMarker);
+  await electronApp.evaluate(({ BrowserWindow }, point) => {
+    const contents = BrowserWindow.getAllWindows()[0].webContents;
+    contents.sendInputEvent({ type: "mouseDown", button: "left", clickCount: 1, ...point });
+    contents.sendInputEvent({ type: "mouseUp", button: "left", clickCount: 1, ...point });
+  }, {
+    x: Math.round(retryBox.x + retryBox.width / 2),
+    y: Math.round(retryBox.y + retryBox.height / 2),
+  });
+
+  try {
+    await step("home after startup action", page.waitForURL(`${origin}/`), 10_000);
+  } catch (error) {
+    const status = await page.locator("#status").textContent().catch(() => "unavailable");
+    const desktopLogPath = path.join(userData, "logs", "desktop.log");
+    const desktopLog = fs.existsSync(desktopLogPath) ? fs.readFileSync(desktopLogPath, "utf8") : "missing";
+    error.message += `\nurl=${page.url()}\nstatus=${status}\nlog=${desktopLog}`;
+    throw error;
+  }
+  assert.equal(await page.locator("main").textContent(), "Ready");
+  assert.equal(await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 1);
+  const desktopLog = fs.readFileSync(path.join(userData, "logs", "desktop.log"), "utf8");
+  assert.doesNotMatch(desktopLog, /ERR_ABORTED.*ptxt-action:\/\/retry/);
 });
 
 test("restart reuses fresh Electron state without importing an older app directory", { timeout: 90_000 }, async (t) => {

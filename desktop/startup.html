@@ -29,8 +29,9 @@
       h1 { font-size: 1.35rem; font-weight: 650; margin: 0; }
       p { color: color-mix(in srgb, CanvasText 70%, transparent); line-height: 1.5; }
       nav { display: flex; flex-wrap: wrap; gap: .65rem; justify-content: center; margin-top: 1.5rem; }
-      a { border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); border-radius: .5rem; color: CanvasText; padding: .55rem .85rem; text-decoration: none; }
-      a:first-child { background: AccentColor; border-color: AccentColor; color: AccentColorText; }
+      button { background: transparent; border: 1px solid color-mix(in srgb, CanvasText 25%, transparent); border-radius: .5rem; color: CanvasText; cursor: pointer; font: inherit; padding: .55rem .85rem; }
+      button:first-child { background: AccentColor; border-color: AccentColor; color: AccentColorText; }
+      button:disabled { cursor: progress; opacity: .55; }
     </style>
   </head>
   <body>
@@ -42,9 +43,9 @@
         <h1>Plain Text Nostr</h1>
         <p id="status">The local server is starting…</p>
         <nav>
-          <a href="ptxt-action://retry">Retry</a>
-          <a href="ptxt-action://logs">Open Logs</a>
-          <a href="ptxt-action://quit">Quit</a>
+          <button type="button" data-ptxt-action="retry">Retry</button>
+          <button type="button" data-ptxt-action="logs">Open Logs</button>
+          <button type="button" data-ptxt-action="quit">Quit</button>
         </nav>
       </div>
     </main>

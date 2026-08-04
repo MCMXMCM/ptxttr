@@ -2,6 +2,7 @@ import {
   app,
   BrowserWindow,
   clipboard,
+  ipcMain,
   Menu,
   nativeImage,
   powerMonitor,
@@ -128,6 +129,7 @@ if (!hasSingleInstanceLock) {
   enableMacOSHistorySwipeTracking();
   appSession = session.fromPartition("persist:ptxttr", { cache: true });
   installStartupProtocol(appSession);
+  installStartupActions();
   installPermissionPolicy(appSession);
   installMenu();
   installPowerPolicy();
@@ -241,6 +243,7 @@ async function restartSidecar(win = BrowserWindow.getFocusedWindow()) {
     await startSidecar();
     await waitForReady();
 		await installLoopbackSession();
+    await setStartupActionsEnabled(win, false);
     await win?.loadURL(`${origin}/`);
     await updateActivity();
   } catch (error) {
@@ -401,6 +404,15 @@ function installWindowPolicy(win) {
   win.on("closed", () => windows.delete(win));
 }
 
+function installStartupActions() {
+  ipcMain.on("ptxt-startup-action", (event, action) => {
+    if (event.senderFrame?.url !== "ptxt-startup://app/index.html") return;
+    if (!new Set(["retry", "logs", "quit"]).has(action)) return;
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win) handleAction(action, win);
+  });
+}
+
 function showContextMenu(win, params) {
   const contents = win.webContents;
   const template = [];
@@ -485,6 +497,14 @@ async function showStartup(win, status) {
   await win.loadURL("ptxt-startup://app/index.html");
   await win.webContents.executeJavaScript(
     `document.getElementById("status").textContent = ${JSON.stringify(startupStatus)}`,
+    true,
+  );
+}
+
+async function setStartupActionsEnabled(win, enabled) {
+  if (!win || win.isDestroyed() || win.webContents.getURL() !== "ptxt-startup://app/index.html") return;
+  await win.webContents.executeJavaScript(
+    `for (const control of document.querySelectorAll("[data-ptxt-action]")) control.disabled = ${!enabled}`,
     true,
   );
 }
