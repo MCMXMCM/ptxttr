@@ -135,11 +135,10 @@ func (s *Server) appShellBootstrapJSON(r *http.Request, base BasePageData) templ
 			"browserExtensionSigner": capabilities.BrowserExtensionSigner,
 			"hostedGuestAdmission":   capabilities.HostedGuestAdmission,
 			"documentNavigation":     true,
-			"indexedDb":              true,
+			"indexedDb":              !capabilities.LocalFirst,
 			"browserWrites":          true,
-			// A desktop package has no production relay cache behind its
-			// loopback origin. Route hydration must therefore fall back to the
-			// browser's selected relays when the local store is empty or partial.
+			// Desktop relay I/O is owned by the loopback sidecar. These flags only
+			// describe renderer-native relay transport and remain disabled there.
 			"directRelayReads":         capabilities.DirectRelayReads,
 			"relayNativeRoutesPrimary": capabilities.RelayNativeRoutesPrimary,
 			"sharePreviewWarm":         true,
@@ -206,7 +205,7 @@ func (s *Server) renderAppShell(w http.ResponseWriter, r *http.Request, title, a
 }
 
 func (s *Server) renderAppShellWithBase(w http.ResponseWriter, r *http.Request, base BasePageData) {
-	setAppShellCache(w, r)
+	s.setAppShellCache(w, r)
 	s.render(w, "app_shell", AppShellPageData{
 		BasePageData:     base,
 		RouteContextJSON: appShellRouteContextJSON(r),
@@ -319,8 +318,14 @@ func (s *Server) renderTemplateHTML(name string, data any) template.HTML {
 	return template.HTML(buf.String())
 }
 
-func setAppShellCache(w http.ResponseWriter, r *http.Request) {
+func (s *Server) setAppShellCache(w http.ResponseWriter, r *http.Request) {
 	if w == nil {
+		return
+	}
+	if s != nil && s.runtimeCapabilities().DesktopShell {
+		// A loopback document has no shared cache in front of it. Keeping the
+		// hosted cache policy here only creates stale local renders after writes.
+		w.Header().Set("Cache-Control", "private, no-store")
 		return
 	}
 	if appShellRequestIsPersonalized(r) {

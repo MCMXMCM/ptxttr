@@ -218,22 +218,13 @@ async function prepareRecentFeedRefresh(url) {
     if (sort !== "recent" || !currentHomeFeedMatches(url)) return null;
     const top = feedTopCursor(root());
     const visibleIds = collectVisibleFeedNoteIds(root(), "#feed[data-feed]");
-    const {
-      fetchNewerHomeFeedNotes,
-      syncNewerHomeFeedFromRelays,
-    } = await import("./feed-service.js");
-    await syncNewerHomeFeedFromRelays({
-      viewerPubkey: normalizedPubkey(),
-      since: top.cursor,
-      sort,
-    });
+    const { fetchNewerHomeFeedNotes } = await import("./feed-service.js");
     const events = await fetchNewerHomeFeedNotes({
       viewerPubkey: normalizedPubkey(),
       since: top.cursor,
       sinceID: top.cursorID,
       sort,
       visibleIds,
-      skipSync: true,
     });
     if (!events.length || !currentHomeFeedMatches(url)) {
       pendingRecentFeedRefresh = null;

@@ -118,13 +118,14 @@ export function readAppBootstrap() {
     route: readRouteContext(),
     features: {
       ...DEFAULT_BOOTSTRAP.features,
-	  localFirst: desktopDocumentMode(),
-	  desktopShell: desktopDocumentMode(),
-	  storageControls: desktopDocumentMode(),
-	  browserExtensionSigner: !desktopDocumentMode(),
-	  hostedGuestAdmission: !desktopDocumentMode(),
-      directRelayReads: desktopDocumentMode(),
-      relayNativeRoutesPrimary: desktopDocumentMode(),
+      localFirst: desktopDocumentMode(),
+      desktopShell: desktopDocumentMode(),
+      storageControls: desktopDocumentMode(),
+      browserExtensionSigner: !desktopDocumentMode(),
+      hostedGuestAdmission: !desktopDocumentMode(),
+      indexedDb: !desktopDocumentMode(),
+      directRelayReads: false,
+      relayNativeRoutesPrimary: false,
     },
   });
 }
@@ -151,11 +152,12 @@ export function appFeatures() {
     ...bootstrap.features,
     localFirst: desktop,
     desktopShell: desktop,
-    directRelayReads: desktop,
-    relayNativeRoutesPrimary: desktop,
+    directRelayReads: false,
+    relayNativeRoutesPrimary: false,
     storageControls: desktop,
     browserExtensionSigner: !desktop,
     hostedGuestAdmission: !desktop,
+    indexedDb: !desktop,
   };
 }
 

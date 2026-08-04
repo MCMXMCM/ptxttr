@@ -56,7 +56,7 @@ func (s *Server) renderFeedRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var data FeedPageData
-	if deferGuestLoggedOutFeedFirstPage(req) {
+	if s.shouldDeferGuestLoggedOutFeedFirstPage(req) {
 		data = s.homeFeedShellPageData(r.Context(), req)
 		if len(data.Feed) == 0 {
 			s.scheduleGuestFeedFragmentWarm(req)

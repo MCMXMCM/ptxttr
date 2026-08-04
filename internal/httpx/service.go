@@ -649,7 +649,7 @@ func (s *Server) feedItemsData(ctx context.Context, req feedRequest) FeedPageDat
 		if _, err := nostrx.DecodeIdentifier(req.Pubkey); err == nil {
 			if data, ok := s.tryLoadFeedPageFromDurableSnapshots(ctx, req, false); ok {
 				s.scheduleFeedSnapshotPersonalizedRebuild(req)
-				if deferGuestLoggedOutFeedFirstPage(req) {
+				if s.shouldDeferGuestLoggedOutFeedFirstPage(req) {
 					s.hydrateFeedStats(ctx, &data, data.UserPubKey)
 				}
 				return data
@@ -658,7 +658,7 @@ func (s *Server) feedItemsData(ctx context.Context, req feedRequest) FeedPageDat
 		// Canonical logged-out guest first fragment: prefer durable snapshots,
 		// then assemble live on the request path when the snapshot is cold so
 		// ?fragment=1 does not return an empty body (which leaves the loader up).
-		if deferGuestLoggedOutFeedFirstPage(req) && s.isGuestCanonicalSnapshotTarget(req) {
+		if s.shouldDeferGuestLoggedOutFeedFirstPage(req) && s.isGuestCanonicalSnapshotTarget(req) {
 			sm := normalizeFeedSort(req.SortMode)
 			data := s.feedHeadingData(req)
 			if sm == feedSortTrend24h || sm == feedSortTrend7d {
@@ -689,7 +689,7 @@ func (s *Server) feedItemsData(ctx context.Context, req feedRequest) FeedPageDat
 		}
 	}
 	o := feedPageDataOptions{}
-	if deferGuestLoggedOutFeedFirstPage(req) && normalizeFeedSort(req.SortMode) == feedSortRecent {
+	if s.shouldDeferGuestLoggedOutFeedFirstPage(req) && normalizeFeedSort(req.SortMode) == feedSortRecent {
 		o.lightStatsOnly = true
 	}
 	data := s.feedPageDataEx(ctx, req, false, o)
@@ -1744,11 +1744,15 @@ func (s *Server) refreshCached(ctx context.Context, scope, key string, ttl time.
 }
 
 func (s *Server) refreshAuthor(ctx context.Context, pubkey string, relays []string) {
+	s.refreshAuthorWithTTL(ctx, pubkey, relays, 10*time.Minute)
+}
+
+func (s *Server) refreshAuthorWithTTL(ctx context.Context, pubkey string, relays []string, ttl time.Duration) {
 	authorRelays := s.authorMetadataRelays(ctx, pubkey, relays)
 	if s.nostr != nil {
 		authorRelays = s.nostr.FilterAvailableRelays(authorRelays)
 	}
-	result := s.refreshCached(ctx, "author", pubkey, 10*time.Minute, authorRelays, nostrx.Query{
+	result := s.refreshCached(ctx, "author", pubkey, positiveDuration(ttl, 10*time.Minute), authorRelays, nostrx.Query{
 		Authors: []string{pubkey},
 		Kinds: []int{
 			nostrx.KindProfileMetadata,
@@ -1853,7 +1857,22 @@ func (s *Server) warmFeedEntities(events []nostrx.Event, relays []string) {
 		eventIDs = append(eventIDs, event.ID)
 	}
 	s.warmAuthors(trimWarmStrings(pubkeys, maxWarmFeedAuthors), relays)
-	s.warmThread(trimWarmStrings(eventIDs, maxWarmFeedThreads), relays)
+	ids := trimWarmStrings(eventIDs, maxWarmFeedThreads)
+	if s.runtimeCapabilities().DesktopShell && s.warmer != nil {
+		for _, id := range limitedStrings(ids, 12) {
+			s.warmer.enqueue(warmJob{
+				key:      "threadMaterialize:" + id,
+				kind:     "threadMaterialize",
+				eventIDs: []string{id},
+				relays:   append([]string(nil), relays...),
+			})
+		}
+		if len(ids) > 12 {
+			s.warmThread(ids[12:], relays)
+		}
+		return
+	}
+	s.warmThread(ids, relays)
 }
 
 func mapEvents(byID map[string]nostrx.Event) []nostrx.Event {
@@ -2013,7 +2032,7 @@ func (s *Server) referencedEventsFor(ctx context.Context, events []nostrx.Event,
 		}
 		out[id] = *event
 	}
-	mergeEmbeddedRepostReferences(out, events)
+	s.mergeEmbeddedRepostReferences(ctx, out, events)
 	return out
 }
 
@@ -2031,16 +2050,16 @@ func (s *Server) referencedEventsForFromStore(ctx context.Context, events []nost
 		}
 		out[id] = *event
 	}
-	mergeEmbeddedRepostReferences(out, events)
+	s.mergeEmbeddedRepostReferences(ctx, out, events)
 	return out
 }
 
-func mergeEmbeddedRepostReferences(out map[string]nostrx.Event, events []nostrx.Event) {
+func (s *Server) mergeEmbeddedRepostReferences(ctx context.Context, out map[string]nostrx.Event, events []nostrx.Event) {
 	for _, event := range events {
 		if event.Kind != nostrx.KindRepost {
 			continue
 		}
-		refID, _ := referencedEventRef(event)
+		refID, relayHint := referencedEventRef(event)
 		refID = nostrx.CanonicalHex64(strings.TrimSpace(refID))
 		if refID == "" {
 			continue
@@ -2048,9 +2067,26 @@ func mergeEmbeddedRepostReferences(out map[string]nostrx.Event, events []nostrx.
 		if _, ok := out[refID]; ok {
 			continue
 		}
-		if embedded, ok := nostrx.ParseEmbeddedRepost(event.Content, refID); ok {
-			out[refID] = embedded
+		embedded, ok := nostrx.ParseEmbeddedRepost(event.Content, refID)
+		if !ok {
+			continue
 		}
+		if relayHint != "" {
+			embedded.RelayURL = relayHint
+		} else if event.RelayURL != "" {
+			embedded.RelayURL = event.RelayURL
+		}
+		out[refID] = embedded
+
+		// A NIP-18 repost may be the only relay response that contains the
+		// original note. Rendering used to consume that embedded event only
+		// from this request-local map, so clicking the visible reference could
+		// immediately miss in the thread cache. Promote signed embedded events
+		// to the durable store just like events fetched by ID.
+		if s == nil || s.store == nil || nostrx.ValidateSignedEvent(embedded) != nil {
+			continue
+		}
+		_ = s.store.SaveEvent(ctx, embedded)
 	}
 }
 

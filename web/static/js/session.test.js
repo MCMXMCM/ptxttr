@@ -109,6 +109,27 @@ beforeEach(() => {
 });
 
 describe("session signing account persistence", () => {
+  it("does not announce an unchanged session twice", () => {
+    const { session } = makeSigningSession(100);
+    const announced = [];
+    const previousDispatch = window.dispatchEvent;
+    window.dispatchEvent = (event) => {
+      if (event.type === "ptxt:session") announced.push(event.detail);
+      return true;
+    };
+    try {
+      setSession(session);
+      setSession({ ...session });
+      setSession({ ...session, profileLabel: "Local Author" });
+      setSession({ ...session, profileLabel: "Local Author" });
+    } finally {
+      window.dispatchEvent = previousDispatch;
+    }
+
+    assert.equal(announced.length, 2);
+    assert.equal(announced[1].profileLabel, "Local Author");
+  });
+
   it("adds Plain Text Nostr client metadata to signed publish drafts", async () => {
     const { session, nsec } = makeSigningSession(99);
     persistSigningAccount(session, nsec);

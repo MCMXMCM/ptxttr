@@ -26,7 +26,7 @@ The app uses bundle ID `com.ptxttr.desktop` and stores fresh state under:
 
 ```text
 ~/Library/Application Support/Plain Text Nostr/
-├── IndexedDB, Chromium cache, accounts, and preferences
+├── Chromium cache, accounts, and preferences (no desktop event database)
 └── local/ptxt-nstr.sqlite
 ```
 
@@ -46,19 +46,19 @@ Renderers use Chromium sandboxing with Node integration disabled, context isolat
 
 ## Local-first behavior
 
-Desktop mode is selected by an explicit bootstrap capability contract; the UI does not infer Electron from its user agent. It enables direct relay reads and writes, local signing accounts, relay selection, web-of-trust depth 1–3, follow-graph fallback, storage reporting, and scoped cache clearing.
+Desktop mode is selected by an explicit bootstrap capability contract; the UI does not infer Electron from its user agent. Chromium signs events and renders the UI, while the authenticated Go sidecar owns relay reads, relay writes, and durable SQLite state. Desktop also enables local signing accounts, relay selection, web-of-trust depth 1–3, storage reporting, and scoped cache clearing.
 
 Hosted traffic shielding, guest admission, anonymous cache-only behavior, CDN policies, and per-IP cost throttles are bypassed in desktop mode. Input validation, body limits, signature verification, relay timeouts, fan-out limits, backoff, CSP, same-origin checks, and the process-wide relay concurrency bound remain active.
 
 Desktop defaults are balanced for a modern local machine:
 
 - SQLite cache: user-configurable in Settings, defaulting to 2 GiB with least-recently-used pruning toward 90%.
-- Browser event cache: 20,000 records and 96 MiB.
-- Process-wide relay operations: 16.
-- Warm workers: 2; queue capacity: 128.
+- No renderer event cache; Chromium keeps only normal HTTP assets and UI/account preferences.
+- Process-wide relay operations: 12.
+- Maintenance warm workers: 1; queue capacity: 64. A separate one-worker interactive intent lane is reserved for hover, focus, and pointer navigation.
 - Go memory limit: 1 GiB.
 
-The cache preserves pinned dependencies and the newest metadata, follow-list, and relay-list events ahead of cold notes. Background hydration, viewer-graph, trending, and recent-note work is bounded, coalesced behind foreground traffic, and paused while every tab is minimized or macOS is suspended.
+SQLite preserves pinned dependencies and the newest metadata, follow-list, and relay-list events ahead of cold notes. Desktop enables the signed-in viewer crawler and hydration sweeper while keeping seed, guest, global hot-feed, and trending crawlers off. Direct follows are checked every 30 seconds in the foreground, degree-two and bounded degree-three cohorts use slower durable schedules, and minimized windows retain a reduced five-minute direct-follow pass. Feed rendering queues likely threads for durable server-side materialization; coherent stored graphs render immediately with stale-while-revalidate relay work after the response.
 
 Settings shows SQLite and Chromium usage, lets the user change the persistent SQLite cache limit, and provides scoped clearing for note data, metadata, user data, or all cache without clearing signing accounts and app preferences.
 
@@ -71,14 +71,24 @@ The desktop sidecar honors the normal `PTXT_*` environment variables. Useful loc
 | `PTXT_DB_MAX_BYTES` | `2147483648` | Initial SQLite + WAL/SHM byte budget. The desktop Settings preference takes precedence after the user saves a limit. |
 | `PTXT_DB_PRUNE_TARGET_BYTES` | `1932735283` | Target after byte-budget pruning. |
 | `PTXT_EVENT_RETENTION` | `0` | Optional event-count ceiling; `0` disables the count limit. |
-| `PTXT_RELAY_MAX_OUTBOUND_CONNS` | `16` | Process-wide outbound relay operations. |
-| `PTXT_WARM_WORKERS` | `2` | Low-priority warm worker count. |
-| `PTXT_WARM_QUEUE_CAPACITY` | `128` | Coalesced warm queue capacity. |
+| `PTXT_RELAY_MAX_OUTBOUND_CONNS` | `12` | Process-wide outbound relay operations. |
+| `PTXT_WARM_WORKERS` | `1` | On-demand warm worker count. Desktop currently clamps this to one. |
+| `PTXT_WARM_QUEUE_CAPACITY` | `64` | Bounded on-demand warm queue capacity. |
+| `PTXT_HYDRATION_ENABLED` | `true` | Durable projection hydration. Retained as an emergency kill switch. |
+| `PTXT_VIEWER_CRAWLER_ENABLED` | `true` | Signed-in follow-graph synchronization. Retained as an emergency kill switch. |
+| `PTXT_VIEWER_CRAWLER_INTERVAL` | `30s` | Foreground direct-follow crawler tick. |
+| `PTXT_VIEWER_CRAWLER_DEGREE2_INTERVAL` | `5m` | Degree-two note and graph refresh interval. |
+| `PTXT_VIEWER_CRAWLER_DEGREE3_INTERVAL` | `30m` | Bounded degree-three candidate refresh interval. |
+| `PTXT_VIEWER_CRAWLER_REDUCED_INTERVAL` | `5m` | Minimized-window direct-follow refresh interval. |
+| `PTXT_VIEWER_CRAWLER_DIRECT_METADATA_INTERVAL` | `15m` | Direct-follow kind-3 and relay-list metadata refresh interval. |
+| `PTXT_VIEWER_CRAWLER_DEGREE2_METADATA_INTERVAL` | `6h` | Degree-two metadata refresh interval. |
+| `PTXT_VIEWER_CRAWLER_DEGREE3_METADATA_INTERVAL` | `24h` | Degree-three metadata refresh interval. |
+| `PTXT_VIEWER_CRAWLER_PROFILE_INTERVAL` | `6h` | Missing or stale profile refresh interval. |
 | `GOMEMLIMIT` | `1GiB` | Go runtime memory limit override. |
 | `PTXT_MEMORY_LIMIT_BYTES` | `1073741824` | Decimal-byte override when `GOMEMLIMIT` is unset. |
 | `PTXT_DESKTOP_DATA_DIR` | `…/Plain Text Nostr/local` | Test/development-only local SQLite directory override. |
 
-`PTXT_DESKTOP_MODE` and `PTXT_DESKTOP_ACTIVITY_TOKEN` are shell-owned. Do not enable desktop mode on a publicly reachable server, and never expose the per-launch activity token to web content.
+`PTXT_DESKTOP_MODE` and `PTXT_DESKTOP_SESSION_TOKEN` are shell-owned. The desktop entry point refuses to start without the per-launch session token. Do not enable desktop mode on a publicly reachable server, and never expose that token to page JavaScript.
 
 ## CLI server
 
@@ -102,7 +112,7 @@ Open `http://127.0.0.1:8080` unless `PTXT_ADDR` is changed. CLI defaults keep SQ
 - `internal/nostrx` — validated Nostr events and bounded websocket relay fan-out.
 - `internal/templates` and `web/static` — the shared web experience.
 
-The browser talks only to the loopback Go origin. The Go server and browser relay layer fetch from selected Nostr relays, validate events, persist local projections, and render from local cache first. Direct relay paths fill gaps when the local cache is empty or incomplete.
+In desktop mode, Chromium talks only to the authenticated loopback origin. The Go sidecar fetches from selected Nostr relays, validates events, persists SQLite projections, and serves renderer reads from that single durable authority. The reusable web build retains its browser relay adapter, but desktop calls are routed through the bounded sidecar bridge.
 
 ## Testing
 

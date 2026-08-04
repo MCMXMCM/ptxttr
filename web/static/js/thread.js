@@ -16,7 +16,7 @@ import { scrollRouteToTop } from "./shell-swap.js";
 import { getImageModePref, getThreadRenderModePref, setThreadRenderModePref } from "./sort-prefs.js";
 import { openThreadInlineComposer } from "./mutations.js";
 import { withRelays } from "./nav-routing.js";
-import { refreshVisibleNoteProfiles } from "./note-profiles.js";
+import { refreshVisibleNoteProfiles, rememberVisibleNoteProfiles } from "./note-profiles.js";
 
 let listenersAttached = false;
 let hashListenerBound = false;
@@ -520,6 +520,8 @@ export async function ensureTreeFragmentForFocus(focusID) {
     if (!threadTreeModeRoot(section)) {
       throw new Error("Tree view fragment was empty");
     }
+    rememberVisibleNoteProfiles(section);
+    void refreshVisibleNoteProfiles(section);
     refreshAscii(section);
     try {
       applyTreeMediaMode();

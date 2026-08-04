@@ -173,13 +173,24 @@ async function fetchETagEventsBatched(relays, ids, { kinds, perEventLimit, tagNa
 }
 
 async function withServerFallback(directFn, serverFn) {
-  void serverFn;
+  if (appFeatures().localFirst) return serverFn();
   return directFn();
 }
 
 async function fetchReplaceable(pubkey, kind, { relays = [], forceRefresh = false, includeViewerRelays = true } = {}) {
   const pk = normalizePubkey(pubkey);
   if (!pk) return null;
+  if (appFeatures().localFirst) {
+    const url = new URL("/__ptxt/desktop/replaceable", window.location.origin);
+    url.searchParams.set("pubkey", pk);
+    url.searchParams.set("kind", String(kind));
+    if (forceRefresh) url.searchParams.set("refresh", "1");
+    const response = await fetchWithSession(url.pathname + url.search, {
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) throw new Error("replaceable event request failed");
+    return response.json();
+  }
   const relayList = replaceableRelaysForFetch(relays, { includeViewerRelays });
   if (!relayList.length) return latestReplaceable(pk, kind);
   const queryKey = queryKeys.replaceable(pk, kind, relayList);
@@ -247,6 +258,16 @@ export async function fetchViewerProfile(pubkey, { forceRefresh = false } = {}) 
 
 /** Full kind-0 profile for any pubkey (relay-first). */
 export async function fetchProfile(pubkey, { relays = [], forceRefresh = false, includeViewerRelays = true } = {}) {
+  if (appFeatures().localFirst) {
+    const pk = normalizePubkey(pubkey);
+    if (!pk) return null;
+    if (forceRefresh) {
+      const event = await fetchReplaceable(pk, KIND_PROFILE, { relays, forceRefresh, includeViewerRelays });
+      return rememberProfile(parseProfile(pk, event));
+    }
+    const profiles = await fetchProfiles([pk], { relays });
+    return rememberProfile({ pubkey: pk, ...(profiles[pk] || {}) });
+  }
   const event = await fetchReplaceable(pubkey, KIND_PROFILE, { relays, forceRefresh, includeViewerRelays });
   return rememberProfile(parseProfile(pubkey, event));
 }
@@ -289,6 +310,24 @@ export async function fetchViewerRelayPreferences(pubkey, { forceRefresh = true 
 export async function fetchProfiles(pubkeys, { relays = [] } = {}) {
   const keys = (pubkeys || []).map(normalizePubkey).filter(Boolean);
   if (!keys.length) return {};
+  if (appFeatures().localFirst) {
+    const payload = {};
+    for (const batch of chunkValues(keys, 32)) {
+      const url = new URL("/api/profiles", window.location.origin);
+      batch.forEach((pubkey) => url.searchParams.append("pubkey", pubkey));
+      const response = await fetchWithSession(url.pathname + url.search, {
+        headers: { Accept: "application/json" },
+        cache: "no-store",
+      });
+      if (!response.ok) throw new Error("profiles request failed");
+      Object.assign(payload, await response.json());
+    }
+    const out = Object.fromEntries(keys.map((pubkey) => [
+      pubkey,
+      { pubkey, ...(payload?.[pubkey] || {}) },
+    ]));
+    return rememberProfiles(out);
+  }
   const relayList = mergedReadRelays(relays);
   const queryKey = queryKeys.profiles(keys, relayList);
   const queryFn = async () => {
@@ -356,6 +395,15 @@ export async function fetchProfileFollowGraph(pubkey, { relays = [], followerLim
   if (!pk) {
     return {
       pubkey: "",
+      following: [],
+      followers: [],
+      followEvent: null,
+      relayHints: new Map(),
+    };
+  }
+  if (appFeatures().localFirst) {
+    return (await fetchDesktopProfileFollowGraph(pk)) || {
+      pubkey: pk,
       following: [],
       followers: [],
       followEvent: null,

@@ -42,6 +42,59 @@ async function installSigningSession(page) {
   }, { pubkey: VIEWER_PK, npub: VIEWER_NPUB, nsec: VIEWER_NSEC });
 }
 
+async function installNoteTransitionProbe(page) {
+  return page.evaluate(() => {
+    if (typeof document.startViewTransition !== "function") return false;
+    const startViewTransition = document.startViewTransition.bind(document);
+    window.__ptxtNoteTransitionSnapshots = [];
+    document.startViewTransition = (update) => {
+      const names = () => [...document.querySelectorAll("[data-ptxt-view-transition-name]")]
+        .map((node) => node.getAttribute("data-ptxt-view-transition-name"))
+        .filter(Boolean);
+      const before = names();
+      const snapshot = { before, after: [], animations: [], root: null };
+      window.__ptxtNoteTransitionSnapshots.push(snapshot);
+      const transition = startViewTransition(() => {
+        const result = update();
+        snapshot.after = names();
+        return result;
+      });
+      void transition.ready.then(() => {
+        snapshot.root = {
+          oldOpacity: getComputedStyle(document.documentElement, "::view-transition-old(root)").opacity,
+          newOpacity: getComputedStyle(document.documentElement, "::view-transition-new(root)").opacity,
+        };
+        snapshot.animations = document.getAnimations().map((animation) => ({
+          pseudoElement: animation.effect?.pseudoElement || "",
+          duration: animation.effect?.getTiming?.().duration || 0,
+        }));
+      });
+      return transition;
+    };
+    return true;
+  });
+}
+
+async function expectNativeNoteTransition(page, index, noteIDs) {
+  await expect.poll(async () => page.evaluate((snapshotIndex) => (
+    window.__ptxtNoteTransitionSnapshots?.[snapshotIndex]?.animations?.length || 0
+  ), index)).toBeGreaterThan(0);
+  const transition = await page.evaluate((snapshotIndex) => (
+    window.__ptxtNoteTransitionSnapshots?.[snapshotIndex] || null
+  ), index);
+  expect(transition?.root).toEqual({ oldOpacity: "0", newOpacity: "1" });
+  for (const noteID of noteIDs) {
+    for (const kind of ["avatar", "author", "chrome", "content", "actions"]) {
+      expect(transition?.before).toContain(`ptxt-note-${kind}-${noteID}`);
+      expect(transition?.after).toContain(`ptxt-note-${kind}-${noteID}`);
+    }
+    expect(transition?.animations?.some((animation) => (
+      animation.pseudoElement.includes(`ptxt-note-chrome-${noteID}`) &&
+      animation.duration === 340
+    ))).toBeTruthy();
+  }
+}
+
 test.use({
   viewport: { width: 390, height: 844 },
   isMobile: true,
@@ -135,9 +188,14 @@ test.describe("thread touch navigation", () => {
     await expect(page).toHaveURL(new RegExp(`/thread/${ROOT_ID}\\?selected=${REPLY_ID}#note-${REPLY_ID}$`), {
       timeout: 2_500,
     });
-    await expect(page.locator("#thread-focus .thread-focus-parent")).toBeVisible({
+    const parent = page.locator("#thread-focus .thread-focus-parent");
+    await expect(parent).toBeVisible({
       timeout: 500,
     });
+    await expect.poll(async () => (await parent.textContent() || "").trim().length, {
+      timeout: 500,
+      message: "the optimistic parent should render a full localized skeleton, not an empty slot",
+    }).toBeGreaterThan(20);
     await expect(page.locator("#thread-focus").getByText("e2e-relay-native-thread-reply")).toBeVisible({
       timeout: 2_500,
     });
@@ -276,6 +334,7 @@ test.describe("thread touch navigation", () => {
       const url = new URL(response.url());
       return url.searchParams.get("fragment") === "hydrate" && !url.searchParams.has("selected");
     });
+    expect(await installNoteTransitionProbe(page)).toBe(true);
     await page.locator(`#thread-focus #note-${rootID}`).tap();
 
     await expect(page).toHaveURL(new RegExp(`/thread/${rootID}$`), { timeout: 5_000 });
@@ -295,6 +354,7 @@ test.describe("thread touch navigation", () => {
     expect(avatarBox).not.toBeNull();
     expect(avatarBox.width).toBeLessThanOrEqual(48);
     expect(Math.abs(avatarBox.width - avatarBox.height)).toBeLessThanOrEqual(1);
+    await expectNativeNoteTransition(page, 0, [rootID, replyID]);
     await rootHydrateResponse;
     await expect(page.locator(`#thread-replies #note-${replyID}`)).toHaveCount(1);
   });
@@ -315,6 +375,7 @@ test.describe("thread touch navigation", () => {
 
     await page.goto(`/thread/${rootID}?wot=0`);
     await expect(page.locator(`#thread-focus #note-${rootID}`)).toBeVisible({ timeout: 30_000 });
+    expect(await installNoteTransitionProbe(page)).toBe(true);
 
     const replyCard = page.locator(`#thread-replies #note-${replyID}, .thread-replies #note-${replyID}`).first();
     await expect(replyCard).toBeVisible({ timeout: 30_000 });
@@ -326,6 +387,7 @@ test.describe("thread touch navigation", () => {
     await expect(page.locator(`#thread-focus #note-${replyID}.is-focused`)).toBeVisible({ timeout: 30_000 });
     await expect(page.locator(`#thread-focus .thread-focus-parent#note-${rootID}`)).toBeVisible({ timeout: 30_000 });
     await expect(page.locator(`#thread-replies #note-${replyID}`)).toHaveCount(0);
+    await expectNativeNoteTransition(page, 0, [rootID, replyID]);
 
     await context.close();
   });

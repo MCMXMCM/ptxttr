@@ -32,6 +32,13 @@ func deferGuestLoggedOutFeedFirstPage(req feedRequest) bool {
 	return true
 }
 
+// The desktop sidecar serves one person over loopback. It can assemble the
+// real first page directly instead of returning a hosted-style deferred shell
+// that the browser immediately has to replace.
+func (s *Server) shouldDeferGuestLoggedOutFeedFirstPage(req feedRequest) bool {
+	return s == nil || (!s.runtimeCapabilities().LocalFirst && deferGuestLoggedOutFeedFirstPage(req))
+}
+
 // homeFeedShellPageData returns feed chrome for SSR: heading fields, cached trending,
 // and profiles from trending. The feed body is filled only from the in-memory guest
 // TTL cache when WoT is off (firehose path); WoT-on canonical default-seed shells

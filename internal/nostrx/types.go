@@ -17,7 +17,8 @@ const (
 	KindFollowList      = 3
 	KindRepost          = 6
 	KindReaction        = 7
-	KindMuteList           = 10000
+	KindPollResponse    = 1018
+	KindMuteList        = 10000
 	// MaxMuteListTagRows caps tag rows on NIP-51 kind-10000 (publish validation and server-side mute projection reads).
 	MaxMuteListTagRows     = 2000
 	KindRelayListMetadata  = 10002
@@ -69,16 +70,18 @@ func (event Event) FirstTagValue(name string) string {
 }
 
 type Profile struct {
-	PubKey  string
-	Name    string
-	Display string
-	About   string
-	Picture string
-	Website string
-	NIP05   string
-	Lud16   string
-	Lud06   string
-	Event   *Event
+	PubKey    string `json:"pubkey"`
+	Name      string `json:"name"`
+	Display   string `json:"display_name"`
+	About     string `json:"about"`
+	Picture   string `json:"picture"`
+	Website   string `json:"website"`
+	NIP05     string `json:"nip05"`
+	Lud16     string `json:"lud16"`
+	Lud06     string `json:"lud06"`
+	EventID   string `json:"event_id,omitempty"`
+	CreatedAt int64  `json:"created_at,omitempty"`
+	Event     *Event `json:"-"`
 }
 
 type RelayInfo struct {
@@ -396,6 +399,8 @@ func ParseProfile(pubkey string, event *Event) Profile {
 	if event == nil {
 		return profile
 	}
+	profile.EventID = event.ID
+	profile.CreatedAt = event.CreatedAt
 	var raw struct {
 		Name        string `json:"name"`
 		DisplayName string `json:"display_name"`

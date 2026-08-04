@@ -28,6 +28,14 @@ const (
 
 type maintenanceLane int
 
+type desktopBackgroundMode int32
+
+const (
+	desktopBackgroundPaused desktopBackgroundMode = iota
+	desktopBackgroundForeground
+	desktopBackgroundReduced
+)
+
 const (
 	maintenanceLaneSeed maintenanceLane = iota
 	maintenanceLaneViewer
@@ -56,6 +64,22 @@ func (s *Server) tryRunMaintenanceWork(lane maintenanceLane, fn func()) {
 	}
 	defer gate.Store(false)
 	fn()
+}
+
+func (s *Server) desktopBackgroundMode() desktopBackgroundMode {
+	if s == nil || !s.runtimeCapabilities().DesktopShell {
+		return desktopBackgroundForeground
+	}
+	return desktopBackgroundMode(s.backgroundMode.Load())
+}
+
+func (s *Server) setDesktopBackgroundMode(mode desktopBackgroundMode) desktopBackgroundMode {
+	if s == nil {
+		return desktopBackgroundPaused
+	}
+	previous := desktopBackgroundMode(s.backgroundMode.Swap(int32(mode)))
+	s.backgroundActive.Store(mode != desktopBackgroundPaused)
+	return previous
 }
 
 func (s *Server) maintenanceGate(lane maintenanceLane) *atomic.Bool {
@@ -119,6 +143,23 @@ func (s *Server) runWithRelayWriteBudget(ctx context.Context, kind string, fn fu
 	}
 	defer func() { <-s.relayWriteSem }()
 	s.waitForForegroundQuiet(ctx, foregroundQuietWaitLimit)
+	fn()
+}
+
+func (s *Server) runWithInteractiveRelayBudget(ctx context.Context, kind string, fn func()) {
+	if s == nil || fn == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = s.ctx
+	}
+	select {
+	case <-ctx.Done():
+		s.metrics.Add(kind+".cancelled", 1)
+		return
+	case s.relayWriteSem <- struct{}{}:
+	}
+	defer func() { <-s.relayWriteSem }()
 	fn()
 }
 

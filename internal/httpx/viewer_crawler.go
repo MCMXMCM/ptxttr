@@ -10,7 +10,7 @@ import (
 
 const (
 	knownViewerHydrationFailBackoff    = 45 * time.Second
-	knownViewerHydrationSuccessBackoff = 15 * time.Minute
+	knownViewerHydrationSuccessBackoff = 30 * time.Second
 )
 
 func (s *Server) runViewerCrawler() {
@@ -85,35 +85,86 @@ func (s *Server) crawlViewerTick() {
 		if ctx.Err() != nil {
 			break
 		}
+		if s.desktopBackgroundMode() == desktopBackgroundReduced {
+			s.crawlViewerReduced(ctx, viewer, fetchLimit, noteSince)
+			continue
+		}
 
-		// Refresh the viewer first so a cold cache can discover direct follows.
-		// Owners within two hops are then rotated through author refreshes; their
-		// kind-3 lists materialize the complete third hop in follow_edges.
-		s.refreshAuthor(ctx, viewer, nil)
-		graphOwners, graphErr := s.viewerCrawlerAuthors(ctx, viewer, store.MaxDepth-1, false)
+		// Direct follows stay hot continuously. Deeper graph owners and their note
+		// cohorts are admitted on durable tier-specific intervals.
+		directMetadataTTL := positiveDuration(s.cfg.ViewerCrawlerDirectMetadataInterval, 15*time.Minute)
+		s.refreshAuthorWithTTL(ctx, viewer, nil, directMetadataTTL)
+		directAuthors, graphErr := s.viewerCrawlerAuthors(ctx, viewer, 1, true)
+		if graphErr != nil || len(directAuthors) == 0 {
+			_ = s.store.MarkHydrationAttempt(ctx, store.EntityTypeKnownViewer, viewer, false, knownViewerHydrationFailBackoff)
+			s.metrics.Add("crawler.viewer.refresh_error", 1)
+			continue
+		}
+		noteAuthors := append([]string(nil), directAuthors...)
+		refreshDepth := 0
+		if s.store.ShouldRefresh(ctx, "viewer_graph_d2", viewer, positiveDuration(s.cfg.ViewerCrawlerDegreeTwoInterval, 5*time.Minute)) {
+			refreshDepth = 1
+			if degreeTwo, err := s.viewerCrawlerAuthors(ctx, viewer, 2, true); err == nil {
+				noteAuthors = append(noteAuthors, degreeTwo...)
+			}
+		}
+		if s.store.ShouldRefresh(ctx, "viewer_graph_d3", viewer, positiveDuration(s.cfg.ViewerCrawlerDegreeThreeInterval, 30*time.Minute)) {
+			refreshDepth = 2
+			if degreeThree, err := s.viewerCrawlerAuthors(ctx, viewer, store.MaxDepth, true); err == nil {
+				noteAuthors = append(noteAuthors, degreeThree...)
+			}
+		}
+		directOwners, graphErr := s.viewerCrawlerAuthors(ctx, viewer, 1, false)
 		if graphErr != nil {
 			_ = s.store.MarkHydrationAttempt(ctx, store.EntityTypeKnownViewer, viewer, false, knownViewerHydrationFailBackoff)
 			s.metrics.Add("crawler.viewer.refresh_error", 1)
 			continue
 		}
-		selectedGraphOwners := rotateHotFeedAuthors(graphOwners, graphLimit, s.viewerGraphCursor.Add(1))
-		for _, author := range selectedGraphOwners {
+		selectedDirectOwners := rotateHotFeedAuthors(directOwners, graphLimit, s.viewerGraphCursor.Add(1))
+		for _, author := range selectedDirectOwners {
 			if ctx.Err() != nil {
 				break
 			}
-			s.refreshAuthor(ctx, author, nil)
+			s.refreshAuthorWithTTL(ctx, author, nil, directMetadataTTL)
 		}
-		s.metrics.Add("crawler.viewer.graph_authors", int64(len(selectedGraphOwners)))
+		metadataRefreshes := len(selectedDirectOwners)
+		degreeTwoOwners := []string(nil)
+		degreeTwoMetadataTTL := positiveDuration(s.cfg.ViewerCrawlerDegreeTwoMetadataInterval, 6*time.Hour)
+		if s.store.ShouldRefresh(ctx, "viewer_graph_meta_d2", viewer, degreeTwoMetadataTTL) {
+			if owners, err := s.viewerCrawlerAuthors(ctx, viewer, 2, false); err == nil {
+				degreeTwoOwners = excludingStrings(owners, directOwners)
+				selected := rotateHotFeedAuthors(degreeTwoOwners, graphLimit, s.viewerGraphCursor.Add(1))
+				for _, author := range selected {
+					if ctx.Err() != nil {
+						break
+					}
+					s.refreshAuthorWithTTL(ctx, author, nil, degreeTwoMetadataTTL)
+				}
+				metadataRefreshes += len(selected)
+				s.store.MarkRefreshed(ctx, "viewer_graph_meta_d2", viewer)
+			}
+		}
+		degreeThreeMetadataTTL := positiveDuration(s.cfg.ViewerCrawlerDegreeThreeMetadataInterval, 24*time.Hour)
+		if s.store.ShouldRefresh(ctx, "viewer_graph_meta_d3", viewer, degreeThreeMetadataTTL) {
+			if owners, err := s.viewerCrawlerAuthors(ctx, viewer, store.MaxDepth, false); err == nil {
+				shallower, _ := s.viewerCrawlerAuthors(ctx, viewer, 2, false)
+				selected := rotateHotFeedAuthors(excludingStrings(owners, shallower), graphLimit, s.viewerGraphCursor.Add(1))
+				for _, author := range selected {
+					if ctx.Err() != nil {
+						break
+					}
+					s.refreshAuthorWithTTL(ctx, author, nil, degreeThreeMetadataTTL)
+				}
+				metadataRefreshes += len(selected)
+				s.store.MarkRefreshed(ctx, "viewer_graph_meta_d3", viewer)
+			}
+		}
+		s.metrics.Add("crawler.viewer.graph_authors", int64(metadataRefreshes))
 
-		cohort, cohortErr := s.viewerCrawlerAuthors(ctx, viewer, store.MaxDepth, true)
-		if cohortErr != nil || len(cohort) == 0 {
-			_ = s.store.MarkHydrationAttempt(ctx, store.EntityTypeKnownViewer, viewer, false, knownViewerHydrationFailBackoff)
-			s.metrics.Add("crawler.viewer.refresh_error", 1)
-			continue
-		}
+		noteAuthors = uniqueNonEmptyStrings(noteAuthors)
 		authorLimit := hotFeedAuthorLimit(s.cfg.HotFeedCrawlerAuthorLimit)
-		selectedAuthors := rotateHotFeedAuthors(cohort, authorLimit, s.viewerNoteCursor.Add(1))
-		s.metrics.Add("crawler.viewer.cohort_authors", int64(len(cohort)))
+		selectedAuthors := rotateHotFeedAuthors(noteAuthors, authorLimit, s.viewerNoteCursor.Add(1))
+		s.metrics.Add("crawler.viewer.cohort_authors", int64(len(noteAuthors)))
 		s.metrics.Add("crawler.viewer.note_authors", int64(len(selectedAuthors)))
 
 		s.refreshHotFeedRelayHints(ctx, selectedAuthors, nil)
@@ -139,9 +190,65 @@ func (s *Server) crawlViewerTick() {
 			s.metrics.Add("crawler.viewer.refresh_error", 1)
 			continue
 		}
+		if refreshDepth >= 1 {
+			s.store.MarkRefreshed(ctx, "viewer_graph_d2", viewer)
+		}
+		if refreshDepth >= 2 {
+			s.store.MarkRefreshed(ctx, "viewer_graph_d3", viewer)
+		}
+		s.scheduleFeedSnapshotPersonalizedRebuild(feedRequest{
+			Pubkey:   viewer,
+			Relays:   relays,
+			Limit:    30,
+			SortMode: feedSortRecent,
+			WoT:      webOfTrustOptions{Enabled: true, Depth: store.MaxDepth},
+		})
 		_ = s.store.MarkHydrationAttempt(ctx, store.EntityTypeKnownViewer, viewer, true, knownViewerHydrationSuccessBackoff)
 	}
 	s.metrics.Add("crawler.viewer.refresh_events", refreshEvents)
+}
+
+func (s *Server) crawlViewerReduced(ctx context.Context, viewer string, fetchLimit int, noteSince int64) {
+	authors, err := s.viewerCrawlerAuthors(ctx, viewer, 1, true)
+	if err != nil || len(authors) == 0 {
+		_ = s.store.MarkHydrationAttempt(ctx, store.EntityTypeKnownViewer, viewer, false, knownViewerHydrationFailBackoff)
+		return
+	}
+	authors = rotateHotFeedAuthors(authors, hotFeedAuthorLimit(s.cfg.HotFeedCrawlerAuthorLimit), s.viewerNoteCursor.Add(1))
+	relays := s.filterCrawlerRelays(s.outboxSeedRelays(ctx, viewer, authors, nil))
+	if len(relays) == 0 {
+		relays = s.crawlRelays(nil)
+	}
+	result := s.refreshRecent(ctx, viewer, authors, 0, fetchLimit, relays, noteSince)
+	if ctx.Err() != nil || result < 0 {
+		_ = s.store.MarkHydrationAttempt(ctx, store.EntityTypeKnownViewer, viewer, false, knownViewerHydrationFailBackoff)
+		s.metrics.Add("crawler.viewer.reduced_error", 1)
+		return
+	}
+	_ = s.store.MarkHydrationAttempt(ctx, store.EntityTypeKnownViewer, viewer, true, positiveDuration(s.cfg.ViewerCrawlerReducedInterval, 5*time.Minute))
+	s.metrics.Add("crawler.viewer.reduced_events", int64(result))
+}
+
+func positiveDuration(value, fallback time.Duration) time.Duration {
+	if value > 0 {
+		return value
+	}
+	return fallback
+}
+
+func excludingStrings(values, excluded []string) []string {
+	blocked := make(map[string]struct{}, len(excluded))
+	for _, value := range excluded {
+		blocked[value] = struct{}{}
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if _, found := blocked[value]; value == "" || found {
+			continue
+		}
+		out = append(out, value)
+	}
+	return uniqueNonEmptyStrings(out)
 }
 
 // viewerCrawlerAuthors returns the locally materialized follow graph at depth.

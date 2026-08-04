@@ -46,6 +46,8 @@ type RelayHintSnapshot struct {
 // should not have to parse the original kind-0 event body every time.
 type ProfileSummary struct {
 	PubKey      string
+	EventID     string
+	CreatedAt   int64
 	DisplayName string
 	Name        string
 	About       string

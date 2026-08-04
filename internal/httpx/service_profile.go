@@ -11,15 +11,17 @@ import (
 
 func summaryToProfile(summary store.ProfileSummary) nostrx.Profile {
 	return nostrx.Profile{
-		PubKey:  summary.PubKey,
-		Display: summary.DisplayName,
-		Name:    summary.Name,
-		About:   summary.About,
-		Picture: summary.Picture,
-		Website: summary.Website,
-		NIP05:   summary.NIP05,
-		Lud16:   summary.Lud16,
-		Lud06:   summary.Lud06,
+		PubKey:    summary.PubKey,
+		EventID:   summary.EventID,
+		CreatedAt: summary.CreatedAt,
+		Display:   summary.DisplayName,
+		Name:      summary.Name,
+		About:     summary.About,
+		Picture:   summary.Picture,
+		Website:   summary.Website,
+		NIP05:     summary.NIP05,
+		Lud16:     summary.Lud16,
+		Lud06:     summary.Lud06,
 	}
 }
 
@@ -90,6 +92,10 @@ func (s *Server) profilesFor(ctx context.Context, events []nostrx.Event) map[str
 		}
 	}
 
+	return s.profilesForPubkeys(ctx, pubkeys)
+}
+
+func (s *Server) profilesFromStore(ctx context.Context, pubkeys []string) map[string]nostrx.Profile {
 	profiles := make(map[string]nostrx.Profile, len(pubkeys))
 	summaries, err := s.store.ProfileSummariesByPubkeys(ctx, pubkeys)
 	if err == nil {
@@ -124,24 +130,35 @@ func (s *Server) profilesForPubkeys(ctx context.Context, pubkeys []string) map[s
 		seen[pubkey] = true
 		unique = append(unique, pubkey)
 	}
-	profiles := make(map[string]nostrx.Profile, len(unique))
-	summaries, err := s.store.ProfileSummariesByPubkeys(ctx, unique)
-	if err == nil {
-		for pubkey, summary := range summaries {
-			profiles[pubkey] = summaryToProfile(summary)
-		}
+	profiles := s.profilesFromStore(ctx, unique)
+	if !s.runtimeCapabilities().LocalFirst || s.nostr == nil {
+		return profiles
 	}
-	latest, latestErr := s.store.LatestReplaceableByPubkeys(ctx, unique, nostrx.KindProfileMetadata)
-	if latestErr != nil {
-		latest = map[string]*nostrx.Event{}
-	}
+	stale := make([]string, 0, len(unique))
 	for _, pubkey := range unique {
-		if _, ok := profiles[pubkey]; ok {
-			continue
+		profileTTL := positiveDuration(s.cfg.ViewerCrawlerProfileInterval, 6*time.Hour)
+		if contactProfileNeedsHydration(profiles[pubkey]) || s.store.ShouldRefresh(ctx, "desktop.profile", pubkey, profileTTL) {
+			stale = append(stale, pubkey)
 		}
-		profiles[pubkey] = nostrx.ParseProfile(pubkey, latest[pubkey])
 	}
-	return profiles
+	if len(stale) == 0 {
+		return profiles
+	}
+	// A desktop request is a loopback call dedicated to one user. Spend a
+	// bounded foreground budget filling missing kind-0 metadata so feed/thread
+	// HTML arrives with identity instead of delegating the same work back to
+	// Chromium after first paint.
+	budget := 3 * time.Second
+	if s.cfg.RequestTimeout > 0 && s.cfg.RequestTimeout < budget {
+		budget = s.cfg.RequestTimeout
+	}
+	hydrateCtx, cancel := context.WithTimeout(ctx, budget)
+	refreshed := s.hydrateContactProfiles(hydrateCtx, stale, nil)
+	cancel()
+	for _, pubkey := range refreshed {
+		s.store.MarkRefreshed(ctx, "desktop.profile", pubkey)
+	}
+	return s.profilesFromStore(ctx, unique)
 }
 
 func contactProfileNeedsHydration(profile nostrx.Profile) bool {
@@ -151,22 +168,23 @@ func contactProfileNeedsHydration(profile nostrx.Profile) bool {
 		strings.TrimSpace(profile.NIP05) == ""
 }
 
-func (s *Server) hydrateContactProfiles(ctx context.Context, pubkeys []string, relays []string) {
+func (s *Server) hydrateContactProfiles(ctx context.Context, pubkeys []string, relays []string) []string {
 	if s == nil || s.nostr == nil || s.store == nil {
-		return
+		return nil
 	}
 	keys := limitedStrings(uniqueNonEmptyStrings(pubkeys), followMetadataHydrationLimit)
 	if len(keys) == 0 {
-		return
+		return nil
 	}
 	relayList := nostrx.NormalizeRelayList(append(
 		append(append([]string(nil), relays...), s.cfg.DefaultRelays...),
 		s.cfg.MetadataRelays...,
 	), nostrx.MaxRelays)
 	if len(relayList) == 0 {
-		return
+		return nil
 	}
 	events := make([]nostrx.Event, 0, len(keys))
+	refreshed := make([]string, 0, len(keys))
 	for start := 0; start < len(keys); start += followMetadataBatchSize {
 		end := start + followMetadataBatchSize
 		if end > len(keys) {
@@ -179,14 +197,21 @@ func (s *Server) hydrateContactProfiles(ctx context.Context, pubkeys []string, r
 			Limit:   max(len(batch)*2, len(batch)),
 		})
 		if err != nil || len(fetched) == 0 {
+			if err == nil {
+				refreshed = append(refreshed, batch...)
+			}
 			continue
 		}
+		refreshed = append(refreshed, batch...)
 		events = append(events, fetched...)
 	}
 	if len(events) == 0 {
-		return
+		return refreshed
 	}
-	_, _ = s.store.SaveEvents(ctx, events)
+	if _, err := s.store.SaveEvents(ctx, events); err != nil {
+		return nil
+	}
+	return refreshed
 }
 
 func (s *Server) contactProfiles(ctx context.Context, pubkeys []string, relays []string) map[string]nostrx.Profile {

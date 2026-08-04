@@ -13,24 +13,26 @@ import (
 )
 
 type warmJob struct {
-	key      string
-	kind     string
-	viewer   string
-	pubkey   string
-	pubkeys  []string
-	authors  []string
-	before   int64
-	limit    int
-	relays   []string
-	eventIDs []string
+	enqueuedAt time.Time
+	key        string
+	kind       string
+	viewer     string
+	pubkey     string
+	pubkeys    []string
+	authors    []string
+	before     int64
+	limit      int
+	relays     []string
+	eventIDs   []string
 }
 
 type warmQueue struct {
-	server  *Server
-	ch      chan warmJob
-	mu      sync.Mutex
-	pending map[string]struct{}
-	wg      sync.WaitGroup
+	server      *Server
+	ch          chan warmJob
+	mu          sync.Mutex
+	pending     map[string]struct{}
+	wg          sync.WaitGroup
+	interactive bool
 }
 
 func newWarmQueue(server *Server, workers, capacity int) *warmQueue {
@@ -52,36 +54,42 @@ func newWarmQueue(server *Server, workers, capacity int) *warmQueue {
 	return queue
 }
 
-func (q *warmQueue) enqueue(job warmJob) {
+func (q *warmQueue) enqueue(job warmJob) bool {
 	if q == nil || job.key == "" || job.kind == "" {
-		return
+		return false
 	}
 	select {
 	case <-q.server.ctx.Done():
-		return
+		return false
 	default:
 	}
 	q.mu.Lock()
 	if _, exists := q.pending[job.key]; exists {
 		q.mu.Unlock()
 		q.server.metrics.Add("warm.deduped", 1)
-		return
+		return true
 	}
 	q.pending[job.key] = struct{}{}
 	q.mu.Unlock()
+	if job.enqueuedAt.IsZero() {
+		job.enqueuedAt = time.Now()
+	}
 
 	select {
 	case q.ch <- job:
 		q.server.metrics.Add("warm.enqueued", 1)
+		return true
 	case <-q.server.ctx.Done():
 		q.mu.Lock()
 		delete(q.pending, job.key)
 		q.mu.Unlock()
+		return false
 	default:
 		q.mu.Lock()
 		delete(q.pending, job.key)
 		q.mu.Unlock()
 		q.server.metrics.Add("warm.dropped", 1)
+		return false
 	}
 }
 
@@ -111,24 +119,42 @@ func (q *warmQueue) worker() {
 
 func (q *warmQueue) run(job warmJob) {
 	defer q.finish(job.key)
+	if !job.enqueuedAt.IsZero() {
+		q.server.metrics.Observe("warm.queue_wait", time.Since(job.enqueuedAt))
+	}
 	if !q.server.waitForBackgroundActive(q.server.ctx) {
 		return
 	}
 	timeout := q.server.cfg.WarmJobTimeout
+	if q.interactive {
+		timeout = 8 * time.Second
+	}
 	if timeout <= 0 {
 		timeout = 45 * time.Second
 	}
 	jobCtx, cancel := context.WithTimeout(q.server.ctx, timeout)
 	defer cancel()
 	started := time.Now()
-	q.server.runWithRelayWriteBudget(jobCtx, "warm."+job.kind, func() {
-		q.server.handleWarmJob(jobCtx, job)
-	})
+	run := q.server.runWithRelayWriteBudget
+	if q.interactive {
+		run = q.server.runWithInteractiveRelayBudget
+	}
+	run(jobCtx, "warm."+job.kind, func() { q.server.handleWarmJob(jobCtx, job) })
 	q.server.metrics.Observe("warm."+job.kind, time.Since(started))
 	if jobCtx.Err() == context.DeadlineExceeded {
 		q.server.metrics.Add("warm."+job.kind+".timeout", 1)
 		slog.Warn("warm job timed out", "kind", job.kind, "items", warmJobItemCount(job), "timeout", timeout)
 	}
+}
+
+func (q *warmQueue) hasPending(key string) bool {
+	if q == nil || key == "" {
+		return false
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	_, ok := q.pending[key]
+	return ok
 }
 
 func warmJobItemCount(job warmJob) int {
@@ -260,6 +286,17 @@ func (s *Server) handleWarmJob(ctx context.Context, job warmJob) {
 			s.eventsByID(ctx, []string{rootID}, job.relays)
 			s.refreshRepliesBackground(ctx, rootID, job.viewer, nil, job.relays)
 			s.buildThreadGraphCache(ctx, rootID)
+		}
+	case "threadMaterialize":
+		for _, selectedID := range job.eventIDs {
+			if ctx.Err() != nil {
+				return
+			}
+			if state, _ := s.threadProjectionStatus(ctx, selectedID); state == threadProjectionReady {
+				s.metrics.Add("warm.threadMaterialize.skipped_ready", 1)
+				continue
+			}
+			s.materializeThread(ctx, job.viewer, selectedID, job.relays)
 		}
 	}
 }

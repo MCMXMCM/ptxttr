@@ -85,7 +85,7 @@ test("readAppBootstrap falls back to route context and exposes feature flags", (
   assert.equal(appBootstrap().features.browserWrites, true);
 });
 
-test("readAppBootstrap enables direct relay reads for full desktop documents without bootstrap JSON", () => {
+test("readAppBootstrap keeps the sidecar authoritative for full desktop documents without bootstrap JSON", () => {
   installJSONScripts({
     desktopMode: true,
     routeContext: {
@@ -97,8 +97,9 @@ test("readAppBootstrap enables direct relay reads for full desktop documents wit
     },
   });
   const bootstrap = readAppBootstrap();
-  assert.equal(bootstrap.features.directRelayReads, true);
-  assert.equal(bootstrap.features.relayNativeRoutesPrimary, true);
+  assert.equal(bootstrap.features.directRelayReads, false);
+  assert.equal(bootstrap.features.relayNativeRoutesPrimary, false);
+  assert.equal(bootstrap.features.indexedDb, false);
 });
 
 test("readAppBootstrap keeps direct relay reads disabled for ordinary full documents", () => {

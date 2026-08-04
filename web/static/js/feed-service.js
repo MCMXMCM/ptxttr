@@ -29,6 +29,7 @@ import { fetchCachedQuery, primeQueryData, queryKeys } from "./query-client.js";
 import { fetchWithSession } from "./session.js";
 import { rememberProfiles } from "./profile-memory-cache.js";
 import { rememberServerFeedMetadata } from "./server-feed-metadata.js";
+import { appFeatures } from "./app/bootstrap.js";
 
 export { feedPageCursor } from "./feed-pagination.js";
 export { resolveFeedWoTFromInputs } from "./feed-wot.js";
@@ -590,12 +591,12 @@ async function resolveNewerFeedAuthors(viewerPubkey) {
 
 /** Background relay ingest for newer notes (mirrors iOS syncNewerHomeFeedFromRelays). */
 export async function syncNewerHomeFeedFromRelays({ viewerPubkey, since, sort = "recent" } = {}) {
-  if (pageIsHidden()) return;
-  if (isTrendingSort(sort)) return;
+  if (pageIsHidden()) return [];
+  if (isTrendingSort(sort)) return [];
   const sinceAt = Number(since) || 0;
-  if (sinceAt <= 0) return;
+  if (sinceAt <= 0) return [];
   try {
-    await fetchFeedNotesFromRelays({
+    return await fetchFeedNotesFromRelays({
       viewerPubkey,
       limit: powerLimitedCount(120, 30),
       since: Math.max(0, sinceAt - 300),
@@ -604,7 +605,34 @@ export async function syncNewerHomeFeedFromRelays({ viewerPubkey, since, sort = 
     });
   } catch {
     // best-effort background sync
+    return [];
   }
+}
+
+async function filterNewerFeedNotes(events, { viewerPubkey, since, sinceID, sort = "recent", limit = 50 } = {}) {
+  if (isTrendingSort(sort)) return [];
+  const sinceAt = Number(since) || 0;
+  if (!sinceAt) return [];
+  const mode = resolveFeedFetchModeForViewer(viewerPubkey);
+  let authors = null;
+  if (mode.kind === "wot") {
+    authors = await resolveNewerFeedAuthors(viewerPubkey);
+    if (!authors?.length) return [];
+  } else if (mode.kind === "empty") {
+    return [];
+  }
+  const muteList = viewerPubkey ? await fetchMuteList(viewerPubkey) : null;
+  const muted = new Set((muteList?.muted_pubkeys || []).map(normalizePubkey).filter(Boolean));
+  const membership = mode.kind === "wot" ? authorMembershipSet(authors) : null;
+  return sortEventsNewestFirst(
+    dedupeEventsByID(events || []).filter((event) => {
+      if (!isNewerThanTop(event, sinceAt, sinceID)) return false;
+      const pk = normalizePubkey(event.pubkey);
+      if (muted.has(pk)) return false;
+      if (membership && !membership.has(pk)) return false;
+      return true;
+    }),
+  ).slice(0, limit);
 }
 
 async function scanLocalNewerFeedNotes({ viewerPubkey, since, sinceID, sort = "recent", limit = 50 }) {
@@ -627,19 +655,7 @@ async function scanLocalNewerFeedNotes({ viewerPubkey, since, sinceID, sort = "r
     limit: Math.max(limit * 4, 120),
     since: Math.max(0, sinceAt - 300),
   });
-  const muteList = viewerPubkey ? await fetchMuteList(viewerPubkey) : null;
-  const muted = new Set((muteList?.muted_pubkeys || []).map(normalizePubkey).filter(Boolean));
-  const membership = mode.kind === "wot" ? authorMembershipSet(authors) : null;
-
-  return sortEventsNewestFirst(
-    batch.filter((event) => {
-      if (!isNewerThanTop(event, sinceAt, sinceID)) return false;
-      const pk = normalizePubkey(event.pubkey);
-      if (muted.has(pk)) return false;
-      if (membership && !membership.has(pk)) return false;
-      return true;
-    }),
-  ).slice(0, limit);
+  return filterNewerFeedNotes(batch, { viewerPubkey, since, sinceID, sort, limit });
 }
 
 export async function countNewerHomeFeedNotes({
@@ -663,15 +679,18 @@ export async function fetchNewerHomeFeedNotes({
   limit = 30,
   skipSync = false,
 } = {}) {
+  let synced = [];
   if (!skipSync) {
-    await syncNewerHomeFeedFromRelays({
+    synced = await syncNewerHomeFeedFromRelays({
       viewerPubkey,
       since,
       sort,
     });
   }
   const visible = new Set((visibleIds || []).map((id) => String(id || "").toLowerCase()).filter(Boolean));
-  let events = await scanLocalNewerFeedNotes({ viewerPubkey, since, sinceID, sort, limit: limit * 2 });
+  let events = appFeatures().localFirst
+    ? await filterNewerFeedNotes(synced, { viewerPubkey, since, sinceID, sort, limit: limit * 2 })
+    : await scanLocalNewerFeedNotes({ viewerPubkey, since, sinceID, sort, limit: limit * 2 });
   events = events.filter((event) => !visible.has(String(event.id || "").toLowerCase()));
   return events.slice(0, limit);
 }

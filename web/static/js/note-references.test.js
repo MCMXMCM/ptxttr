@@ -3,6 +3,7 @@ import { describe, it } from "node:test";
 
 import {
   collectReferencedEventIDs,
+  hydrateReferencedEvents,
   imetaMediaItemsJSON,
   isQuotePost,
   isSimpleRepost,
@@ -75,6 +76,58 @@ describe("note-references", () => {
     assert.equal(parsed.content, "Approaching 250 years of freedom");
     const resolved = resolveReferencedEvent(repost, new Map());
     assert.equal(resolved.reference.content, "Approaching 250 years of freedom");
+  });
+
+  it("caches a signed embedded repost reference after relay lookup misses", async () => {
+    const noteID = "fdffc1e0f60c1cfd45356bc5a95f5308184430a5b76a2f71f2e30978250a4260";
+    const embedded = {
+      kind: 1,
+      id: noteID,
+      pubkey: "14b55cd017eb033127ab4d0c8a50cd3d80dbaf4085e2ef3f13da9b1bf44831e6",
+      content: "cached embedded note",
+      created_at: 1781459759,
+      tags: [],
+      sig: "ab".repeat(64),
+    };
+    const cached = [];
+    const referenced = await hydrateReferencedEvents([{
+      kind: 6,
+      tags: [["e", noteID, "wss://relay.example"]],
+      content: JSON.stringify(embedded),
+    }], {
+      fetchEventsByIDsImpl: async () => [],
+      verifyEventImpl: () => true,
+      putEventsImpl: async (events) => cached.push(...events),
+    });
+
+    assert.equal(referenced.get(noteID)?.content, "cached embedded note");
+    assert.deepEqual(cached, [embedded]);
+  });
+
+  it("does not cache an unverified embedded repost reference", async () => {
+    const noteID = "fdffc1e0f60c1cfd45356bc5a95f5308184430a5b76a2f71f2e30978250a4260";
+    const embedded = {
+      kind: 1,
+      id: noteID,
+      pubkey: "14b55cd017eb033127ab4d0c8a50cd3d80dbaf4085e2ef3f13da9b1bf44831e6",
+      content: "render-only embedded note",
+      created_at: 1781459759,
+      tags: [],
+      sig: "",
+    };
+    let cacheCalls = 0;
+    const referenced = await hydrateReferencedEvents([{
+      kind: 6,
+      tags: [["e", noteID]],
+      content: JSON.stringify(embedded),
+    }], {
+      fetchEventsByIDsImpl: async () => [],
+      verifyEventImpl: () => false,
+      putEventsImpl: async () => { cacheCalls += 1; },
+    });
+
+    assert.equal(referenced.get(noteID)?.content, "render-only embedded note");
+    assert.equal(cacheCalls, 0);
   });
 
   it("serializes imeta media items for referenced notes", () => {

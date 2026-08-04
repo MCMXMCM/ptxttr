@@ -117,6 +117,7 @@ export function replaceRouteOutletHTML(navRoot, outletHtml) {
   const existingRailUser = outlet.querySelector(".left-rail .rail-user");
   const stage = document.createElement("div");
   stage.innerHTML = outletHtml;
+  preserveActiveLoader(outlet, stage);
   const inlineComposer = outlet.querySelector(".thread-inline-reply");
   const inlineForm = inlineComposer?.querySelector?.("[data-composer-form]");
   const composerAnchor = inlineComposer?.previousElementSibling;
@@ -160,6 +161,17 @@ export function replaceRouteOutletHTML(navRoot, outletHtml) {
   outlet.replaceChildren(...Array.from(stage.childNodes));
   if (nextComposerAnchor && inlineComposer) {
     nextComposerAnchor.insertAdjacentElement("afterend", inlineComposer);
+  }
+}
+
+function preserveActiveLoader(currentRoot, nextRoot) {
+  const currentLoaders = currentRoot?.querySelectorAll?.('[data-retro-loader-type="feed"]') || [];
+  for (const current of currentLoaders) {
+    const type = String(current?.dataset?.retroLoaderType || "").trim();
+    if (!type) continue;
+    const next = [...(nextRoot?.querySelectorAll?.("[data-retro-loader]") || [])]
+      .find((candidate) => candidate.dataset.retroLoaderType === type);
+    if (next) next.replaceWith(current);
   }
 }
 

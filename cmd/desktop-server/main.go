@@ -4,11 +4,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -47,6 +49,10 @@ func main() {
 }
 
 func applyDesktopDefaults() error {
+	if strings.TrimSpace(os.Getenv("PTXT_DESKTOP_SESSION_TOKEN")) == "" &&
+		strings.TrimSpace(os.Getenv("PTXT_DESKTOP_ACTIVITY_TOKEN")) == "" {
+		return errors.New("PTXT_DESKTOP_SESSION_TOKEN is required")
+	}
 	// These values define the privileged shell contract and are not user
 	// overrides. The packaged sidecar can never become a network service.
 	for key, value := range map[string]string{
@@ -71,18 +77,32 @@ func applyDesktopDefaults() error {
 		return err
 	}
 	defaults := map[string]string{
-		"PTXT_DB":                           filepath.Join(dataDir, "ptxt-nstr.sqlite"),
-		"PTXT_EVENT_RETENTION":              "0",
-		"PTXT_RETENTION_BY_ACCESS":          "true",
-		"PTXT_DB_MAX_BYTES":                 strconv.FormatInt(store.DefaultCacheMaxBytes, 10),
-		"PTXT_DB_PRUNE_TARGET_BYTES":        strconv.FormatInt(store.DefaultCacheMaxBytes*9/10, 10),
-		"PTXT_DB_MAX_DISK_PERCENT":          "0",
-		"PTXT_RELAY_MAX_OUTBOUND_CONNS":     "16",
-		"PTXT_WARM_WORKERS":                 "2",
-		"PTXT_WARM_QUEUE_CAPACITY":          "128",
-		"PTXT_HYDRATION_NOTE_REPLIES_BATCH": "16",
-		"PTXT_GUEST_SLICE_V2":               "false",
-		"PTXT_COMPACT_ON_START":             "false",
+		"PTXT_DB":                                       filepath.Join(dataDir, "ptxt-nstr.sqlite"),
+		"PTXT_EVENT_RETENTION":                          "0",
+		"PTXT_RETENTION_BY_ACCESS":                      "true",
+		"PTXT_DB_MAX_BYTES":                             strconv.FormatInt(store.DefaultCacheMaxBytes, 10),
+		"PTXT_DB_PRUNE_TARGET_BYTES":                    strconv.FormatInt(store.DefaultCacheMaxBytes*9/10, 10),
+		"PTXT_DB_MAX_DISK_PERCENT":                      "0",
+		"PTXT_RELAY_MAX_OUTBOUND_CONNS":                 "12",
+		"PTXT_WARM_WORKERS":                             "1",
+		"PTXT_WARM_QUEUE_CAPACITY":                      "64",
+		"PTXT_HYDRATION_NOTE_REPLIES_BATCH":             "16",
+		"PTXT_GUEST_SLICE_V2":                           "false",
+		"PTXT_HYDRATION_ENABLED":                        "true",
+		"PTXT_SEED_CRAWLER_ENABLED":                     "false",
+		"PTXT_VIEWER_CRAWLER_ENABLED":                   "true",
+		"PTXT_VIEWER_CRAWLER_INTERVAL":                  "30s",
+		"PTXT_VIEWER_CRAWLER_DEGREE2_INTERVAL":          "5m",
+		"PTXT_VIEWER_CRAWLER_DEGREE3_INTERVAL":          "30m",
+		"PTXT_VIEWER_CRAWLER_REDUCED_INTERVAL":          "5m",
+		"PTXT_VIEWER_CRAWLER_DIRECT_METADATA_INTERVAL":  "15m",
+		"PTXT_VIEWER_CRAWLER_DEGREE2_METADATA_INTERVAL": "6h",
+		"PTXT_VIEWER_CRAWLER_DEGREE3_METADATA_INTERVAL": "24h",
+		"PTXT_VIEWER_CRAWLER_PROFILE_INTERVAL":          "6h",
+		"PTXT_ACTIVE_VIEWER_TRENDING":                   "false",
+		"PTXT_HOT_FEED_CRAWLER_ENABLED":                 "false",
+		"PTXT_COALESCE_ENABLED":                         "false",
+		"PTXT_COMPACT_ON_START":                         "false",
 	}
 	for key, value := range defaults {
 		if _, ok := os.LookupEnv(key); !ok {

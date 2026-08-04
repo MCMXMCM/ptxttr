@@ -1,4 +1,5 @@
 import { normalizePubkey } from "./relay-utils.js";
+import { avatarURLFor } from "./profile-parse.js";
 
 const profiles = new Map();
 export const PROFILE_MEMORY_CACHE_UPDATED_EVENT = "ptxt:profile-memory-cache-updated";
@@ -26,6 +27,24 @@ function shouldReplace(current, next) {
   return renderableFieldCount(next) >= renderableFieldCount(current);
 }
 
+function sameRenderableProfile(current, next) {
+  if (!current || !next) return false;
+  return [
+    "pubkey",
+    "display_name",
+    "name",
+    "about",
+    "picture",
+    "avatar_url",
+    "nip05",
+    "website",
+    "lud16",
+    "lud06",
+    "event_id",
+    "created_at",
+  ].every((field) => String(current?.[field] ?? "") === String(next?.[field] ?? ""));
+}
+
 function emitProfileUpdated(profile) {
   const target = globalThis.window || globalThis;
   if (!target || typeof target.dispatchEvent !== "function") return;
@@ -42,11 +61,33 @@ function emitProfileUpdated(profile) {
 }
 
 export function rememberProfile(profile) {
-  const pk = normalizePubkey(profile?.pubkey);
+  const pk = normalizePubkey(profile?.pubkey || profile?.PubKey);
   if (!pk) return null;
-  const next = { ...profile, pubkey: pk };
   const current = profiles.get(pk);
-  if (shouldReplace(current, next)) {
+  const picture = String(profile?.picture ?? profile?.Picture ?? "").trim();
+  const normalized = {
+    ...profile,
+    pubkey: pk,
+    name: String(profile?.name ?? profile?.Name ?? "").trim(),
+    display_name: String(profile?.display_name ?? profile?.Display ?? "").trim(),
+    about: String(profile?.about ?? profile?.About ?? "").trim(),
+    picture,
+    avatar_url: String(profile?.avatar_url || avatarURLFor(pk, picture) || "").trim(),
+    website: String(profile?.website ?? profile?.Website ?? "").trim(),
+    nip05: String(profile?.nip05 ?? profile?.NIP05 ?? "").trim(),
+    lud16: String(profile?.lud16 ?? profile?.Lud16 ?? "").trim(),
+    lud06: String(profile?.lud06 ?? profile?.Lud06 ?? "").trim(),
+    event_id: String(profile?.event_id || profile?.Event?.id || profile?.Event?.ID || "").trim(),
+    created_at: Number(profile?.created_at || profile?.Event?.created_at || profile?.Event?.CreatedAt || 0) || 0,
+  };
+  // Profile data arrives from SQLite, IndexedDB, relay refreshes, and route
+  // previews at different times. A sparse response must never erase identity
+  // that this document has already rendered.
+  const authoritativeReplacement = Boolean(
+    current && normalized.event_id && normalized.created_at > Number(current.created_at || 0),
+  );
+  const next = authoritativeReplacement ? normalized : mergeProfileFields(normalized, current);
+  if (!sameRenderableProfile(current, next) && shouldReplace(current, next)) {
     profiles.set(pk, next);
     emitProfileUpdated(next);
     return next;
@@ -55,10 +96,12 @@ export function rememberProfile(profile) {
 }
 
 export function rememberProfiles(profilesByPubkey = {}) {
+  const remembered = {};
   for (const [pubkey, profile] of Object.entries(profilesByPubkey || {})) {
-    rememberProfile({ ...profile, pubkey: profile?.pubkey || pubkey });
+    const normalized = rememberProfile({ ...profile, pubkey: profile?.pubkey || pubkey });
+    if (normalized?.pubkey) remembered[normalized.pubkey] = normalized;
   }
-  return profilesByPubkey;
+  return remembered;
 }
 
 export function cachedProfile(pubkey) {

@@ -31,7 +31,9 @@ describe("thread skeleton width", () => {
 
   it("fills measured width for parent and selected skeletons", () => {
     const width = 58;
-    assert.deepEqual(lineWidths(buildThreadParentSkeletonText(width)), [
+    const parent = buildThreadParentSkeletonText(width);
+    assert.match(parent.split("\n")[0], /^ {3}░/);
+    assert.deepEqual(lineWidths(parent), [
       width,
       width - 3,
       width - 3,

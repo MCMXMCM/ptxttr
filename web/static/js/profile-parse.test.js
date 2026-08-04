@@ -5,6 +5,7 @@ import {
   avatarURLFor,
   avatarRetryURL,
   displayName,
+  isFallbackProfileLabel,
   nip05DisplayText,
   parseProfile,
   preferredAvatarURL,
@@ -43,6 +44,13 @@ describe("profile-parse", () => {
     assert.equal(label, displayName(parseProfile(pk, null)));
   });
 
+  it("recognizes hex and npub placeholders as fallback labels", () => {
+    const pk = "cd".repeat(32);
+    assert.equal(isFallbackProfileLabel(pk.slice(0, 12), pk), true);
+    assert.equal(isFallbackProfileLabel(shortNpubLabel(pk), pk), true);
+    assert.equal(isFallbackProfileLabel("Actual Name", pk), false);
+  });
+
   it("routes http avatars through the local avatar proxy", () => {
     const pk = "dd".repeat(32);
     assert.equal(
@@ -57,6 +65,12 @@ describe("profile-parse", () => {
       avatarURLFor(pk, "data:image/png;base64,abc123"),
       "data:image/png;base64,abc123",
     );
+  });
+
+  it("preserves local avatar assets without proxying them again", () => {
+    const pk = "ef".repeat(32);
+    assert.equal(avatarURLFor(pk, "/static/img/avatar.png"), "/static/img/avatar.png");
+    assert.equal(avatarURLFor(pk, `/avatar/${pk}?v=one`), `/avatar/${pk}?v=one`);
   });
 
   it("keeps the raw picture but prefers the stable proxied avatar URL for rendering", () => {

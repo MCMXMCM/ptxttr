@@ -40,8 +40,8 @@ afterEach(() => {
   globalThis.sessionStorage = makeStorage();
 });
 
-describe("publishSignedEvent", () => {
-  it("publishes directly without falling back to fetch", async () => {
+describe("publishSignedEvent", { concurrency: false }, () => {
+	it("publishes directly without falling back to fetch", async () => {
     let fetched = false;
     const invalidated = [];
     const inboxFanouts = [];
@@ -65,13 +65,54 @@ describe("publishSignedEvent", () => {
       invalidatePublishedQueries: async (event) => {
         invalidated.push(event.id);
       },
-    });
+	});
 
     const payload = await publishSignedEvent({ id: "aa", kind: 1, pubkey: "bb" });
     assert.equal(payload.accepted, 1);
     assert.equal(fetched, false);
     assert.deepEqual(invalidated, ["aa"]);
     assert.deepEqual(inboxFanouts, ["aa"]);
+  });
+
+	it("uses the local sidecar instead of browser relays in desktop mode", async () => {
+		let relayPublishCalled = false;
+		let invalidated = false;
+		setPublishTestHooks({
+			desktopModeEnabled: () => true,
+			publishViaSidecar: async (event) => ({ accepted: 1, event_id: event.id }),
+			relayPublish: async () => {
+				relayPublishCalled = true;
+				return { accepted: 1 };
+			},
+			invalidatePublishedQueries: async () => { invalidated = true; },
+		});
+
+		const payload = await publishSignedEvent({ id: "aa", kind: 1, pubkey: "bb" });
+		assert.equal(payload.accepted, 1);
+		assert.equal(relayPublishCalled, false);
+		assert.equal(invalidated, false);
+	});
+
+  it("reports relay success without local persistence as a partial failure", async () => {
+    globalThis.fetch = async () => new Response(JSON.stringify({
+      event_id: "aa",
+      kind: 1,
+      pubkey: "bb",
+      accepted: 1,
+      rejected: 0,
+      persisted: false,
+      error: "relays accepted the event, but the local database could not persist it",
+      relay_stats: [{ relay_url: "wss://relay.example", accepted: true }],
+    }), {
+      status: 507,
+      headers: { "Content-Type": "application/json" },
+    });
+    setPublishTestHooks({ desktopModeEnabled: () => true });
+
+    await assert.rejects(
+      () => publishSignedEvent({ id: "aa", kind: 1, pubkey: "bb" }),
+      (error) => error?.partialSuccess === true && error?.payload?.persisted === false,
+    );
   });
 
   it("rethrows direct publish failures instead of using server fallback", async () => {

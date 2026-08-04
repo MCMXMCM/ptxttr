@@ -4,9 +4,10 @@ import {
   stripViewerPrefSearchParams,
 } from "./viewer-pref-url.js";
 import {
-  applyDefaultViewerPrefsIfUnset,
-  DEFAULT_LOGGED_OUT_WOT_SEED_NPUB,
-  loggedOutWebOfTrustDepthPref,
+	applyDefaultViewerPrefsIfUnset,
+	DEFAULT_LOGGED_OUT_WOT_SEED_NPUB,
+	desktopModeEnabled,
+	loggedOutWebOfTrustDepthPref,
 } from "./viewer-defaults.js";
 import { profilePath } from "./relay-utils.js";
 import {
@@ -120,11 +121,17 @@ export function getSession() {
 
 export function setSession(session) {
   const normalized = normalizeSessionState(session);
+  const current = getSession();
+  const keys = [...new Set([...Object.keys(current), ...Object.keys(normalized)])].sort();
+  if (keys.every((key) => JSON.stringify(current[key]) === JSON.stringify(normalized[key]))) {
+    return current;
+  }
   clearBootstrapPendingIfViewerChanged(normalized.pubkey);
   localStorage.setItem(KEY, JSON.stringify(normalized));
   syncStoredSigningAccount(normalized);
   invalidateSessionCache();
   window.dispatchEvent(new CustomEvent("ptxt:session", { detail: normalized }));
+  return normalized;
 }
 
 export function clearSession() {
@@ -214,6 +221,7 @@ export function applyViewerQueryOverrides(headers, input) {
 
 /** Call after `/api/events` 200 so this tab's fetches bust CDN for ~5m. */
 export function recordPublishedAt(now = Date.now()) {
+	if (desktopModeEnabled()) return;
   try {
     localStorage.setItem(RECENT_PUBLISH_KEY, String(now));
   } catch {
@@ -337,11 +345,18 @@ export function fetchWithSession(input, init) {
   let target = input;
   const methodSource = input instanceof Request ? input.method : baseInit.method;
   const method = String(methodSource || "GET").toUpperCase();
-  if ((method === "GET" || method === "HEAD") && shouldCacheBustPath(pathname)) {
+  const desktop = desktopModeEnabled();
+	if (!desktop && (method === "GET" || method === "HEAD") && shouldCacheBustPath(pathname)) {
     const token = recentPublishToken();
     if (token) target = urlWithCacheBust(input, token);
   }
-  return fetch(target, { ...baseInit, headers });
+  const desktopNoStore = desktop && (method === "GET" || method === "HEAD") &&
+    !pathname.startsWith("/static/") && !pathname.startsWith("/avatar/");
+  return fetch(target, {
+    ...baseInit,
+    ...(desktopNoStore && baseInit.cache === undefined ? { cache: "no-store" } : {}),
+    headers,
+  });
 }
 
 // Routes that respect the stored Web-of-Trust preference. Keeping the

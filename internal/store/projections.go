@@ -306,7 +306,7 @@ func (s *Store) profileSummariesFromSQLite(ctx context.Context, pubkeys []string
 	if len(keys) == 0 {
 		return out, nil
 	}
-	query := fmt.Sprintf(`SELECT pubkey, display_name, name, about, picture, nip05, website, lud16, lud06 FROM profiles_cache WHERE pubkey IN (%s)`, placeholders(len(keys)))
+	query := fmt.Sprintf(`SELECT pubkey, profile_event_id, created_at, display_name, name, about, picture, nip05, website, lud16, lud06 FROM profiles_cache WHERE pubkey IN (%s)`, placeholders(len(keys)))
 	args := make([]any, 0, len(keys))
 	for _, key := range keys {
 		args = append(args, key)
@@ -318,7 +318,7 @@ func (s *Store) profileSummariesFromSQLite(ctx context.Context, pubkeys []string
 	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var item ProfileSummary
-		if err := rows.Scan(&item.PubKey, &item.DisplayName, &item.Name, &item.About, &item.Picture, &item.NIP05, &item.Website, &item.Lud16, &item.Lud06); err != nil {
+		if err := rows.Scan(&item.PubKey, &item.EventID, &item.CreatedAt, &item.DisplayName, &item.Name, &item.About, &item.Picture, &item.NIP05, &item.Website, &item.Lud16, &item.Lud06); err != nil {
 			return nil, err
 		}
 		out[item.PubKey] = item

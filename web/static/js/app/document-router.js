@@ -10,7 +10,7 @@ import { applyFeedHeadingMarkup, feedHeadingNeedsRefresh } from "../feed-heading
 import { dismissOpenMobileMenuForNavigation, wireAvatarImageFallbacks, initLayoutUI, syncMobileAppNavHeight } from "../layout.js";
 import { initLoginPage } from "../login.js";
 import { pubkeyFromProfilePath, routeKind, withRelays } from "../nav-routing.js";
-import { noteProfilePubkey } from "../note-profiles.js";
+import { refreshVisibleNoteProfiles, rememberVisibleNoteProfiles } from "../note-profiles.js";
 import { initViewMore, interactiveSelector } from "../notes.js";
 import { openImageViewer, refreshAsciiSync } from "../ascii.js";
 import { initRetroLoaders, markRetroLoaderComplete, setRetroLoaderProgress } from "../retro-loader.js";
@@ -18,13 +18,20 @@ import {
   isThreadHydrateComplete,
   isThreadHydrateRenderable,
   isThreadHydrateResponseIncomplete,
-  threadHydrateSatisfiesExpectedReplies,
+  threadFocusNeedsFullHydrate,
   threadPathNoteID,
   threadServerHydrateHref,
 } from "../thread-hydrate.js";
 import { clearLegacyRouteRecords } from "../client-store.js";
 import { putEvents } from "../event-store.js";
 import { applyCarriedNoteExpansion } from "../note-expansion.js";
+import {
+  applyDestinationThreadTransition,
+  clearThreadTransition,
+  prepareThreadFocusTransition,
+  prepareThreadTransition,
+  runNoteViewTransition,
+} from "../note-transition.js";
 import { rememberProfiles } from "../profile-memory-cache.js";
 import { rememberProfileRoutePreviewFromLink } from "../profile-route-preview.js";
 import { bindProfileStatLinks } from "../profile-tabs.js";
@@ -34,6 +41,9 @@ import { initRelaysPage } from "../relays.js";
 import { fetchWithSession, normalizedPubkey, normalizeRelayURL, shortPubkey, updateRelayAwareLinks, updateSessionLinks } from "../session.js";
 import { replaceRouteOutletHTML, routeOutletElement, routeScrollTop, scrollRouteToTop, setRouteScrollTop } from "../shell-swap.js";
 import { initThreadPage, teardownThreadTreeConnector } from "../thread.js";
+import { initThreadIntentWarm } from "../thread-intent-warm.js";
+import { threadParentSkeletonMarkup } from "../shell.js";
+import { parentID, rootIDForEvent } from "../thread-tags.js";
 import { appBootstrap } from "./bootstrap.js";
 import { renderShellForRoute } from "./route-shells.js";
 import { setCurrentRoute, nextRouteRefreshToken } from "../navigation-route-state.js";
@@ -49,9 +59,11 @@ const ROUTE_SCROLL_STORAGE_PREFIX = "ptxt_document_route_scroll:";
 const ROUTE_TOUCH_TAP_MAX_MOVE = 12;
 const ROUTE_SNAPSHOT_LIMIT = 3;
 const THREAD_SERVER_RENDER_RETRY_DELAYS_MS = [450, 1000, 1800, 3000];
+const THREAD_PARTIAL_UPGRADE_RETRY_DELAYS_MS = [800, 1800, 3500, 7000];
 let routeTouchStart = null;
 let routeTouchHandled = null;
 let routePopstateNavigation = false;
+let threadPartialUpgradeGeneration = 0;
 const routeSnapshots = new Map();
 
 function currentURL() {
@@ -88,11 +100,28 @@ function routeOutletHasPendingThread(root = main) {
   return Boolean(root?.querySelector?.(".feed-column[data-thread-route-pending]"));
 }
 
+function visibleThreadSelectedNote(root, url) {
+  const selectedID = threadPathNoteID(url?.toString?.() || window.location.href);
+  if (!selectedID || !root?.querySelector) return null;
+  const selected = root.querySelector(`#thread-focus #note-${CSS.escape(selectedID)}`);
+  return selected instanceof HTMLElement ? selected : null;
+}
+
+function settleVisiblePartialThread(root, url) {
+  if (!visibleThreadSelectedNote(root, url)) return false;
+  const column = root.querySelector(".feed-column[data-thread-route-pending]");
+  if (!(column instanceof HTMLElement)) return false;
+  column.removeAttribute("data-thread-route-pending");
+  column.dataset.threadRoutePartial = "1";
+  root.querySelector("#thread-summary")?.replaceChildren?.();
+  return true;
+}
+
 function renderCurrentRouteShell(route, url, { force = false } = {}) {
   if (!main || (!force && routeOutletHasShell(main))) return;
   const html = renderShellForRoute(route, url);
   if (!html) return;
-  replaceRouteOutletHTML(main, html);
+  replaceRouteOutletPreservingProfiles(html);
   if (route === "profile") {
     applyImmediateProfileShell(main, pubkeyFromProfilePath(url.pathname));
   }
@@ -189,24 +218,15 @@ function visibleFeedScrollAnchor() {
   return null;
 }
 
-function renderedFeedProfiles(outlet) {
-  const profiles = {};
-  outlet?.querySelectorAll?.("#feed [data-ascii-kind]").forEach((card) => {
-    const pubkey = noteProfilePubkey(card);
-    if (!pubkey) return;
-    const display = String(card.dataset.asciiAuthor || "").trim();
-    const picture = String(card.dataset.asciiAvatar || "").trim();
-    const fallbackDisplay = !display || display === shortPubkey(pubkey) || display === pubkey.slice(0, 12);
-    if (fallbackDisplay && !picture) return;
-    profiles[pubkey] = {
-      ...(profiles[pubkey] || {}),
-      pubkey,
-      display_name: fallbackDisplay ? profiles[pubkey]?.display_name || "" : display,
-      name: fallbackDisplay ? profiles[pubkey]?.name || "" : display,
-      picture: picture || profiles[pubkey]?.picture || "",
-    };
-  });
-  return profiles;
+function renderedRouteProfiles(outlet) {
+  return rememberVisibleNoteProfiles(outlet);
+}
+
+function replaceRouteOutletPreservingProfiles(html) {
+  if (!main) return;
+  renderedRouteProfiles(routeOutletElement(main));
+  replaceRouteOutletHTML(main, html);
+  void refreshVisibleNoteProfiles(main);
 }
 
 function saveCurrentRouteSnapshot(url = currentURL()) {
@@ -225,7 +245,7 @@ function saveCurrentRouteSnapshot(url = currentURL()) {
   routeSnapshots.set(href, {
     href,
     html,
-    profiles: renderedFeedProfiles(outlet),
+    profiles: renderedRouteProfiles(outlet),
     savedAt: Date.now(),
   });
   while (routeSnapshots.size > ROUTE_SNAPSHOT_LIMIT) {
@@ -240,7 +260,7 @@ function restoreRouteSnapshot(route, url, { directFeedNavigation = false } = {})
   const href = routeSnapshotHref(route, url);
   const snapshot = routeSnapshots.get(href);
   if (!snapshot?.html || Date.now() - Number(snapshot.savedAt || 0) > 30 * 60_000) return false;
-  replaceRouteOutletHTML(main, snapshot.html);
+  replaceRouteOutletPreservingProfiles(snapshot.html);
   if (snapshot.profiles && typeof snapshot.profiles === "object") {
     rememberProfiles(snapshot.profiles);
   }
@@ -543,7 +563,74 @@ function delay(ms) {
   });
 }
 
-async function fetchServerRenderedRouteHTML(route, url, { preferredRelays = [], telemetryID = "", expectedReplyCount = 0 } = {}) {
+function applyCompletedThreadUpgrade(html, url) {
+  if (!html?.trim?.()) return false;
+  if (routeStorageHref(currentURL()) !== routeStorageHref(url)) return false;
+  replaceRouteOutletPreservingProfiles(html);
+  setCurrentRoute("thread");
+  updateSessionLinks();
+  updateRelayAwareLinks();
+  rehydrateRouteChrome("thread", url, main);
+  initFeedLoadMore(main);
+  initLayoutUI(main);
+  initViewMore(main);
+  wireAvatarImageFallbacks(main);
+  initThreadPage();
+  syncMobileAppNavHeight();
+  ensureFocusedThreadBelowHeader();
+  syncRoutePolling("thread", url, main);
+  document.dispatchEvent(new CustomEvent("page:load", {
+    detail: {
+      page: "thread",
+      route: "thread",
+      url: url.toString(),
+      container: routeOutletElement(main) || main,
+    },
+  }));
+  return true;
+}
+
+function scheduleThreadPartialUpgrade(urlLike) {
+  let url = null;
+  try {
+    url = new URL(urlLike?.toString?.() || window.location.href, window.location.origin);
+  } catch {
+    return;
+  }
+  const selectedID = threadPathNoteID(url.toString());
+  if (!selectedID || !threadFocusNeedsFullHydrate(main)) return;
+  const generation = ++threadPartialUpgradeGeneration;
+  void (async () => {
+    for (const retryDelay of THREAD_PARTIAL_UPGRADE_RETRY_DELAYS_MS) {
+      await delay(retryDelay);
+      if (generation !== threadPartialUpgradeGeneration) return;
+      if (routeStorageHref(currentURL()) !== routeStorageHref(url)) return;
+      let response = null;
+      try {
+        response = await fetchWithSession(withRelays(serverThreadHydrateHref(url)), {
+          headers: { Accept: "text/html" },
+        });
+      } catch {
+        continue;
+      }
+      if (!response?.ok) continue;
+      const html = await response.text();
+      if (!isThreadHydrateComplete(html, selectedID)) continue;
+      if (generation !== threadPartialUpgradeGeneration) return;
+      if (applyCompletedThreadUpgrade(html, url)) {
+        threadPartialUpgradeGeneration += 1;
+      }
+      return;
+    }
+    if (generation !== threadPartialUpgradeGeneration) return;
+    const parent = main?.querySelector?.("#thread-focus .thread-focus-parent--skeleton");
+    if (parent instanceof HTMLElement) {
+      parent.dataset.threadParentState = "unavailable";
+    }
+  })();
+}
+
+async function fetchServerRenderedRouteHTML(route, url, { preferredRelays = [], telemetryID = "" } = {}) {
   if (!serverPrimaryRoute(route)) return "";
   if (route === "thread") {
     const selectedID = threadPathNoteID(url.toString());
@@ -559,10 +646,16 @@ async function fetchServerRenderedRouteHTML(route, url, { preferredRelays = [], 
       });
       if (!response.ok) return "";
       const html = await response.text();
-      if (
-        !isThreadHydrateResponseIncomplete(response, html, selectedID) &&
-        threadHydrateSatisfiesExpectedReplies(html, expectedReplyCount)
-      ) return html.trim();
+      // Navigation paintability is determined by selected-thread context.
+      // Reply counts advertised by the source card are a freshness hint, not
+      // a reason to discard a renderable root/focus response and show a full
+      // route loader while background materialization catches up.
+      if (!isThreadHydrateResponseIncomplete(response, html, selectedID)) return html.trim();
+      // A carried/clicked note is already a better foreground state than an
+      // incomplete server response. Do not spend the full-route retry budget
+      // or expose its telemetry; settle the preview and retry only the missing
+      // parent/replies in the localized upgrade lane.
+      if (visibleThreadSelectedNote(main, url)) return "";
       const retryDelay = THREAD_SERVER_RENDER_RETRY_DELAYS_MS[attempt];
       if (!Number.isFinite(retryDelay)) return "";
       markThreadServerRenderRetry(attempt + 1);
@@ -578,17 +671,17 @@ async function fetchServerRenderedRouteHTML(route, url, { preferredRelays = [], 
   return serverRouteHasRenderableHTML(route, html, url) ? html : "";
 }
 
-async function renderServerRouteIfAvailable(route, url, { force = false, preferredRelays = [], telemetryID = "", expectedReplyCount = 0 } = {}) {
+async function renderServerRouteIfAvailable(route, url, { force = false, preferredRelays = [], telemetryID = "" } = {}) {
   if (!main) return false;
   if (relayNativeRouteOverrideEnabled()) return false;
   if (!force && routeOutletHasShell(main) && !(route === "thread" && routeOutletHasPendingThread(main))) return false;
-  const html = await fetchServerRenderedRouteHTML(route, url, { preferredRelays, telemetryID, expectedReplyCount }).catch(() => "");
+  const html = await fetchServerRenderedRouteHTML(route, url, { preferredRelays, telemetryID }).catch(() => "");
   if (!html) {
     if (route === "thread" && routeOutletHasPendingThread(main)) markThreadServerRenderUnavailable();
     return false;
   }
   if (routeStorageHref(currentURL()) !== routeStorageHref(url)) return false;
-  replaceRouteOutletHTML(main, html);
+  replaceRouteOutletPreservingProfiles(html);
   return true;
 }
 
@@ -742,7 +835,7 @@ function storeThreadPreviewHandoff(href, source) {
   }
 }
 
-async function restoreThreadPreviewHandoff(url) {
+async function restoreThreadPreviewHandoff(url, { renderPreview = true } = {}) {
   const empty = { previewAlreadyRendered: false, preferredRelays: [] };
   if (routeKind(url.pathname) !== "thread") return empty;
   let payload = null;
@@ -759,7 +852,7 @@ async function restoreThreadPreviewHandoff(url) {
     ? payload.preferredRelays.map((relay) => String(relay || "").trim()).filter(Boolean)
     : [];
   let previewAlreadyRendered = false;
-  if (payload.event?.id) {
+  if (renderPreview && payload.event?.id) {
     await putEvents([payload.event]).catch(() => {});
     const preview = await renderCachedThreadRoutePreview(main, selectedID || payload.selectedID || "", {
       preferredRelays,
@@ -796,14 +889,17 @@ async function navigateThreadFocusFromServer(href, sourceCard = null) {
   const html = await response.text();
   if (!html.trim()) return false;
   const selectedID = threadPathNoteID(url.toString());
-  if (selectedID && !isThreadHydrateComplete(html, selectedID)) return optimisticallyRendered;
+  if (selectedID && !isThreadHydrateComplete(html, selectedID)) {
+    if (optimisticallyRendered) scheduleThreadPartialUpgrade(url);
+    return optimisticallyRendered;
+  }
 
   if (!optimisticallyRendered) {
     history.pushState(history.state, "", targetHref);
   } else if (routeStorageHref(currentURL()) !== targetHref) {
     return true;
   }
-  replaceRouteOutletHTML(main, html);
+  replaceRouteOutletPreservingProfiles(html);
   setCurrentRoute("thread");
   updateSessionLinks();
   updateRelayAwareLinks();
@@ -847,6 +943,9 @@ async function navigateDocumentRoute(href, { sourceLink = null, sourceCard = nul
   scrollRouteToTop(main);
   const restoredFeedSnapshot = restoreRouteSnapshot(route, url, { directFeedNavigation: true });
   renderCurrentRouteShell(route, url, { force: !restoredFeedSnapshot });
+  if (route === "thread" && sourceCard instanceof HTMLElement) {
+    renderFeedToThreadPreview(url.toString(), sourceCard);
+  }
   if (route === "profile") {
     updateProfilePostsRouteLoader({
       percent: 8,
@@ -858,14 +957,10 @@ async function navigateDocumentRoute(href, { sourceLink = null, sourceCard = nul
   const preferredRelays = route === "thread"
     ? threadPreviewHandoffRelays(sourceCard instanceof HTMLElement ? sourceCard : sourceLink)
     : [];
-  const expectedReplyCount = route === "thread" && sourceCard instanceof HTMLElement
-    ? Number.parseInt(sourceCard.dataset.asciiReplyCount || "0", 10) || 0
-    : 0;
   const telemetry = beginThreadTelemetry(route, url);
   const serverRendered = restoredFeedSnapshot || await renderServerRouteIfAvailable(route, url, {
     force: true,
     preferredRelays,
-    expectedReplyCount,
     telemetryID: telemetry.id,
   });
   telemetry.close();
@@ -884,8 +979,24 @@ async function navigateDocumentRoute(href, { sourceLink = null, sourceCard = nul
   return hydrateDocumentRoute({
     shellAlreadyRendered: true,
     serverRendered,
-    expectedReplyCount,
+    serverAttempted: true,
   });
+}
+
+function renderFeedToThreadPreview(href, sourceCard) {
+  if (!(sourceCard instanceof HTMLElement)) return false;
+  const rendered = renderOptimisticThreadFocus(href, sourceCard);
+  if (!rendered) return false;
+  const selectedID = threadPathNoteID(href);
+  const selected = selectedID
+    ? main?.querySelector?.(`#thread-focus #note-${CSS.escape(selectedID)}`)
+    : null;
+  selected?.classList?.add?.("ptxt-carried-thread-note");
+  main?.querySelector?.("#thread-summary")?.replaceChildren();
+  main?.querySelector?.("#thread-tree-view")?.replaceChildren();
+  const participants = main?.querySelector?.('[data-thread-fragment="participants"]');
+  if (participants instanceof HTMLElement) participants.hidden = true;
+  return true;
 }
 
 function sameDocumentRouteHref(link) {
@@ -957,7 +1068,21 @@ function renderOptimisticThreadFocus(href, sourceCard = null) {
   const focus = main?.querySelector?.("#thread-focus");
   if (!(focus instanceof HTMLElement)) return false;
   const column = main.querySelector(".feed-column[data-thread-root-id], .feed-column[data-thread-selected-id]");
-  const rootID = String(column?.dataset?.threadRootId || "").toLowerCase();
+  const handoffEvent = parsedHandoffEvent(sourceCard);
+  const rootID = String(
+    column?.dataset?.threadRootId ||
+    sourceCard.dataset.replyRootId ||
+    sourceCard.dataset.asciiThreadRootId ||
+    rootIDForEvent(handoffEvent) ||
+    "",
+  ).toLowerCase();
+  const directParentID = String(
+    parentID(rootID, handoffEvent) || parentID("", handoffEvent) || "",
+  ).toLowerCase();
+  const expectsParent = Boolean(
+    (rootID && selectedID !== rootID) ||
+    (directParentID && directParentID !== selectedID),
+  );
   column?.setAttribute?.("data-thread-selected-id", selectedID);
   const previousFocused = sourceCard.classList.contains("thread-focus-parent")
     ? focus.querySelector(".thread-focus-selected, .is-focused")
@@ -970,7 +1095,13 @@ function renderOptimisticThreadFocus(href, sourceCard = null) {
   });
   const selected = sourceCard.cloneNode(true);
   if (!(selected instanceof HTMLElement)) return false;
-  const parentSource = optimisticThreadParentSource(sourceCard, selectedID, rootID, focus);
+  const parentSource = optimisticThreadParentSource(
+    sourceCard,
+    selectedID,
+    directParentID || rootID,
+    rootID,
+    focus,
+  );
   selected.classList.remove("comment", "thread-focus-parent");
   selected.classList.add("note", "is-focused", "thread-focus-selected");
   normalizeOptimisticThreadAvatar(selected, "note-avatar");
@@ -980,19 +1111,17 @@ function renderOptimisticThreadFocus(href, sourceCard = null) {
   selected.style.setProperty("--depth", "1");
   selected.querySelectorAll(":scope > .comments, :scope > .continue-thread").forEach((node) => node.remove());
   focus.replaceChildren();
-  if (rootID && selectedID !== rootID) {
-    const parent = parentSource ? optimisticThreadParentClone(parentSource) : document.createElement("div");
-    parent.classList.add("thread-focus-parent");
-    if (!parentSource) {
-      parent.className = "comment thread-focus-parent thread-focus-parent--skeleton";
-      parent.setAttribute("aria-hidden", "true");
-    }
+  if (expectsParent) {
+    const parent = parentSource
+      ? optimisticThreadParentClone(parentSource)
+      : optimisticThreadParentSkeleton();
     focus.append(parent);
   }
   focus.append(selected);
   renderOptimisticThreadReplies(sourceCard, selectedID, previousFocused);
   refreshAsciiSync(focus);
   refreshAsciiSync(main.querySelector("#thread-replies"));
+  applyDestinationThreadTransition(main, selectedID);
   initViewMore(focus);
   initViewMore(main.querySelector("#thread-replies"));
   wireAvatarImageFallbacks(focus);
@@ -1008,14 +1137,29 @@ function normalizeOptimisticThreadAvatar(shell, className) {
   avatar.classList.add(className);
 }
 
-function optimisticThreadParentSource(sourceCard, selectedID, rootID, focus) {
-  if (!(sourceCard instanceof HTMLElement) || !selectedID || !rootID) return null;
+function optimisticThreadParentSource(sourceCard, selectedID, expectedParentID, rootID, focus) {
+  if (!(sourceCard instanceof HTMLElement) || !selectedID) return null;
   const nestedParent = sourceCard.parentElement?.closest?.(".comment[id^='note-']");
   if (nestedParent instanceof HTMLElement && noteIDFromElement(nestedParent) !== selectedID) {
     return nestedParent;
   }
-  const rootParent = focus?.querySelector?.(`#note-${CSS.escape(rootID)}`);
-  return rootParent instanceof HTMLElement ? rootParent : null;
+  for (const candidateID of [expectedParentID, rootID]) {
+    if (!candidateID || candidateID === selectedID) continue;
+    const parent = focus?.querySelector?.(`#note-${CSS.escape(candidateID)}`);
+    if (parent instanceof HTMLElement) return parent;
+  }
+  return null;
+}
+
+function optimisticThreadParentSkeleton() {
+  const template = document.createElement("template");
+  template.innerHTML = threadParentSkeletonMarkup().trim();
+  const parent = template.content.firstElementChild;
+  if (parent instanceof HTMLElement) return parent;
+  const fallback = document.createElement("div");
+  fallback.className = "comment thread-focus-parent thread-focus-parent--skeleton";
+  fallback.setAttribute("aria-hidden", "true");
+  return fallback;
 }
 
 function optimisticThreadParentClone(source) {
@@ -1072,6 +1216,19 @@ function renderOptimisticThreadReplies(sourceCard, selectedID, previousFocused =
   });
 }
 
+async function navigateThreadCardWithTransition(href, card, navigate) {
+  const sourceRoute = routeKind(window.location.pathname);
+  const transition = sourceRoute === "thread"
+    ? prepareThreadFocusTransition(card, href, main)
+    : prepareThreadTransition(card, href);
+  const selectedID = threadPathNoteID(href);
+  try {
+    return await runNoteViewTransition(transition, navigate, { awaitUpdate: false });
+  } finally {
+    if (transition) clearThreadTransition(selectedID);
+  }
+}
+
 function activateRouteCardTarget(target, event) {
   if (!(target instanceof Element)) return false;
   const referenced = target.closest(routeCardReferenceSelector);
@@ -1102,7 +1259,12 @@ function activateRouteCardTarget(target, event) {
   event.preventDefault();
   event.stopImmediatePropagation();
   if (routeKind(window.location.pathname) === "thread") {
-    void navigateThreadFocusFromServer(href, card instanceof HTMLElement ? card : null).then((handled) => {
+    const sourceCard = card instanceof HTMLElement ? card : null;
+    void navigateThreadCardWithTransition(
+      href,
+      sourceCard,
+      () => navigateThreadFocusFromServer(href, sourceCard),
+    ).then((handled) => {
       if (!handled) window.location.assign(withRelays(href));
     }).catch(() => {
       window.location.assign(withRelays(href));
@@ -1115,9 +1277,12 @@ function activateRouteCardTarget(target, event) {
       window.location.assign(href);
       return true;
     }
-    void navigateDocumentRoute(withRelays(href), {
-      sourceCard: card instanceof HTMLElement ? card : null,
-    }).then((handled) => {
+    const sourceCard = card instanceof HTMLElement ? card : null;
+    void navigateThreadCardWithTransition(
+      href,
+      sourceCard,
+      () => navigateDocumentRoute(withRelays(href), { sourceCard }),
+    ).then((handled) => {
       if (!handled) window.location.assign(withRelays(href));
     }).catch(() => {
       window.location.assign(withRelays(href));
@@ -1144,6 +1309,7 @@ async function unregisterAppShellServiceWorker() {
 }
 
 function initDocumentLifecycle(hydrateRoute) {
+  let routeViewerPubkey = normalizedPubkey();
   document.addEventListener("click", (event) => {
     if (event.defaultPrevented) return;
     if (typeof event.button === "number" && event.button !== 0) return;
@@ -1169,7 +1335,11 @@ function initDocumentLifecycle(hydrateRoute) {
           event.preventDefault();
           saveCurrentRouteScroll(sourceCard);
           storeThreadPreviewHandoff(cardHref, sourceCard);
-          void navigateThreadFocusFromServer(cardHref, sourceCard).then((handled) => {
+          void navigateThreadCardWithTransition(
+            cardHref,
+            sourceCard,
+            () => navigateThreadFocusFromServer(cardHref, sourceCard),
+          ).then((handled) => {
             if (!handled) window.location.assign(withRelays(cardHref));
           }).catch(() => {
             window.location.assign(withRelays(cardHref));
@@ -1194,10 +1364,15 @@ function initDocumentLifecycle(hydrateRoute) {
           const cardHref = threadHrefForRouteCard(sourceCard, routeHref);
           storeThreadPreviewHandoff(cardHref, sourceCard);
         }
-        void navigateDocumentRoute(withRelays(routeHref), {
+        const sourceNote = sourceCard instanceof HTMLElement ? sourceCard : null;
+        const navigate = () => navigateDocumentRoute(withRelays(routeHref), {
           sourceLink: link,
-          sourceCard: sourceCard instanceof HTMLElement ? sourceCard : null,
-        }).then((handled) => {
+          sourceCard: sourceNote,
+        });
+        const work = routeKindFromHref(routeHref) === "thread" && sourceNote
+          ? navigateThreadCardWithTransition(routeHref, sourceNote, navigate)
+          : navigate();
+        void work.then((handled) => {
           if (!handled) window.location.assign(withRelays(routeHref));
         }).catch(() => {
           window.location.assign(withRelays(routeHref));
@@ -1298,7 +1473,12 @@ function initDocumentLifecycle(hydrateRoute) {
     clearRouteClientCaches();
     void hydrateRoute({ forceRefresh: true }).catch(() => {});
   };
-  window.addEventListener("ptxt:session", refreshCurrentRoute);
+  window.addEventListener("ptxt:session", (event) => {
+    const nextViewerPubkey = normalizedPubkey(event?.detail);
+    if (nextViewerPubkey === routeViewerPubkey) return;
+    routeViewerPubkey = nextViewerPubkey;
+    refreshCurrentRoute();
+  });
   for (const evt of ["ptxt:relays", "ptxt:web-of-trust-changed", "ptxt:viewer-prefs-changed"]) {
     window.addEventListener(evt, refreshCurrentRoute);
   }
@@ -1311,6 +1491,10 @@ async function hydrateDocumentRoute(options = {}) {
   const route = routeKind(url.pathname);
   if (!route) return false;
 
+  // The local server can paint identities before the browser-side route cache
+  // has metadata. Seed that cache before any shell, fragment, or relay-native
+  // renderer gets a chance to replace the current document.
+  rememberVisibleNoteProfiles(main);
   setCurrentRoute(route);
   const routeScrollRestore = readRouteScrollRestore(route, url);
   const restoredSnapshot = restoreRouteSnapshot(route, url);
@@ -1322,16 +1506,16 @@ async function hydrateDocumentRoute(options = {}) {
   // localStorage. Treat its canonical anonymous thread as an immediate preview,
   // then replace it with one private, viewer-scoped hydrate response.
   const initialThreadViewerChanged = options.initialDocumentLoad === true && route === "thread" && Boolean(normalizedPubkey());
-  const telemetry = !options.serverRendered && !serverRenderedInitialRouteUsable(route, main, url)
+  const telemetry = options.serverAttempted !== true && !options.serverRendered && !serverRenderedInitialRouteUsable(route, main, url)
     ? beginThreadTelemetry(route, url)
     : { id: "", close() {} };
-  const serverRendered = options.serverRendered === true ||
-    await renderServerRouteIfAvailable(route, url, {
+  const serverRendered = options.serverRendered === true || (
+    options.serverAttempted !== true && await renderServerRouteIfAvailable(route, url, {
       force: initialFeedSessionChanged || initialThreadViewerChanged ||
         (options.forceShell === true && !restoredSnapshot && serverPrimaryRoute(route)),
-      expectedReplyCount: Number(options.expectedReplyCount) || 0,
       telemetryID: telemetry.id,
-    });
+    })
+  );
   telemetry.close();
 
   if (route === "relays") initRelaysPage(main);
@@ -1343,7 +1527,12 @@ async function hydrateDocumentRoute(options = {}) {
     }
   }
   const previewHandoff = route === "thread"
-    ? await restoreThreadPreviewHandoff(url)
+    ? await restoreThreadPreviewHandoff(url, {
+      // Same-document navigation has already painted the carried note, and a
+      // successful server render is authoritative. Re-rendering the handoff
+      // here can overwrite a real/partial parent with an older cached preview.
+      renderPreview: options.shellAlreadyRendered !== true && !serverRendered,
+    })
     : { previewAlreadyRendered: false, preferredRelays: [] };
   const serverRenderedInitialRoute = options.initialDocumentLoad === true && !initialFeedSessionChanged && serverRenderedInitialRouteUsable(route, main, url);
   // An explicitly enabled relay-native route is an override, not merely an
@@ -1364,7 +1553,11 @@ async function hydrateDocumentRoute(options = {}) {
     });
   }
   if (route === "thread" && routeOutletHasPendingThread(main)) {
-    return false;
+    // A clicked/carried note is already a useful thread route. If the server
+    // exhausts its foreground budget, settle that preview as a stable partial
+    // view and let background warming/polling upgrade it. Returning false here
+    // triggers a hard navigation, recreates the pending shell, and loops.
+    if (!settleVisiblePartialThread(main, url)) return false;
   }
 
   syncDocumentTitleForRoute(route);
@@ -1381,7 +1574,10 @@ async function hydrateDocumentRoute(options = {}) {
     initThreadPage();
     syncMobileAppNavHeight();
     ensureFocusedThreadBelowHeader();
+    if (threadFocusNeedsFullHydrate(main)) scheduleThreadPartialUpgrade(url);
+    else threadPartialUpgradeGeneration += 1;
   } else {
+    threadPartialUpgradeGeneration += 1;
     teardownThreadTreeConnector();
   }
   syncRoutePolling(route, url, main, {
@@ -1404,6 +1600,7 @@ export function initDocumentRouter() {
   if ("scrollRestoration" in history) history.scrollRestoration = "manual";
   void unregisterAppShellServiceWorker();
   initDocumentLifecycle(hydrateDocumentRoute);
+  initThreadIntentWarm(document);
   void hydrateDocumentRoute({ initialDocumentLoad: true }).catch((error) => {
     console.error("Document route hydration failed", error);
   });

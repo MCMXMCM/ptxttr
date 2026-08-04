@@ -67,7 +67,14 @@ type reactionStatsRow struct {
 
 func (s *Server) handleRelayInfo(w http.ResponseWriter, r *http.Request) {
 	url := r.URL.Query().Get("url")
-	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
+	requestBudget := s.cfg.RequestTimeout
+	if s.runtimeCapabilities().DesktopShell {
+		requestBudget = requestTimeout(requestBudget)
+	}
+	if requestBudget <= 0 {
+		requestBudget = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), requestBudget)
 	defer cancel()
 	info := s.nostr.FetchRelayInfo(ctx, url)
 	_ = s.store.SetRelayStatus(ctx, info.URL, info.Error == "", info.Error)
@@ -85,6 +92,7 @@ func (s *Server) handleReplyCounts(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]int{}, nil)
 		return
 	}
+	s.hydrateDesktopETaggedEvents(r.Context(), r, ids, []int{nostrx.KindTextNote, nostrx.KindComment}, 30*time.Second)
 	counts, err := s.descendantReplyCounts(r.Context(), ids)
 	if err != nil {
 		counts = make(map[string]int, len(ids))
@@ -104,6 +112,7 @@ func (s *Server) handleReactionStats(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]reactionStatsRow{}, nil)
 		return
 	}
+	s.hydrateDesktopETaggedEvents(r.Context(), r, ids, []int{nostrx.KindReaction}, 30*time.Second)
 	viewer := viewerFromRequest(r)
 	if decoded, err := nostrx.DecodeIdentifier(viewer); err == nil && decoded != "" {
 		viewer = decoded
@@ -691,7 +700,11 @@ func (s *Server) handleReactionsAPI(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, nil, httpError("invalid note_id", http.StatusBadRequest))
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
+	requestBudget := s.cfg.RequestTimeout
+	if s.runtimeCapabilities().DesktopShell {
+		requestBudget = requestTimeout(requestBudget)
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), requestBudget)
 	defer cancel()
 	target, err := s.store.GetEvent(ctx, noteID)
 	if err != nil {
@@ -706,6 +719,7 @@ func (s *Server) handleReactionsAPI(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, nil, httpError("note not found", http.StatusNotFound))
 		return
 	}
+	s.hydrateDesktopETaggedEvents(ctx, r, []string{noteID}, []int{nostrx.KindReaction}, 30*time.Second)
 	rows, truncated, err := s.store.ReactionReactorsByNoteID(ctx, noteID, 0)
 	if err != nil {
 		writeJSON(w, nil, err)
@@ -770,7 +784,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, nil, httpError(err.Error(), http.StatusBadRequest))
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.RequestTimeout)
+	publishTimeout := s.cfg.RequestTimeout
+	if s.runtimeCapabilities().DesktopShell {
+		publishTimeout = requestTimeout(publishTimeout)
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), publishTimeout)
 	defer cancel()
 	if err := s.validateReactionPublishTarget(ctx, payload.Event); err != nil {
 		writeJSON(w, nil, httpError(err.Error(), http.StatusBadRequest))
@@ -780,6 +798,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, nil, httpError(err.Error(), http.StatusBadRequest))
 		return
 	}
+	s.hydrateDesktopPublishParticipantRelays(ctx, r, payload.Event)
 	relays := s.planPublishRelays(ctx, r, payload.Event, payload.Relays)
 	if len(relays) == 0 {
 		writeJSON(w, nil, httpError("at least one relay is required", http.StatusBadRequest))
@@ -799,6 +818,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if published.AcceptedCount() > 0 {
+		inboxRelays := s.desktopPublishInboxRelays(ctx, payload.Event, relays)
+		if len(inboxRelays) > 0 {
+			inboxPublished, inboxErr := s.nostr.PublishTo(ctx, inboxRelays, payload.Event)
+			if inboxErr == nil {
+				published.Results = append(published.Results, inboxPublished.Results...)
+				relays = nostrx.NormalizeRelayList(append(relays, inboxRelays...), nostrx.MaxRelays*2)
+			}
+		}
+	}
 	accepted := published.AcceptedCount()
 	for _, relayResult := range published.Results {
 		lastError := relayResult.Error
@@ -815,12 +844,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		persistCtx, persistCancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer persistCancel()
 		if err := s.store.SaveEvent(persistCtx, payload.Event); err != nil {
-			// Relays accepted the event; failing the response here would
-			// discard a successful publish and trip the client's retry loop
-			// against an event that already exists at the relay. Log and
-			// surface persisted=false so the caller (and recordPublishedAt
-			// on the JS side) still treats this as a publish success and
-			// opens the publisher's cache-bust window for /thread, /u, /e.
+			// Hosted callers retain the historical partial-success response.
+			// Desktop callers receive 507 below because SQLite is their durable
+			// authority and must not silently fall behind accepted relay writes.
 			slog.Warn("save event after publish failed",
 				"id", payload.Event.ID, "kind", payload.Event.Kind, "err", err)
 		} else {
@@ -842,6 +868,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if accepted == 0 {
 		response.Error = summarizeRelayFailures(published.Results)
 		w.WriteHeader(http.StatusBadGateway)
+	} else if s.runtimeCapabilities().DesktopShell && !persisted {
+		response.Error = "relays accepted the event, but the local database could not persist it"
+		w.WriteHeader(http.StatusInsufficientStorage)
 	} else {
 		w.WriteHeader(http.StatusOK)
 	}

@@ -17,10 +17,13 @@ type runtimeCapabilities struct {
 func (s *Server) runtimeCapabilities() runtimeCapabilities {
 	desktop := s != nil && s.cfg.DesktopMode
 	return runtimeCapabilities{
-		LocalFirst:               desktop,
-		DesktopShell:             desktop,
-		DirectRelayReads:         desktop,
-		RelayNativeRoutesPrimary: desktop,
+		LocalFirst:   desktop,
+		DesktopShell: desktop,
+		// The desktop sidecar is the one local authority for relay I/O and
+		// durable data. Keeping renderer relay reads enabled creates a second
+		// event store (IndexedDB) that can disagree with SQLite after a restart.
+		DirectRelayReads:         false,
+		RelayNativeRoutesPrimary: false,
 		StorageControls:          desktop,
 		BrowserExtensionSigner:   !desktop,
 		HostedGuestAdmission:     !desktop,
@@ -53,7 +56,10 @@ func (s *Server) allowThreadRelayFetch(viewerPub string, loggedOut bool, fragmen
 	if s == nil {
 		return false
 	}
-	if s.runtimeCapabilities().DirectRelayReads {
+	// Desktop requests are allowed to hydrate through the local sidecar. This
+	// is intentionally separate from DirectRelayReads, which describes the
+	// browser's relay-native fallback rather than the sidecar's relay client.
+	if s.runtimeCapabilities().DesktopShell || s.runtimeCapabilities().DirectRelayReads {
 		return true
 	}
 	if loggedOut || strings.TrimSpace(viewerPub) == "" {

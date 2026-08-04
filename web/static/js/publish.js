@@ -6,7 +6,8 @@ import {
 import { sendEventToInboxRelays } from "./inbox-relays.js";
 import { summarizeRelayFailures } from "./relay-utils.js";
 import { putEvents } from "./event-store.js";
-import { recordPublishedAt } from "./session.js";
+import { fetchWithSession, recordPublishedAt } from "./session.js";
+import { desktopModeEnabled } from "./viewer-defaults.js";
 import {
   KIND_BOOKMARK,
   KIND_FOLLOW,
@@ -29,6 +30,8 @@ const publishDeps = {
   recordPublishedAt,
   putEvents,
   invalidatePublishedQueries,
+  publishViaSidecar,
+  desktopModeEnabled,
 };
 
 function shouldFanoutInboxRelays(event) {
@@ -144,8 +147,45 @@ async function publishViaRelays(event) {
   throw err;
 }
 
-/** Publish a signed event directly to relays from the browser. */
+async function publishViaSidecar(event) {
+  const response = await fetchWithSession("/api/events", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({ event }),
+  });
+  const body = await response.json().catch(() => ({}));
+  const payload = {
+    ...body,
+    accepted: Number(body?.accepted || 0),
+    rejected: Number(body?.rejected || 0),
+    planned_relays: Array.isArray(body?.planned_relays) ? body.planned_relays : [],
+    relay_stats: Array.isArray(body?.relay_stats) ? body.relay_stats : [],
+  };
+  if (!response.ok) {
+    const error = new Error(String(payload.error || "publish request failed"));
+    error.payload = payload;
+    error.partialSuccess = payload.accepted > 0;
+    throw error;
+  }
+  if (payload.accepted <= 0) {
+    throw new Error(String(payload.error || summarizeRelayFailures(payload.relay_stats)));
+  }
+  if (payload.persisted !== true) {
+    const error = new Error("The event reached a relay but was not saved to the local database.");
+    error.payload = payload;
+    error.partialSuccess = true;
+    throw error;
+  }
+  // The sidecar validated and durably persisted the event. Retaining a
+  // second IndexedDB write here would reintroduce the competing desktop cache.
+  publishDeps.recordPublishedAt();
+  await publishDeps.invalidatePublishedQueries(event);
+  return payload;
+}
+
+/** Publish signed events through the sidecar on desktop and directly elsewhere. */
 export async function publishSignedEvent(event) {
+  if (publishDeps.desktopModeEnabled()) return publishDeps.publishViaSidecar(event);
   return publishViaRelays(event);
 }
 
@@ -162,5 +202,7 @@ export function setPublishTestHooks(overrides = null) {
     recordPublishedAt,
     putEvents,
     invalidatePublishedQueries,
+    publishViaSidecar,
+    desktopModeEnabled,
   }, overrides || {});
 }

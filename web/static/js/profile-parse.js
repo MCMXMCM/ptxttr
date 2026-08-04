@@ -123,11 +123,28 @@ export function shortNpubLabel(pubkey) {
   return `${npub.slice(0, 8)}..${npub.slice(-4)}`;
 }
 
+export function isFallbackProfileLabel(label, pubkey) {
+  const value = String(label || "").trim();
+  const pk = canonicalHex64(pubkey);
+  if (!value || !pk) return true;
+  if (
+    value === pk ||
+    value === pk.slice(0, 12) ||
+    value === `${pk.slice(0, 8)}…${pk.slice(-4)}` ||
+    value === shortNpubLabel(pk)
+  ) return true;
+  try {
+    return value === nip19.npubEncode(pk);
+  } catch {
+    return false;
+  }
+}
+
 /** Route cacheable profile pictures through the server avatar proxy. */
 export function avatarURLFor(pubkey, picture) {
   const url = String(picture || "").trim();
   if (!url) return "";
-  if (/^(?:data|blob):/i.test(url)) return url;
+  if (/^(?:data|blob):/i.test(url) || url.startsWith("/")) return url;
   const pk = canonicalHex64(pubkey);
   if (!pk) return url;
   return `/avatar/${encodeURIComponent(pk)}`;

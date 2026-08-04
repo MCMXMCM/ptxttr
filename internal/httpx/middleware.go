@@ -147,7 +147,8 @@ func withTimeout(timeout time.Duration, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r != nil && r.URL != nil {
 			switch r.URL.Path {
-			case "/api/thread-telemetry", desktopStoragePath, desktopStorageClearPath, desktopFollowGraphPath:
+			case "/api/thread-telemetry", desktopStoragePath, desktopStorageClearPath, desktopFollowGraphPath,
+				desktopReplaceablePath, desktopRelayFetchPath:
 				next.ServeHTTP(w, r)
 				return
 			}

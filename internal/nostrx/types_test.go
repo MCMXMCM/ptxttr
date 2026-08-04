@@ -9,6 +9,29 @@ import (
 	"time"
 )
 
+func TestProfileJSONUsesBrowserContract(t *testing.T) {
+	encoded, err := json.Marshal(Profile{
+		PubKey:    strings.Repeat("a", 64),
+		Display:   "Alice",
+		Picture:   "https://example.com/alice.png",
+		EventID:   strings.Repeat("b", 64),
+		CreatedAt: 123,
+		Event:     &Event{ID: strings.Repeat("b", 64)},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(encoded)
+	for _, want := range []string{`"pubkey":`, `"display_name":"Alice"`, `"picture":"https://example.com/alice.png"`, `"event_id":`, `"created_at":123`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("profile JSON %s does not contain %s", got, want)
+		}
+	}
+	if strings.Contains(got, `"Event"`) || strings.Contains(got, `"Display"`) {
+		t.Fatalf("profile JSON exposed Go field names: %s", got)
+	}
+}
+
 func TestCanonicalHex64(t *testing.T) {
 	lower := strings.Repeat("a", 64)
 	upper := strings.ToUpper(lower)

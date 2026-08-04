@@ -221,7 +221,7 @@ function threadReplySkeletonItemMarkup({ depth = 1, isLast = false } = {}) {
   const railSuffix = isLast ? "" : "\n|";
   return `<div class="comment thread-reply-skeleton-item" data-depth="${depth}" style="--depth: ${depth}" aria-hidden="true">
     <span class="comment-avatar thread-parent-skeleton-avatar" aria-hidden="true"></span>
-    <pre class="ascii-reply text-skeleton-note">     ░░░░░░░░ -- ░░░░░ -----------------[...]
+    <pre class="ascii-reply text-skeleton-note">   ░░░░░░░░ -- ░░░░░ -------------------[...]
 ${contentPrefix}░░░░░░░░░░░░░░░░░░░░░░░░░
 ${contentPrefix}░░░░░░░░░░░░░░░░░░░░░░░░░
 ${contentPrefix}[Δ] ░ [∇] -------------------------- [reply] ---+${railSuffix}</pre>
@@ -250,7 +250,7 @@ export function threadRepliesPageSkeletonMarkup() {
 export function threadParentSkeletonMarkup() {
   return `<div class="comment thread-focus-parent thread-focus-parent--skeleton" data-depth="1" style="--depth: 1" aria-hidden="true">
     <span class="comment-avatar thread-parent-skeleton-avatar" aria-hidden="true"></span>
-    <pre class="ascii-reply text-skeleton-note">     ░░░░░░░░ -- ░░░░░ -----------------[...]
+    <pre class="ascii-reply text-skeleton-note">   ░░░░░░░░ -- ░░░░░ -------------------[...]
 |    ░░░░░░░░░░░░░░░░░░░░░░░░
 |    ░░░░░░░░░░░░░░░░░░░░░░░░
 |    ░░░░░░░░░░░░░░░░░░░░░░░░

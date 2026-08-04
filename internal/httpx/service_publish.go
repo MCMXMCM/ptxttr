@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"ptxt-nstr/internal/nostrx"
 	"ptxt-nstr/internal/store"
@@ -57,8 +58,11 @@ func (s *Server) planPublishRelays(ctx context.Context, r *http.Request, event n
 	participantHints := make([]string, 0, len(participants)*2)
 	for _, pubkey := range participants {
 		set := hints[pubkey]
-		participantHints = append(participantHints, set.Write...)
+		// Recipients advertise the relays they read as their inbox. Prefer those
+		// before generic/write hints so replies and mentions reach them.
+		participantHints = append(participantHints, set.Read...)
 		participantHints = append(participantHints, set.All...)
+		participantHints = append(participantHints, set.Write...)
 	}
 	seedRelays := s.outboxSeedRelays(ctx, event.PubKey, participants, baseRelays)
 	fallbackRelays := s.curatedFallbackRelays(ctx, baseRelays, hintKeys)
@@ -68,6 +72,86 @@ func (s *Server) planPublishRelays(ctx context.Context, r *http.Request, event n
 		merged = append(merged, src...)
 	}
 	return nostrx.NormalizeRelayList(merged, nostrx.MaxRelays)
+}
+
+func (s *Server) hydrateDesktopPublishParticipantRelays(ctx context.Context, r *http.Request, event nostrx.Event) {
+	if s == nil || !s.runtimeCapabilities().DesktopShell || s.nostr == nil || s.store == nil {
+		return
+	}
+	participants := s.publishParticipantPubkeys(ctx, event)
+	stale := make([]string, 0, len(participants))
+	for _, pubkey := range participants {
+		if s.store.ShouldRefresh(ctx, "desktop.publish-inbox", pubkey, 15*time.Minute) {
+			stale = append(stale, pubkey)
+		}
+	}
+	if len(stale) == 0 {
+		return
+	}
+	relays := nostrx.NormalizeRelayList(append(
+		append(append([]string(nil), s.requestRelays(r)...), s.cfg.MetadataRelays...),
+		s.cfg.DefaultRelays...,
+	), nostrx.MaxRelays)
+	if len(relays) == 0 {
+		return
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	events, err := s.nostr.FetchFrom(fetchCtx, relays, nostrx.Query{
+		Authors: stale,
+		Kinds:   []int{nostrx.KindRelayListMetadata},
+		Limit:   nostrx.ClampRelayQueryLimit(len(stale) * 2),
+	})
+	cancel()
+	if err != nil {
+		return
+	}
+	if len(events) > 0 {
+		persistCtx, persistCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_, err = s.store.SaveEvents(persistCtx, events)
+		persistCancel()
+		if err != nil {
+			return
+		}
+	}
+	for _, pubkey := range stale {
+		s.store.MarkRefreshed(ctx, "desktop.publish-inbox", pubkey)
+	}
+}
+
+func (s *Server) desktopPublishInboxRelays(ctx context.Context, event nostrx.Event, attempted []string) []string {
+	if s == nil || !s.runtimeCapabilities().DesktopShell {
+		return nil
+	}
+	switch event.Kind {
+	case nostrx.KindTextNote, nostrx.KindRepost, nostrx.KindReaction, nostrx.KindPollResponse:
+	default:
+		return nil
+	}
+	participants := s.publishParticipantPubkeys(ctx, event)
+	if len(participants) == 0 {
+		return nil
+	}
+	hints, _ := s.store.RelayHintsByUsageForPubkeys(ctx, participants)
+	seen := make(map[string]bool, len(attempted))
+	for _, relay := range attempted {
+		seen[relay] = true
+	}
+	var candidates []string
+	for _, pubkey := range participants {
+		candidates = append(candidates, hints[pubkey].Read...)
+		candidates = append(candidates, hints[pubkey].All...)
+	}
+	out := make([]string, 0, nostrx.MaxRelays)
+	for _, relay := range nostrx.NormalizeRelayList(candidates, nostrx.MaxRelays*2) {
+		if seen[relay] {
+			continue
+		}
+		out = append(out, relay)
+		if len(out) == nostrx.MaxRelays {
+			break
+		}
+	}
+	return out
 }
 
 func (s *Server) curatedFallbackRelays(ctx context.Context, requestRelays []string, relatedPubkeys []string) []string {

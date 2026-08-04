@@ -28,6 +28,22 @@ func TestDeferGuestLoggedOutFeedFirstPageIncludesTrendSorts(t *testing.T) {
 	}
 }
 
+func TestDesktopAssemblesGuestFirstPageInsteadOfDeferring(t *testing.T) {
+	req := feedRequest{
+		SeedPubkey: defaultLoggedOutWOTSeedNPub,
+		SortMode:   feedSortRecent,
+		WoT:        webOfTrustOptions{Enabled: true, Depth: 2},
+	}
+	srv, _ := testServer(t)
+	if !srv.shouldDeferGuestLoggedOutFeedFirstPage(req) {
+		t.Fatal("hosted request should keep the bounded deferred first-page path")
+	}
+	srv.cfg.DesktopMode = true
+	if srv.shouldDeferGuestLoggedOutFeedFirstPage(req) {
+		t.Fatal("desktop request should assemble its first page on the local server")
+	}
+}
+
 func TestInvalidateResolvedSeedAuthorsClearsDurableStore(t *testing.T) {
 	srv, st := testServer(t)
 	ctx := context.Background()

@@ -174,6 +174,19 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		base.Title = "Thread"
 	}
 	fragment := r.URL.Query().Get("fragment")
+	projectionState := threadProjectionMiss
+	foregroundRelayCtx := r.Context()
+	cancelForegroundRelay := func() {}
+	if fragment == "hydrate" && s.runtimeCapabilities().DesktopShell {
+		foregroundRelayCtx, cancelForegroundRelay = context.WithTimeout(r.Context(), 2*time.Second)
+	}
+	defer cancelForegroundRelay()
+	if fragment == "hydrate" {
+		hydrateStarted := time.Now()
+		defer func() {
+			s.metrics.Observe("thread.hydrate."+string(projectionState), time.Since(hydrateStarted))
+		}()
+	}
 	// Anonymous browser documents are authoritative SSR. A previous app-shell
 	// handoff required a second fragment request and could strand mobile Safari
 	// on a permanent loader when the fragment failed. Viewer-scoped fetches may
@@ -210,7 +223,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		} else {
 			publishTelemetry("cache_miss", "selected note is not in local cache", 18)
 		}
-		selected = s.eventByIDEx(r.Context(), selectedID, relays, allowThreadRelayFetch)
+		selected = s.eventByIDEx(foregroundRelayCtx, selectedID, relays, allowThreadRelayFetch)
 	}
 	if selected == nil {
 		if fragment == "" && !loggedOut && !allowThreadRelayFetch {
@@ -240,6 +253,36 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 			},
 		})
 		return
+	}
+	if fragment == "hydrate" {
+		cacheStarted := time.Now()
+		projectionState, _ = s.threadProjectionStatus(r.Context(), selected.ID)
+		if projectionState == threadProjectionMiss && allowThreadRelayFetch && s.runtimeCapabilities().DesktopShell {
+			s.metrics.Add("thread.navigation.relay_path", 1)
+			s.runWithInteractiveRelayBudget(foregroundRelayCtx, "thread.navigation.foreground", func() {
+				s.materializeThread(foregroundRelayCtx, viewerPub, selected.ID, relays)
+			})
+			projectionState, _ = s.threadProjectionStatus(r.Context(), selected.ID)
+			// The foreground relay allowance is spent. Render the best durable
+			// projection now and let the intent lane complete missing context.
+			allowThreadRelayFetch = false
+			if projectionState != threadProjectionReady {
+				_ = s.enqueueInteractiveThreadMaterialization(viewerPub, selected.ID, relays)
+			}
+		}
+		w.Header().Set("X-Ptxt-Thread-Cache", string(projectionState))
+		w.Header().Add("Server-Timing", fmt.Sprintf("thread-cache;desc=\"%s\";dur=%.2f", projectionState, float64(time.Since(cacheStarted).Microseconds())/1000))
+		s.metrics.Add("thread.cache."+string(projectionState), 1)
+		if projectionState != threadProjectionMiss {
+			// A locally coherent graph is immediately renderable. Relay freshness is
+			// stale-while-revalidate and must not sit on the navigation request.
+			allowThreadRelayFetch = false
+			if projectionState == threadProjectionStale && s.runtimeCapabilities().DesktopShell {
+				_ = s.enqueueInteractiveThreadMaterialization(viewerPub, selected.ID, relays)
+			}
+		} else if allowThreadRelayFetch {
+			s.metrics.Add("thread.navigation.relay_path", 1)
+		}
 	}
 	// The explicitly requested note is thread context, not a candidate reply.
 	// Guests may open any locally cached root/selected note; WoT applies below
@@ -326,7 +369,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if fragment == "hydrate" {
-		hydrateStoreFirst = s.threadHydrateStoreFirst(r.Context(), fragment, root.ID)
+		hydrateStoreFirst = projectionState != threadProjectionMiss || s.threadHydrateStoreFirst(r.Context(), fragment, root.ID)
 		if hydrateStoreFirst {
 			s.metrics.Add("thread.hydrate.store_first", 1)
 		}
@@ -701,6 +744,7 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	threadResponseStatus := ThreadRenderReady
 	if (selectedExpectsFocus && !view.FocusMode) || hydrateRootChildrenIncomplete {
 		threadResponseStatus = ThreadRenderPartial
+		s.metrics.Add("thread.response.partial", 1)
 	}
 	renderResult := ThreadRenderResult{
 		Status:         threadResponseStatus,

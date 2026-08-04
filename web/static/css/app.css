@@ -301,10 +301,17 @@ html.ptxt-note-transition-cleanup .ptxt-note-transition-selected {
   isolation: isolate;
 }
 
-html.ptxt-thread-route-transition ::view-transition-old(root),
-html.ptxt-thread-route-transition ::view-transition-new(root) {
+html.ptxt-thread-route-transition::view-transition-old(root) {
   animation: none;
   opacity: 0;
+}
+
+/* Hold the authoritative destination shell behind the independently moving
+   note parts. Hiding both root snapshots exposes Electron's transparent
+   window for a frame and causes a full-screen flash. */
+html.ptxt-thread-route-transition::view-transition-new(root) {
+  animation: none;
+  opacity: 1;
 }
 
 ::view-transition-group(*) {
@@ -319,14 +326,60 @@ html.ptxt-thread-route-transition ::view-transition-new(root) {
   mix-blend-mode: normal;
 }
 
-html.ptxt-thread-route-transition ::view-transition-group(.ptxt-note-avatar),
-html.ptxt-thread-route-transition ::view-transition-group(.ptxt-note-author),
-html.ptxt-thread-route-transition ::view-transition-group(.ptxt-note-meta) {
-  animation-duration: 160ms;
+html.ptxt-thread-route-transition::view-transition-group(.ptxt-note-avatar),
+html.ptxt-thread-route-transition::view-transition-group(.ptxt-note-author),
+html.ptxt-thread-route-transition::view-transition-group(.ptxt-note-meta) {
+  animation-duration: 220ms;
 }
 
-html.ptxt-thread-route-transition ::view-transition-group(.ptxt-note-body) {
-  animation-duration: 260ms;
+html.ptxt-thread-route-transition::view-transition-group(.ptxt-note-chrome) {
+  animation-duration: 340ms;
+}
+
+html.ptxt-thread-route-transition::view-transition-group(.ptxt-note-content) {
+  animation-duration: 300ms;
+}
+
+html.ptxt-thread-route-transition::view-transition-group(.ptxt-note-actions) {
+  animation-duration: 240ms;
+}
+
+html.ptxt-thread-route-transition::view-transition-old(.ptxt-note-avatar),
+html.ptxt-thread-route-transition::view-transition-old(.ptxt-note-author),
+html.ptxt-thread-route-transition::view-transition-old(.ptxt-note-meta),
+html.ptxt-thread-route-transition::view-transition-old(.ptxt-note-chrome),
+html.ptxt-thread-route-transition::view-transition-old(.ptxt-note-content),
+html.ptxt-thread-route-transition::view-transition-old(.ptxt-note-actions) {
+  animation-name: ptxt-note-part-out;
+}
+
+html.ptxt-thread-route-transition::view-transition-new(.ptxt-note-avatar),
+html.ptxt-thread-route-transition::view-transition-new(.ptxt-note-author),
+html.ptxt-thread-route-transition::view-transition-new(.ptxt-note-meta),
+html.ptxt-thread-route-transition::view-transition-new(.ptxt-note-chrome),
+html.ptxt-thread-route-transition::view-transition-new(.ptxt-note-content),
+html.ptxt-thread-route-transition::view-transition-new(.ptxt-note-actions) {
+  animation-name: ptxt-note-part-in;
+}
+
+@keyframes ptxt-note-part-out {
+  from {
+    opacity: 1;
+  }
+
+  to {
+    opacity: 0.18;
+  }
+}
+
+@keyframes ptxt-note-part-in {
+  from {
+    opacity: 0.18;
+  }
+
+  to {
+    opacity: 1;
+  }
 }
 
 html.ptxt-thread-route-transition .route-keepalive-layer--feed[data-route-keepalive-active="0"] {
@@ -391,9 +444,9 @@ html.ptxt-thread-route-transition .route-keepalive-layer--thread[data-route-keep
 }
 
 @media (prefers-reduced-motion: reduce) {
-  html.ptxt-thread-route-transition ::view-transition-group(*),
-  html.ptxt-thread-route-transition ::view-transition-old(*),
-  html.ptxt-thread-route-transition ::view-transition-new(*) {
+  html.ptxt-thread-route-transition::view-transition-group(*),
+  html.ptxt-thread-route-transition::view-transition-old(*),
+  html.ptxt-thread-route-transition::view-transition-new(*) {
     animation: none !important;
   }
 
@@ -1244,9 +1297,19 @@ body.feed-shell main {
 }
 
 .thread-parent-skeleton-avatar {
-  animation: skeleton-bob 1.45s ease-in-out infinite;
+  animation: thread-parent-skeleton-pulse 0.9s ease-in-out infinite;
   border: 1px solid var(--border);
   background: color-mix(in oklab, var(--muted) 16%, transparent);
+}
+
+.thread-focus-parent--skeleton .text-skeleton-note {
+  animation: thread-parent-skeleton-pulse 0.9s ease-in-out infinite;
+}
+
+.thread-focus-parent--skeleton[data-thread-parent-state="unavailable"] .thread-parent-skeleton-avatar,
+.thread-focus-parent--skeleton[data-thread-parent-state="unavailable"] .text-skeleton-note {
+  animation: none;
+  opacity: 0.62;
 }
 
 .note.ptxt-note-removing,
@@ -2996,11 +3059,22 @@ article.note {
   }
 }
 
+@keyframes thread-parent-skeleton-pulse {
+  0%,
+  100% {
+    opacity: 0.62;
+  }
+  50% {
+    opacity: 0.38;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .text-skeleton,
   .text-skeleton-note,
   .retro-loader-progress,
   .profile-skeleton-avatar,
+  .thread-parent-skeleton-avatar,
   .thread-person-avatar-skeleton,
   .thread-tree-skeleton-wave,
   .thread-tree-skeleton .hn-tree-avatar-skel {
@@ -6693,24 +6767,43 @@ article.note[data-ascii-kind="note"] .ascii-card > .note-content:has(> .ascii-li
   }
 }
 
-/* Thread tree view (desktop): hide participants rail; feed column width matches
-   `640px + 340px` (or 640 + 320) whenever the shell has the same centered slack as
-   the non-wide layout, so outer `1fr` gutters do not shrink. */
-@media (min-width: 1024px) {
+/* Thread tree view: keep the navigation rail, remove the participants rail,
+   and give the tree every remaining horizontal pixel. Deep branches should
+   consume window width instead of wrapping inside the normal 640px thread column. */
+@media (min-width: 701px) {
   body.thread-tree-wide-layout.feed-shell .app-shell .right-rail[data-thread-fragment="participants"] {
     display: none;
   }
-}
 
-@media (min-width: 1024px) and (max-width: 1199px) {
-  body.thread-tree-wide-layout.feed-shell.thread-route-layout .app-shell {
-    grid-template-columns: 1fr 74px minmax(0, calc(100% - 74px - max(0px, 100% - 1034px))) 0 1fr;
+  html body.thread-tree-wide-layout.feed-shell .app-shell {
+    column-gap: var(--shell-column-gap);
+    grid-template-columns: var(--shell-left-rail) minmax(0, 1fr);
   }
-}
 
-@media (min-width: 1200px) {
-  body.thread-tree-wide-layout.feed-shell.thread-route-layout .app-shell {
-    grid-template-columns: 1fr 240px minmax(0, calc(100% - 240px - max(0px, 100% - 1220px))) 0 1fr;
+  html body.thread-tree-wide-layout.feed-shell .app-shell .left-rail {
+    grid-column: 1;
+  }
+
+  html body.thread-tree-wide-layout.feed-shell .app-shell .feed-column,
+  html body.thread-tree-wide-layout.feed-shell .route-keepalive-layer--thread[data-route-keepalive-active="1"] > .feed-column {
+    grid-column: 2;
+    margin-inline: 0;
+    max-width: none;
+  }
+
+  html body.thread-tree-wide-layout.feed-shell .route-keepalive-layer--feed[data-route-keepalive-active="0"] {
+    grid-column: 2;
+  }
+
+  html[data-ptxt-desktop-mode="1"][data-ptxt-sidebar-collapsed="1"] body.thread-tree-wide-layout.feed-shell .app-shell {
+    column-gap: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  html[data-ptxt-desktop-mode="1"][data-ptxt-sidebar-collapsed="1"] body.thread-tree-wide-layout.feed-shell .app-shell .feed-column,
+  html[data-ptxt-desktop-mode="1"][data-ptxt-sidebar-collapsed="1"] body.thread-tree-wide-layout.feed-shell .route-keepalive-layer--thread[data-route-keepalive-active="1"] > .feed-column,
+  html[data-ptxt-desktop-mode="1"][data-ptxt-sidebar-collapsed="1"] body.thread-tree-wide-layout.feed-shell .route-keepalive-layer--feed[data-route-keepalive-active="0"] {
+    grid-column: 1;
   }
 }
 

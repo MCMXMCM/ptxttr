@@ -56,13 +56,20 @@ function applyTransitionName(node, name, kind = "") {
   }
 }
 
-function threadDestinationNote(root, noteID = "") {
+function threadDestinationNote(root, noteID = "", selectedNoteID = noteID) {
   const id = String(noteID || "").trim().toLowerCase();
   if (!id || !root?.querySelector) return null;
-  const selectors = [
-    `#thread-focus > #note-${id}`,
-    `#thread-focus > .comment#note-${id}`,
-  ];
+  const selected = String(selectedNoteID || "").trim().toLowerCase();
+  const selectors = id === selected
+    ? [
+      `#thread-focus > #note-${id}`,
+      `#thread-focus > .comment#note-${id}`,
+    ]
+    : [
+      `#thread-focus > #note-${id}`,
+      `#thread-replies #note-${id}`,
+      `[data-thread-filtered-replies] #note-${id}`,
+    ];
   for (const selector of selectors) {
     const node = root.querySelector(selector);
     if (node instanceof HTMLElement) return node;
@@ -72,11 +79,11 @@ function threadDestinationNote(root, noteID = "") {
 
 function noteTransitionTargets(note) {
   if (!(note instanceof Element)) {
-    return { avatar: null, author: null, meta: null, body: null };
+    return { avatar: null, author: null, meta: null, chrome: null, content: null, actions: null };
   }
   const avatarHost =
     note.querySelector(":scope > .note-avatar, :scope > .comment-avatar, :scope .note-feed-avatar") || null;
-  const body = note.querySelector(":scope > pre.ascii-card, :scope > pre.ascii-reply") || null;
+  const chrome = note.querySelector(":scope > pre.ascii-card, :scope > pre.ascii-reply") || null;
   const author =
     note.querySelector(":scope .ascii-line-feed-header a[href^='/u/'], :scope .ascii-reply > .ascii-line:first-child a[href^='/u/'], :scope .hn-comhead a[href^='/u/']") ||
     null;
@@ -87,7 +94,9 @@ function noteTransitionTargets(note) {
       note.querySelector(":scope .ascii-line-feed-header, :scope .ascii-reply > .ascii-line:first-child, :scope .hn-comhead") ||
       null
     ),
-    body,
+    chrome,
+    content: chrome?.querySelector?.(".note-content, .ascii-note-content, .reply-content") || null,
+    actions: chrome?.querySelector?.(".ascii-line:has([data-reply-action])") || null,
   };
 }
 
@@ -133,7 +142,16 @@ function inferSourceList(card) {
 }
 
 function currentThreadSelectedNote(root = document) {
-  return root.querySelector("#thread-focus > .note[id^='note-'], #thread-focus > .comment[id^='note-']") || null;
+  for (const selector of [
+    "#thread-focus > .thread-focus-selected[id^='note-']",
+    "#thread-focus > .is-focused[id^='note-']",
+    "#thread-focus > .note[id^='note-']",
+    "#thread-focus > .comment[id^='note-']",
+  ]) {
+    const note = root.querySelector(selector);
+    if (note instanceof Element) return note;
+  }
+  return null;
 }
 
 export function prepareThreadTransition(card, href) {
@@ -162,6 +180,65 @@ export function prepareThreadTransition(card, href) {
     sourceList,
     relayHints: pendingThreadTransition.relayHints,
     sharedElement: true,
+  };
+}
+
+function transitionNoteID(note) {
+  return String(note?.id || "").replace(/^note-/, "").trim().toLowerCase();
+}
+
+function pendingTransitionNotes() {
+  const notes = pendingThreadTransition?.notes;
+  if (Array.isArray(notes) && notes.length) return notes;
+  return pendingThreadTransition?.note instanceof Element ? [pendingThreadTransition.note] : [];
+}
+
+/** Prepare both sides of a focus promotion/demotion inside the thread route. */
+export function prepareThreadFocusTransition(card, href, root = document) {
+  const selectedNoteID = threadPathNoteID(href);
+  if (!selectedNoteID || !(card instanceof Element)) return null;
+  const note = card.closest(".note, .comment, [data-thread-tree-note]");
+  if (!(note instanceof Element)) return null;
+  const sourceRoute = routeKind(window.location.pathname) || "";
+  if (sourceRoute !== "thread") return null;
+
+  const focus = note.closest?.("#thread-focus") || root.querySelector?.("#thread-focus");
+  const previousSelectedID = threadPathNoteID(window.location.href);
+  const focusedFromURL = previousSelectedID && previousSelectedID !== selectedNoteID
+    ? focus?.querySelector?.(`#note-${previousSelectedID}`)
+    : null;
+  const focusedSibling = [...(focus?.children || [])].find((candidate) => (
+    candidate instanceof Element &&
+    candidate !== note &&
+    (candidate.classList.contains("thread-focus-selected") || candidate.classList.contains("is-focused"))
+  ));
+  const previousFocused = focusedFromURL || focusedSibling || currentThreadSelectedNote(root);
+  const notes = [note];
+  if (previousFocused instanceof Element && previousFocused !== note) notes.push(previousFocused);
+  const noteIDs = [...new Set(notes.map((item) => transitionNoteID(item)).filter(Boolean))];
+
+  pendingThreadTransition = {
+    href: String(href || ""),
+    note,
+    notes,
+    noteIDs,
+    selectedNoteID,
+    sourceRoute,
+    sourceList: "thread",
+    relayHints: relayHintsFromNoteElement(note),
+    sharedElement: true,
+    focusChange: true,
+  };
+  notes.forEach((item) => applyThreadTransitionNames(item, transitionNoteID(item)));
+  return {
+    selectedNoteID,
+    previousSelectedNoteID: transitionNoteID(previousFocused),
+    noteIDs,
+    sourceRoute,
+    sourceList: "thread",
+    relayHints: pendingThreadTransition.relayHints,
+    sharedElement: true,
+    focusChange: true,
   };
 }
 
@@ -252,13 +329,18 @@ export function clearCarriedProfileTransitionNote(root = document) {
 export function applyDestinationThreadTransition(root = document, noteID = "") {
   const id = String(noteID || "").trim().toLowerCase();
   if (!id || !root?.querySelectorAll) return null;
-  root.querySelectorAll(`#feed #note-${id}`).forEach((node) => {
-    if (node instanceof HTMLElement) clearNoteTransitionNames(node);
+  const relatedIDs = pendingThreadTransition?.selectedNoteID === id
+    ? pendingThreadTransition.noteIDs || [id]
+    : [id];
+  clearThreadTransitionNames(root);
+  let selectedNote = null;
+  relatedIDs.forEach((relatedID) => {
+    const note = threadDestinationNote(root, relatedID, id);
+    if (!note) return;
+    applyThreadTransitionNames(note, relatedID);
+    if (relatedID === id) selectedNote = note;
   });
-  const note = threadDestinationNote(root, id);
-  if (!note) return null;
-  applyThreadTransitionNames(note, id);
-  return note;
+  return selectedNote;
 }
 
 export function takeCarriedThreadNote(noteID = "") {
@@ -283,13 +365,12 @@ export function clearThreadTransition(noteID = "") {
   if (!pendingThreadTransition) return;
   const id = String(noteID || "").trim().toLowerCase();
   if (id && pendingThreadTransition.selectedNoteID !== id) return;
-  const note = pendingThreadTransition.note;
-  clearTransitionName(note);
-  clearSelectedMarker(note);
-  if (note instanceof Element) {
+  pendingTransitionNotes().forEach((note) => {
+    clearTransitionName(note);
+    clearSelectedMarker(note);
     const targets = noteTransitionTargets(note);
     Object.values(targets).forEach((target) => clearTransitionName(target));
-  }
+  });
   clearThreadTransitionArtifacts(document);
   pendingThreadTransition = null;
 }
@@ -299,8 +380,7 @@ export async function runNoteViewTransition(transition, update, options = {}) {
   const awaitUpdate = options.awaitUpdate !== false;
   const reducedMotion = globalThis.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches === true;
   if (reducedMotion || !transition?.sharedElement || typeof document.startViewTransition !== "function") {
-    await update();
-    return;
+    return update();
   }
   const sourceNote = pendingThreadTransition?.note instanceof HTMLElement ? pendingThreadTransition.note : null;
   startTransitionBackdrop(sourceNote);
@@ -328,12 +408,12 @@ export async function runNoteViewTransition(transition, update, options = {}) {
   viewTransition.updateCallbackDone?.catch?.(() => {});
   try {
     await viewTransition.finished;
-    if (!awaitUpdate && updatePromise) {
-      await updatePromise;
-    }
   } catch {
     // Ignore transition failures; the DOM update already ran.
   } finally {
     stopTransitionBackdrop(sourceNote);
   }
+  if (updatePromise) return updatePromise;
+  if (updateError) throw updateError;
+  return updateResult;
 }

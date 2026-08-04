@@ -5,6 +5,7 @@ import { hashtagsInContent, normalizeHashtag, eventHasHashtag } from "./hashtag-
 import { sortEventsNewestFirst } from "./feed-query.js";
 import { zapAmountSats, zapTargetNoteID } from "./zap-utils.js";
 import { displayName, parseProfile } from "./profile-parse.js";
+import { appFeatures } from "./app/bootstrap.js";
 import {
   isClientDBUnavailableError,
   openClientDB,
@@ -24,6 +25,10 @@ const EVENT_EVICT_BATCH_LIMIT = 5000;
 const recentTouches = new Map();
 let lastMaintenanceAt = 0;
 let maintenancePromise = null;
+
+function desktopEventStoreDisabled() {
+  return Boolean(appFeatures().localFirst);
+}
 
 export function estimateEventRecordBytes(event) {
   try {
@@ -64,6 +69,7 @@ function tagIndexKeys(event) {
 }
 
 export async function putEvents(events, { relayURL = "" } = {}) {
+  if (desktopEventStoreDisabled()) return;
   if (!events?.length) return;
   try {
     const db = await openClientDB();
@@ -96,6 +102,7 @@ export async function putEvents(events, { relayURL = "" } = {}) {
 }
 
 export async function getEvent(id) {
+  if (desktopEventStoreDisabled()) return null;
   const token = String(id || "").trim().toLowerCase();
   if (!token) return null;
   const db = await openClientDB();
@@ -108,6 +115,7 @@ export async function getEvent(id) {
 
 export async function getEvents(ids) {
   const out = new Map();
+  if (desktopEventStoreDisabled()) return out;
   const db = await openClientDB();
   const tx = db.transaction(EVENTS, "readonly");
   const store = tx.objectStore(EVENTS);
@@ -197,6 +205,7 @@ export async function pruneEventStore({
   targetRecords = EVENT_CACHE_TARGET_RECORDS,
   targetBytes = EVENT_CACHE_TARGET_BYTES,
 } = {}) {
+  if (desktopEventStoreDisabled()) return 0;
   const db = await openClientDB();
   const readTx = db.transaction(EVENTS, "readonly");
   const store = readTx.objectStore(EVENTS);
@@ -259,6 +268,7 @@ export async function pruneEventStore({
 }
 
 export async function latestReplaceable(pubkey, kind) {
+  if (desktopEventStoreDisabled()) return null;
   const pk = String(pubkey || "").trim().toLowerCase();
   if (!pk) return null;
   const db = await openClientDB();
@@ -285,6 +295,7 @@ export async function latestReplaceable(pubkey, kind) {
 }
 
 export async function eventsByTag(tagName, tagValue, { kind, limit = 200 } = {}) {
+  if (desktopEventStoreDisabled()) return [];
   const tag = String(tagName || "");
   const value = String(tagValue || "").trim().toLowerCase();
   if (!tag || !value) return [];
@@ -421,6 +432,7 @@ export async function hashtagEvents({
   beforeID,
   kinds = HASHTAG_TIMELINE_KINDS,
 } = {}) {
+  if (desktopEventStoreDisabled()) return [];
   const normalized = normalizeHashtag(tag);
   if (!normalized) return [];
   const kindSet = new Set((kinds || HASHTAG_TIMELINE_KINDS).map((k) => Number(k)));
@@ -465,6 +477,7 @@ export async function recentTimelineEvents({
   beforeID,
   since,
 } = {}) {
+  if (desktopEventStoreDisabled()) return [];
   if (authors && !authors.length) return [];
   const kindSet = new Set((kinds || []).map((kind) => Number(kind)));
   if (!kindSet.size) return [];
@@ -489,6 +502,7 @@ export async function eventsByAuthors(authors, {
   since,
   until,
 } = {}) {
+  if (desktopEventStoreDisabled()) return [];
   const pubkeys = (authors || []).map((pk) => String(pk || "").trim().toLowerCase()).filter(Boolean);
   if (!pubkeys.length) return [];
   const queryKinds = kinds?.length ? kinds : [KIND_NOTE, KIND_REPOST, KIND_LONG_FORM, KIND_REACTION];
@@ -527,6 +541,7 @@ export async function zapTotals(noteIDs, { sinceCreatedAt } = {}) {
   const totals = new Map();
   const ids = [...new Set((noteIDs || []).map(canonicalHex64).filter(Boolean))];
   ids.forEach((id) => totals.set(id, 0));
+  if (desktopEventStoreDisabled()) return totals;
   if (!ids.length) return totals;
   const lowerBound = Number(sinceCreatedAt) > 0 ? Number(sinceCreatedAt) : 0;
   await Promise.all(ids.map(async (id) => {
@@ -549,6 +564,7 @@ async function countTagReferences(noteIDs, kind, { sinceCreatedAt } = {}) {
     if (id) totals.set(id, 0);
   }
   if (!totals.size) return totals;
+  if (desktopEventStoreDisabled()) return totals;
 
   const db = await openClientDB();
   const tx = db.transaction(TAG_INDEX, "readonly");
@@ -593,6 +609,7 @@ export async function localTrendingEvents({
   beforeID,
   kindFilter = null,
 } = {}) {
+  if (desktopEventStoreDisabled()) return [];
   const kindSet = new Set(
     (kindFilter != null ? [kindFilter] : kinds || [KIND_NOTE, KIND_LONG_FORM]).map((k) => Number(k)),
   );
@@ -628,6 +645,7 @@ export async function searchLocalEvents(query, {
   beforeCreatedAt,
   beforeID,
 } = {}) {
+  if (desktopEventStoreDisabled()) return [];
   const q = String(query || "").trim().toLowerCase();
   if (!q) return [];
   const tokens = q.split(/\s+/).filter(Boolean);
@@ -675,6 +693,7 @@ export async function searchLocalNotes(query, options = {}) {
 }
 
 export async function searchLocalProfiles(query, { limit = 20 } = {}) {
+  if (desktopEventStoreDisabled()) return [];
   const trimmed = String(query || "").trim();
   const max = Math.max(1, Number(limit) || 20);
   if (!trimmed) return [];

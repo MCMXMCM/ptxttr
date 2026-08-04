@@ -10,11 +10,21 @@
       body { display: grid; min-height: 100vh; margin: 0; place-items: center; background: Canvas; color: CanvasText; }
       .window-drag-region { -webkit-app-region: drag; height: 52px; left: 78px; position: fixed; right: 0; top: 0; }
       main { width: min(31rem, calc(100vw - 4rem)); text-align: center; }
-      .app-icon { display: block; height: 7rem; margin: 0 auto 1.25rem; object-fit: contain; width: 7rem; }
+      .app-icon { display: block; height: 7rem; margin: 0 auto; object-fit: contain; width: 7rem; }
       .app-icon-dark { display: none; }
       @media (prefers-color-scheme: dark) {
         .app-icon-light { display: none; }
         .app-icon-dark { display: block; }
+      }
+      .startup-details {
+        animation: reveal-startup-details 0s step-end 3s both;
+        max-height: 20rem;
+        overflow: hidden;
+        padding-top: 1.25rem;
+      }
+      @keyframes reveal-startup-details {
+        from { max-height: 0; padding-top: 0; visibility: hidden; }
+        to { visibility: visible; }
       }
       h1 { font-size: 1.35rem; font-weight: 650; margin: 0; }
       p { color: color-mix(in srgb, CanvasText 70%, transparent); line-height: 1.5; }
@@ -28,13 +38,15 @@
     <main>
       <img class="app-icon app-icon-light" data-startup-icon="light" src="/icon-light.png" alt="">
       <img class="app-icon app-icon-dark" data-startup-icon="dark" src="/icon-dark.png" alt="">
-      <h1>Plain Text Nostr</h1>
-      <p id="status">The local server is starting…</p>
-      <nav>
-        <a href="ptxt-action://retry">Retry</a>
-        <a href="ptxt-action://logs">Open Logs</a>
-        <a href="ptxt-action://quit">Quit</a>
-      </nav>
+      <div class="startup-details" data-startup-details>
+        <h1>Plain Text Nostr</h1>
+        <p id="status">The local server is starting…</p>
+        <nav>
+          <a href="ptxt-action://retry">Retry</a>
+          <a href="ptxt-action://logs">Open Logs</a>
+          <a href="ptxt-action://quit">Quit</a>
+        </nav>
+      </div>
     </main>
   </body>
 </html>

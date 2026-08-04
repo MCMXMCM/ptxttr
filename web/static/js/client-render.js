@@ -32,7 +32,7 @@ import { serverReplyCountsForEvents } from "./server-feed-metadata.js";
 import { wireAvatarImageFallbacks } from "./layout.js";
 import { initRetroLoaders, setRetroLoaderProgress } from "./retro-loader.js";
 import { initViewMore } from "./notes.js";
-import { refreshVisibleNoteProfiles } from "./note-profiles.js";
+import { refreshVisibleNoteProfiles, rememberVisibleNoteProfiles } from "./note-profiles.js";
 import { avatarRetryURL, displayName, nip05DisplayText, parseProfile, preferredAvatarURL } from "./profile-parse.js";
 import {
   fetchBookmarks,
@@ -378,6 +378,7 @@ function applyRelayNativeReplyPage(displayBundle, cursor = "", cursorId = "") {
 }
 
 async function renderRelayNativeThread(root, state) {
+  rememberVisibleNoteProfiles(root);
   const { displayBundle, profiles } = await displayBundleForRelayNativeThread(state);
   applyRelayNativeReplyPage(displayBundle);
   const referencedByID = state.referencedByID || (await hydrateReferencedEvents(displayBundle.events));

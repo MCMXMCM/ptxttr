@@ -248,10 +248,14 @@ export function inlineReferenceEvents(content, referencedByID) {
   return out;
 }
 
-export async function hydrateReferencedEvents(events) {
+export async function hydrateReferencedEvents(events, {
+  fetchEventsByIDsImpl = null,
+  putEventsImpl = null,
+  verifyEventImpl = null,
+} = {}) {
   const ids = collectReferencedEventIDs(events);
   if (!ids.length) return new Map();
-  const { fetchEventsByIDs } = await import("./relay-reads.js");
+  const fetchEventsByIDs = fetchEventsByIDsImpl || (await import("./relay-reads.js")).fetchEventsByIDs;
   const hints = relayHintsByReferencedID(events);
   const loaded = await fetchEventsByIDs(ids, { relayHintsByID: hints });
   const out = new Map();
@@ -259,12 +263,29 @@ export async function hydrateReferencedEvents(events) {
     const id = canonicalHex64(event?.id);
     if (isCanonicalEventID(id)) out.set(id, event);
   }
+  const embeddedToCache = [];
   for (const event of events || []) {
     if (!isSimpleRepost(event)) continue;
     const { id } = referencedEventRef(event);
     if (!isCanonicalEventID(id) || out.has(id)) continue;
     const embedded = parseEmbeddedRepostEvent(event.content, id);
-    if (embedded) out.set(id, embedded);
+    if (!embedded) continue;
+    out.set(id, embedded);
+    embeddedToCache.push(embedded);
+  }
+  if (embeddedToCache.length) {
+    const verifyEvent = verifyEventImpl || (await import("../lib/nostr-tools.js")).verifyEvent;
+    const signed = embeddedToCache.filter((event) => {
+      try {
+        return verifyEvent(event);
+      } catch {
+        return false;
+      }
+    });
+    if (signed.length) {
+      const putEvents = putEventsImpl || (await import("./event-store.js")).putEvents;
+      await putEvents(signed);
+    }
   }
   return out;
 }

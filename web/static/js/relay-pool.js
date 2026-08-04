@@ -4,6 +4,7 @@ import { pageIsHidden, powerLimitedCount, powerLimitedTimeoutMs, powerSaverActiv
 import { putEvents } from "./event-store.js";
 import { getNostrPool } from "./nostr-provider.js";
 import { fetchCachedQuery, queryKeys } from "./query-client.js";
+import { desktopModeEnabled } from "./viewer-defaults.js";
 
 const FETCH_TIMEOUT_MS = 8000;
 const PUBLISH_TIMEOUT_MS = 10000;
@@ -528,12 +529,32 @@ export async function relayFetch(relays, filters, { timeoutMs = FETCH_TIMEOUT_MS
   const normalized = normalizeRelayList(relays, powerLimitedCount(undefined, SAVER_MAX_FETCH_RELAYS));
   if (!normalized.length || !filters?.length) return [];
   const list = Array.isArray(filters) ? filters : [filters];
-  const p = poolOverride || sharedPool();
   const effectiveTimeout = powerLimitedTimeoutMs(timeoutMs, Math.min(timeoutMs, SAVER_FETCH_TIMEOUT_MS));
   return fetchCachedQuery({
     queryKey: queryKeys.relayFetch(normalized, list),
     staleTime: Math.max(1_000, Math.min(effectiveTimeout, 15_000)),
     queryFn: async () => {
+      if (desktopModeEnabled()) {
+        const composed = composedAbortSignal([signal], effectiveTimeout + 2_000);
+        try {
+          const response = await fetch("/__ptxt/desktop/relay-fetch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Accept: "application/json" },
+            body: JSON.stringify({
+              relays: normalized,
+              filters: list,
+              timeout_ms: effectiveTimeout,
+            }),
+            signal: composed.signal || undefined,
+          });
+          if (!response.ok) throw new Error(`desktop relay fetch failed (${response.status})`);
+          const events = await response.json();
+          return Array.isArray(events) ? dedupeEventsByID(events) : [];
+        } finally {
+          composed.dispose();
+        }
+      }
+      const p = poolOverride || sharedPool();
       let events;
       if (list.length === 1) {
         const batched = await maybeRelayFetchBatched(p, normalized, list[0], effectiveTimeout);
@@ -556,6 +577,27 @@ export async function relayFetch(relays, filters, { timeoutMs = FETCH_TIMEOUT_MS
  */
 export async function relayPublish(relays, event, { onRelayComplete, timeoutMs = PUBLISH_TIMEOUT_MS, poolOverride = null } = {}) {
   const normalized = normalizeRelayList(relays);
+  if (desktopModeEnabled()) {
+    const composed = composedAbortSignal([], timeoutMs + 2_000);
+    try {
+      const response = await fetch("/api/events", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ event, relays: normalized }),
+        signal: composed.signal || undefined,
+      });
+      const payload = await response.json().catch(() => ({}));
+      (payload?.relay_stats || []).forEach((row) => onRelayComplete?.(row));
+      if (!response.ok) {
+        const error = new Error(String(payload?.error || `desktop relay publish failed (${response.status})`));
+        error.payload = payload;
+        throw error;
+      }
+      return payload;
+    } finally {
+      composed.dispose();
+    }
+  }
   const p = poolOverride || sharedPool();
   const attempts = await Promise.all(
     normalized.map(async (relayURL) => {
@@ -590,40 +632,6 @@ export async function relayPublish(relays, event, { onRelayComplete, timeoutMs =
     persisted: false,
     planned_relays: normalized,
     relay_stats: attempts,
-  };
-}
-
-/**
- * Live subscription handle. Call cancel() to stop.
- */
-export function relaySubscribe(relays, filter, onEvent) {
-  const normalized = normalizeRelayList(relays, powerLimitedCount(undefined, SAVER_MAX_FETCH_RELAYS));
-  const p = sharedPool();
-  normalized.forEach((relay) => leaseRelay(relay));
-  const controller = new AbortController();
-  const task = (async () => {
-    try {
-      if (typeof p?.req !== "function") {
-        throw new Error("relay pool does not expose req()");
-      }
-      for await (const msg of p.req([filter], { signal: controller.signal, relays: normalized })) {
-        if (Array.isArray(msg) && msg[0] === "EVENT") onEvent?.(msg[2]);
-      }
-    } catch {
-      // ignore subscription failures for compatibility
-    }
-  })();
-  return {
-    cancel() {
-      try {
-        controller.abort("subscription cancelled");
-      } catch {
-        // ignore
-      } finally {
-        normalized.forEach((relay) => releaseRelay(relay));
-      }
-      return task;
-    },
   };
 }
 

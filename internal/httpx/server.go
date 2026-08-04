@@ -39,6 +39,7 @@ type Server struct {
 	templates                *template.Template
 	metrics                  *appMetrics
 	warmer                   *warmQueue
+	intentWarmer             *warmQueue
 	avatarCache              *avatarCache
 	nip05Cache               *ttlCache[nostrx.NIP05VerificationResult]
 	resolvedAuthors          *resolvedAuthorsCache
@@ -71,6 +72,7 @@ type Server struct {
 	maintenanceHydration     atomic.Bool
 	maintenanceTrending      atomic.Bool
 	backgroundActive         atomic.Bool
+	backgroundMode           atomic.Int32
 	userAsyncQueue           chan func()
 	relayWriteSem            chan struct{}
 
@@ -95,6 +97,10 @@ func New(cfg config.Config, st *store.Store, nostrClient *nostrx.Client) (*Serve
 	tmpl, err := template.New("").Funcs(templateFuncs()).ParseFS(templatesfs.FS, "*.html")
 	if err != nil {
 		return nil, err
+	}
+	userAsyncWorkers := userAsyncWorkerCount
+	if cfg.DesktopMode {
+		userAsyncWorkers = 1
 	}
 	server := &Server{
 		cfg:                      cfg,
@@ -124,7 +130,7 @@ func New(cfg config.Config, st *store.Store, nostrClient *nostrx.Client) (*Serve
 		tagGroup:                 newTagSingleFlight(),
 		inFlight:                 make(map[string]bool),
 		userAsyncQueue:           make(chan func(), userAsyncQueueCapacity),
-		relayWriteSem:            make(chan struct{}, userAsyncWorkerCount),
+		relayWriteSem:            make(chan struct{}, userAsyncWorkers),
 	}
 	server.ctx, server.cancel = context.WithCancel(context.Background())
 	server.store.SetEventRetention(cfg.EventRetention)
@@ -140,31 +146,44 @@ func New(cfg config.Config, st *store.Store, nostrClient *nostrx.Client) (*Serve
 	// "foreground hot" for maintenance_gate (see foregroundBusy).
 	server.lastRequestAt.Store(0)
 	server.backgroundActive.Store(true)
+	server.backgroundMode.Store(int32(desktopBackgroundForeground))
 	nostrClient.SetIngestVerifyParallel(cfg.IngestVerifyParallel)
 	nostrClient.SetNegentropyCache(st)
 	nostrClient.SetRelayMaxOutboundConns(cfg.RelayMaxOutboundConns)
 	if !server.shareServerMode() {
 		warmWorkers := cfg.WarmWorkers
+		if server.runtimeCapabilities().DesktopShell {
+			// Desktop has one local consumer. A single on-demand warmer keeps
+			// foreground requests responsive without maintaining the hosted
+			// worker pool and its large backlog.
+			warmWorkers = 1
+		}
 		if warmWorkers <= 0 {
 			warmWorkers = 2
 		}
 		server.warmer = newWarmQueue(server, warmWorkers, cfg.WarmQueueCapacity)
+		if server.runtimeCapabilities().DesktopShell {
+			server.intentWarmer = newWarmQueue(server, 1, 32)
+			server.intentWarmer.interactive = true
+		}
 	}
-	for range userAsyncWorkerCount {
+	for range userAsyncWorkers {
 		server.runBackground(server.runUserAsyncWorker)
 	}
 	if cfg.HydrationEnabled && server.allowLegacyRelayBackend() {
-		if cfg.RebuildProjections {
+		if cfg.RebuildProjections && !server.runtimeCapabilities().DesktopShell {
 			server.runBackgroundWithTimeout("projection rebuild", 30*time.Second, server.store.RebuildProjections)
 		}
 		server.runBackground(server.runHydrationSweeper)
-		server.runBackground(server.runTrendingSweeper)
-		if cfg.ActiveViewerTrendingEnabled {
-			server.runBackground(server.runActiveViewerTrendingHotLoop)
+		if !server.runtimeCapabilities().DesktopShell {
+			server.runBackground(server.runTrendingSweeper)
+			if cfg.ActiveViewerTrendingEnabled {
+				server.runBackground(server.runActiveViewerTrendingHotLoop)
+			}
 		}
 	}
 	// No relays: skip bootstrap loop (tests) to avoid retry spam on sqlite.
-	if server.allowLegacyRelayBackend() && (len(server.cfg.DefaultRelays) > 0 || len(server.cfg.MetadataRelays) > 0) {
+	if server.allowLegacyRelayBackend() && !server.runtimeCapabilities().DesktopShell && (len(server.cfg.DefaultRelays) > 0 || len(server.cfg.MetadataRelays) > 0) {
 		if cfg.GuestSliceV2Enabled {
 			server.runBackground(server.runGuestSliceScheduler)
 			server.runBackground(server.runGuestWALMonitor)
@@ -176,7 +195,7 @@ func New(cfg config.Config, st *store.Store, nostrClient *nostrx.Client) (*Serve
 			}
 		}
 	}
-	if server.allowLegacyRelayBackend() && !cfg.GuestSliceV2Enabled {
+	if server.allowLegacyRelayBackend() && !server.runtimeCapabilities().DesktopShell && !cfg.GuestSliceV2Enabled {
 		server.runBackground(server.runSeedCrawler)
 	}
 	if cfg.ViewerCrawlerEnabled && server.allowLegacyRelayBackend() {
@@ -241,6 +260,9 @@ func (s *Server) Close() {
 	go func() {
 		if s.warmer != nil {
 			s.warmer.close()
+		}
+		if s.intentWarmer != nil {
+			s.intentWarmer.close()
 		}
 		s.backgroundWG.Wait()
 		close(done)
@@ -324,10 +346,19 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/services/oembed", s.handleOEmbed)
 	mux.HandleFunc(avatarPathPrefix, s.handleAvatar)
 	if s.runtimeCapabilities().DesktopShell {
+		mux.HandleFunc("/api/thread-warm", s.handleThreadWarm)
 		mux.HandleFunc(desktopActivityPath, s.handleDesktopActivity)
 		mux.HandleFunc(desktopStoragePath, s.handleDesktopStorage)
 		mux.HandleFunc(desktopStorageClearPath, s.handleDesktopStorageClear)
 		mux.HandleFunc(desktopFollowGraphPath, s.handleDesktopFollowGraph)
+		mux.HandleFunc(desktopReplaceablePath, s.handleDesktopReplaceable)
+		mux.HandleFunc(desktopRelayFetchPath, s.handleDesktopRelayFetch)
+	}
+	if s.runtimeCapabilities().DesktopShell {
+		// Loopback is a single authenticated consumer. The hosted request
+		// coalescer, guest response headers, and traffic shield only add a
+		// second deployment policy to the local application.
+		return logging(s, withTimeout(requestTimeout(s.cfg.RequestTimeout), s.desktopLoopbackAuth(mux)))
 	}
 	coalesce := newCoalesceMiddleware(coalesceConfig{
 		Enabled: s.cfg.CoalesceEnabled,

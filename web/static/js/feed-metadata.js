@@ -13,6 +13,7 @@ import { powerLimitedCount, powerSaverActive } from "./power-mode.js";
 import { isSafariWebKit } from "./browser-capabilities.js";
 import { fetchCachedQuery, peekQueryData, queryKeys } from "./query-client.js";
 import { mergeServerReplyCounts } from "./server-feed-metadata.js";
+import { zapTotalsForEvents } from "./zap-utils.js";
 
 const visibleFeedMetadataInflight = new Map();
 const latestFeedMetadataTokenBySelector = new Map();
@@ -108,11 +109,12 @@ export async function fetchFeedNoteMetadataMaps(noteIDs, { viewerPubkey = "", so
         return buildMetadataMaps(ids, localReplies, localReactions, localZaps);
       }
 
-      const [remoteReplies, remoteReactions] = await Promise.all([
+      const [remoteReplies, remoteReactions, remoteZaps] = await Promise.all([
         fetchReplyCounts(ids).catch(() => ({})),
         fetchReactionStats(ids, viewerPubkey).catch(() => ({})),
         fetchZapReceipts(ids).catch(() => []),
       ]);
+      const remoteZapTotals = zapTotalsForEvents(ids, remoteZaps, localOpts);
 
       const replyCounts = {};
       const reactionStats = {};
@@ -129,7 +131,7 @@ export async function fetchFeedNoteMetadataMaps(noteIDs, { viewerPubkey = "", so
           total: Math.max(remoteTotal, localTotal),
           viewer: typeof remoteRow.viewer === "string" ? remoteRow.viewer : "",
         };
-        zapTotals[id] = intValue(localZaps.get(id));
+        zapTotals[id] = Math.max(intValue(localZaps.get(id)), intValue(remoteZapTotals.get(id)));
       }
       return { replyCounts, reactionStats, zapTotals };
     },
@@ -251,8 +253,14 @@ export async function refreshVisibleFeedNoteMetadata(root, baseURL, options = {}
 
 export async function refreshVisibleFeedZapTotals(root, _baseURL, feedSelector = "[data-feed]", opts = {}) {
   return refreshFeedMetadataSet(root, feedSelector, opts, async (ids) => {
-    if (!opts.localOnly && !powerSaverActive()) await fetchZapReceipts(ids).catch(() => []);
-    return localZapTotals(ids).catch(() => new Map());
+    const receipts = !opts.localOnly && !powerSaverActive()
+      ? await fetchZapReceipts(ids).catch(() => [])
+      : [];
+    const [local, remote] = await Promise.all([
+      localZapTotals(ids).catch(() => new Map()),
+      Promise.resolve(zapTotalsForEvents(ids, receipts)),
+    ]);
+    return new Map(ids.map((id) => [id, Math.max(intValue(local.get(id)), intValue(remote.get(id)))]));
   }, (note, id, totals) => {
     const next = intValue(totals.get(id));
     if (note.dataset.asciiZapTotal === `${next}`) return false;

@@ -54,6 +54,7 @@ const {
   profileListLoaderMarkup,
   staticRightRail,
   threadHeaderSkeletonMarkup,
+  threadParentSkeletonMarkup,
   threadRouteLoaderMarkup,
 } = await import("./shell.js");
 const { setSession, clearSession } = await import("./session.js");
@@ -118,6 +119,15 @@ describe("retro loader shell markup", () => {
     const markup = threadHeaderSkeletonMarkup();
     assert.equal(markup, "");
     assert.doesNotMatch(markup, /data-feed-loader/);
+  });
+
+  it("renders a complete localized parent card while a clicked reply's parent loads", () => {
+    const markup = threadParentSkeletonMarkup();
+    assert.match(markup, /thread-focus-parent--skeleton/);
+    assert.match(markup, /comment-avatar thread-parent-skeleton-avatar/);
+    assert.match(markup, /ascii-reply text-skeleton-note/);
+    assert.match(markup, /░░░░░░░░ -- ░░░░░/);
+    assert.match(markup, /\|    --- ░░░/);
   });
 
   it("can render a progress-only thread loader when thread content is already visible", () => {

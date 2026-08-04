@@ -40,4 +40,14 @@ test.describe("desktop home sidebar navigation", () => {
     await homeLink.click();
     await expect(page.locator(`#feed #note-${FEED_NOTE_ID}`)).toBeVisible({ timeout: 2_000 });
   });
+
+  test("reads heading uses the feed column instead of a shell gutter", async ({ page }) => {
+    await page.goto("/reads");
+
+    const heading = page.locator("#reads-heading");
+    await expect(heading).toBeVisible();
+    const headingBox = await heading.boundingBox();
+    expect(headingBox).not.toBeNull();
+    expect(headingBox.width).toBeGreaterThan(500);
+  });
 });

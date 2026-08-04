@@ -85,6 +85,20 @@ type Config struct {
 	ViewerCrawlerEnabled bool
 	// ViewerCrawlerInterval is the delay between viewer crawler ticks.
 	ViewerCrawlerInterval time.Duration
+	// ViewerCrawlerDegreeTwoInterval controls how often degree-two graph notes are refreshed.
+	ViewerCrawlerDegreeTwoInterval time.Duration
+	// ViewerCrawlerDegreeThreeInterval controls how often bounded degree-three candidates are refreshed.
+	ViewerCrawlerDegreeThreeInterval time.Duration
+	// ViewerCrawlerReducedInterval controls direct-follow polling while the desktop is minimized.
+	ViewerCrawlerReducedInterval time.Duration
+	// ViewerCrawlerDirectMetadataInterval controls direct-follow kind-3 and relay metadata refresh.
+	ViewerCrawlerDirectMetadataInterval time.Duration
+	// ViewerCrawlerDegreeTwoMetadataInterval controls degree-two metadata refresh.
+	ViewerCrawlerDegreeTwoMetadataInterval time.Duration
+	// ViewerCrawlerDegreeThreeMetadataInterval controls degree-three metadata refresh.
+	ViewerCrawlerDegreeThreeMetadataInterval time.Duration
+	// ViewerCrawlerProfileInterval controls missing/stale desktop profile refresh.
+	ViewerCrawlerProfileInterval time.Duration
 	// ViewerCrawlerBatch caps known viewers processed per tick.
 	ViewerCrawlerBatch int
 	// ViewerCrawlerReplyWarmLimit caps thread warms per viewer per tick.
@@ -245,9 +259,9 @@ type Config struct {
 	PprofAddr string
 	// DesktopMode enables loopback-only helpers used by the Electron desktop shell.
 	DesktopMode bool
-	// DesktopActivityToken authenticates shell-only activity updates. It is
-	// deliberately never included in bootstrap data or config logs.
-	DesktopActivityToken string
+	// DesktopSessionToken authenticates the Electron renderer to every private
+	// loopback application route. It is never included in bootstrap data or logs.
+	DesktopSessionToken string
 }
 
 func Load() Config {
@@ -287,109 +301,116 @@ func Load() Config {
 	})
 
 	cfg := Config{
-		Addr:                               env("PTXT_ADDR", ":8080"),
-		DBPath:                             env("PTXT_DB", "data/ptxt-nstr.sqlite"),
-		RequestTimeout:                     durationEnv("PTXT_REQUEST_TIMEOUT_MS", 3500*time.Millisecond),
-		RebuildProjections:                 boolEnv("PTXT_REBUILD_PROJECTIONS", false),
-		OptionalRelayBackend:               boolEnv("PTXT_OPTIONAL_RELAY_BACKEND", false),
-		ShareCacheEnabled:                  boolEnv("PTXT_SHARE_CACHE", false),
-		ShareServerTransitionalFallbacks:   boolEnv("PTXT_SHARE_SERVER_TRANSITIONAL_FALLBACKS", false),
-		CompactOnStart:                     boolEnv("PTXT_COMPACT_ON_START", false),
-		DefaultRelays:                      nostrx.NormalizeRelayList(defaultRelays, nostrx.MaxRelays),
-		MetadataRelays:                     nostrx.NormalizeRelayList(metadataRelays, nostrx.MaxRelays),
-		IndexerRelays:                      nostrx.NormalizeRelayList(indexerRelays, 6),
-		IndexerNIP50Relays:                 nostrx.NormalizeRelayList(indexerNIP50Relays, 4),
-		TrendingSearchRelays:               nostrx.NormalizeRelayList(trendingSearchRelays, 4),
-		IndexerMaxRelays:                   intEnv("PTXT_INDEXER_MAX_RELAYS", 6),
-		IndexerNIP50MaxRelays:              intEnv("PTXT_INDEXER_NIP50_MAX_RELAYS", 4),
-		TrendingSearchMaxRelays:            intEnv("PTXT_TRENDING_SEARCH_MAX_RELAYS", 4),
-		CuratedPubkeys:                     splitPubkeyEnv("PTXT_CURATED_PUBKEYS"),
-		ThreadMaxRelays:                    intEnv("PTXT_THREAD_MAX_RELAYS", 16),
-		ThreadOutboxMaxRouteGroups:         intEnv("PTXT_THREAD_OUTBOX_MAX_ROUTE_GROUPS", 8),
-		ThreadOutboxMaxRelaysPerAuthor:     intEnv("PTXT_THREAD_OUTBOX_MAX_RELAYS_PER_AUTHOR", 0),
-		ThreadContextWarmMaxIDs:            intEnv("PTXT_THREAD_CONTEXT_WARM_MAX_IDS", 48),
-		HydrationNoteRepliesBatch:          intEnv("PTXT_HYDRATION_NOTE_REPLIES_BATCH", hydrationReplyBatchDefault),
-		OutboxMaxRelaysPerAuthor:           intEnv("PTXT_OUTBOX_MAX_RELAYS_PER_AUTHOR", nostrx.MaxRelays),
-		OutboxMaxRouteGroups:               intEnv("PTXT_OUTBOX_MAX_ROUTE_GROUPS", 6),
-		OutboxFoFSeeds:                     intEnv("PTXT_OUTBOX_FOF_SEEDS", 40),
-		FeedWindow:                         durationEnvDuration("PTXT_FEED_WINDOW", 7*24*time.Hour),
-		EventRetention:                     nonNegativeIntEnv("PTXT_EVENT_RETENTION", 20000),
-		RetentionByAccess:                  boolEnv("PTXT_RETENTION_BY_ACCESS", false),
-		DBDiskMaxPercent:                   intEnv("PTXT_DB_MAX_DISK_PERCENT", 0),
-		DBDiskPruneTargetPercent:           intEnv("PTXT_DB_PRUNE_TARGET_PERCENT", 0),
-		DBMaxBytes:                         nonNegativeInt64Env("PTXT_DB_MAX_BYTES", 0),
-		DBPruneTargetBytes:                 nonNegativeInt64Env("PTXT_DB_PRUNE_TARGET_BYTES", 0),
-		DiskPressurePercent:                intEnv("PTXT_DB_DISK_PRESSURE_PERCENT", 85),
-		VacuumTimeout:                      durationEnvDuration("PTXT_VACUUM_TIMEOUT", 60*time.Minute),
-		HydrationEnabled:                   boolEnv("PTXT_HYDRATION_ENABLED", true),
-		HydrationSweepInterval:             durationEnvDuration("PTXT_HYDRATION_SWEEP_INTERVAL", 5*time.Minute),
-		GuestSliceV2Enabled:                guestSliceV2,
-		GuestSliceInterval:                 durationEnvDuration("PTXT_GUEST_SLICE_INTERVAL", 5*time.Minute),
-		GuestSliceBudget:                   durationEnvDuration("PTXT_GUEST_SLICE_BUDGET", 45*time.Second),
-		GuestSliceCohortLimit:              intEnv("PTXT_GUEST_SLICE_COHORT_LIMIT", 600),
-		GuestSliceCandidateLimit:           intEnv("PTXT_GUEST_SLICE_CANDIDATE_LIMIT", 60),
-		GuestSlicePublishLimit:             intEnv("PTXT_GUEST_SLICE_PUBLISH_LIMIT", 30),
-		GuestSliceTrustLimit:               intEnv("PTXT_GUEST_SLICE_TRUST_LIMIT", 100000),
-		GuestSliceTrustTTL:                 durationEnvDuration("PTXT_GUEST_SLICE_TRUST_TTL", 6*time.Hour),
-		GuestSliceMetadataTTL:              durationEnvDuration("PTXT_GUEST_SLICE_METADATA_TTL", 24*time.Hour),
-		WOTMaxAuthors:                      intEnv("PTXT_WOT_MAX_AUTHORS", 240),
-		SearchRateBurst:                    intEnv("PTXT_SEARCH_RATE_BURST", 5),
-		SearchRatePerSec:                   floatEnv("PTXT_SEARCH_RATE_PER_SEC", 1),
-		AnonymousRateBurst:                 intEnv("PTXT_ANON_RATE_BURST", 30),
-		AnonymousRatePerSec:                floatEnv("PTXT_ANON_RATE_PER_SEC", 2),
-		BotRateBurst:                       intEnv("PTXT_BOT_RATE_BURST", 6),
-		BotRatePerSec:                      floatEnv("PTXT_BOT_RATE_PER_SEC", 0.1),
-		ViewerRateBurst:                    intEnv("PTXT_VIEWER_RATE_BURST", 240),
-		ViewerRatePerSec:                   floatEnv("PTXT_VIEWER_RATE_PER_SEC", 16),
-		SeedCrawlerEnabled:                 boolEnv("PTXT_SEED_CRAWLER_ENABLED", true),
-		SeedCrawlerInterval:                durationEnvDuration("PTXT_SEED_CRAWLER_INTERVAL", 20*time.Second),
-		SeedCrawlerAuthorBatch:             intEnv("PTXT_SEED_CRAWLER_AUTHOR_BATCH", 16),
-		SeedCrawlerFetchLimit:              intEnv("PTXT_SEED_CRAWLER_FETCH_LIMIT", 60),
-		SeedCrawlerAuthorNoteLookback:      seedAuthorNoteLookbackEnv("PTXT_SEED_CRAWLER_AUTHOR_NOTE_LOOKBACK", 120*24*time.Hour),
-		SeedCrawlerReplyWarmLimit:          intEnv("PTXT_SEED_CRAWLER_REPLY_WARM_LIMIT", 48),
-		SeedBootstrapFollowEnqueueLimit:    intEnv("PTXT_SEED_BOOTSTRAP_FOLLOW_ENQUEUE_LIMIT", 80),
-		SeedBootstrapFollowEnqueueMaxTotal: intEnv("PTXT_SEED_BOOTSTRAP_FOLLOW_ENQUEUE_MAX_TOTAL", 80),
-		SeedFrontierPauseThreshold:         intEnv("PTXT_SEED_FRONTIER_PAUSE_THRESHOLD", 1500),
-		SeedBootstrapSecondaryMaxTotal:     intEnv("PTXT_SEED_BOOTSTRAP_SECONDARY_MAX_TOTAL", 40),
-		SeedContactMaxFailCount:            intEnv("PTXT_SEED_CONTACT_MAX_FAIL_COUNT", 12),
-		SeedContactFollowEnqueuePerTick:    intEnv("PTXT_SEED_CONTACT_FOLLOW_ENQUEUE_PER_TICK", 120),
-		TrendingSweepInterval:              durationEnvDuration("PTXT_TRENDING_SWEEP_INTERVAL", 5*time.Minute),
-		TrendingMinRecompute:               durationEnvDuration("PTXT_TRENDING_MIN_RECOMPUTE", 20*time.Minute),
-		ActiveViewerTrendingEnabled:        boolEnv("PTXT_ACTIVE_VIEWER_TRENDING", true),
-		HotFeedCrawlerEnabled:              boolEnv("PTXT_HOT_FEED_CRAWLER_ENABLED", true),
-		HotFeedCrawlerInterval:             durationEnvDuration("PTXT_HOT_FEED_CRAWLER_INTERVAL", DefaultHotFeedCrawlerInterval),
-		HotFeedCrawlerCohortLimit:          intEnv("PTXT_HOT_FEED_CRAWLER_COHORT_LIMIT", DefaultHotFeedCrawlerCohortLimit),
-		HotFeedCrawlerAuthorLimit:          intEnv("PTXT_HOT_FEED_CRAWLER_AUTHOR_LIMIT", DefaultHotFeedCrawlerAuthorLimit),
-		HotFeedCrawlerFetchLimit:           intEnv("PTXT_HOT_FEED_CRAWLER_FETCH_LIMIT", DefaultHotFeedCrawlerFetchLimit),
-		HotFeedCrawlerLookback:             durationEnvDuration("PTXT_HOT_FEED_CRAWLER_LOOKBACK", DefaultHotFeedCrawlerLookback),
-		HotFeedCrawlerSnapshotThrottle:     durationEnvDuration("PTXT_HOT_FEED_CRAWLER_SNAPSHOT_THROTTLE", DefaultHotFeedCrawlerSnapshotThrottle),
-		ReplaceableHistory:                 boolEnv("PTXT_REPLACEABLE_HISTORY", true),
-		IngestVerifyParallel:               ingestVerifyParallelEnv(),
-		Debug:                              boolEnv("PTXT_DEBUG", false),
-		CoalesceEnabled:                    boolEnv("PTXT_COALESCE_ENABLED", false),
-		CoalesceBuckets:                    intEnv("PTXT_COALESCE_BUCKETS", DefaultCoalesceBuckets),
-		CoalesceTimeout:                    durationEnv("PTXT_COALESCE_TIMEOUT_MS", 4000*time.Millisecond),
-		RelayMaxOutboundConns:              relayMaxOutboundConnsEnv(relayMaxDefault),
-		WarmJobTimeout:                     durationEnv("PTXT_WARM_JOB_TIMEOUT_MS", warmTimeoutDefault),
-		WarmMaxAuthorsPerJob:               intEnv("PTXT_WARM_MAX_AUTHORS_PER_JOB", 16),
-		WarmMaxNoteIDsPerJob:               intEnv("PTXT_WARM_MAX_NOTE_IDS_PER_JOB", 32),
-		WarmWorkers:                        intEnv("PTXT_WARM_WORKERS", warmWorkersDefault),
-		WarmQueueCapacity:                  intEnv("PTXT_WARM_QUEUE_CAPACITY", warmQueueDefault),
-		NIP50FallbackRatePerMin:            intEnv("PTXT_NIP50_FALLBACK_RATE", 30),
-		KnownViewerMax:                     intEnv("PTXT_KNOWN_VIEWER_MAX", 512),
-		ViewerCrawlerEnabled:               boolEnv("PTXT_VIEWER_CRAWLER_ENABLED", true),
-		ViewerCrawlerInterval:              durationEnvDuration("PTXT_VIEWER_CRAWLER_INTERVAL", 30*time.Second),
-		ViewerCrawlerBatch:                 intEnv("PTXT_VIEWER_CRAWLER_BATCH", 8),
-		ViewerCrawlerReplyWarmLimit:        intEnv("PTXT_VIEWER_CRAWLER_REPLY_WARM_LIMIT", 48),
-		ViewerCrawlerFollowEnqueuePerTick:  intEnv("PTXT_VIEWER_CRAWLER_FOLLOW_ENQUEUE_PER_TICK", 80),
-		HealthProbeEnabled:                 boolEnv("PTXT_HEALTH_PROBE_ENABLED", false),
-		HealthProbeInterval:                durationEnvDuration("PTXT_HEALTH_PROBE_INTERVAL", 30*time.Second),
-		HealthProbePath:                    env("PTXT_HEALTH_PROBE_PATH", "/healthz"),
-		HealthProbeTimeout:                 durationEnv("PTXT_HEALTH_PROBE_TIMEOUT_MS", 12_000*time.Millisecond),
-		HealthProbeDegradedThreshold:       intEnv("PTXT_HEALTH_PROBE_DEGRADED_THRESHOLD", 3),
-		PprofAddr:                          pprofAddrEnv("PTXT_PPROF_ADDR", "127.0.0.1:6060"),
-		DesktopMode:                        boolEnv("PTXT_DESKTOP_MODE", false),
-		DesktopActivityToken:               strings.TrimSpace(os.Getenv("PTXT_DESKTOP_ACTIVITY_TOKEN")),
+		Addr:                                     env("PTXT_ADDR", ":8080"),
+		DBPath:                                   env("PTXT_DB", "data/ptxt-nstr.sqlite"),
+		RequestTimeout:                           durationEnv("PTXT_REQUEST_TIMEOUT_MS", 3500*time.Millisecond),
+		RebuildProjections:                       boolEnv("PTXT_REBUILD_PROJECTIONS", false),
+		OptionalRelayBackend:                     boolEnv("PTXT_OPTIONAL_RELAY_BACKEND", false),
+		ShareCacheEnabled:                        boolEnv("PTXT_SHARE_CACHE", false),
+		ShareServerTransitionalFallbacks:         boolEnv("PTXT_SHARE_SERVER_TRANSITIONAL_FALLBACKS", false),
+		CompactOnStart:                           boolEnv("PTXT_COMPACT_ON_START", false),
+		DefaultRelays:                            nostrx.NormalizeRelayList(defaultRelays, nostrx.MaxRelays),
+		MetadataRelays:                           nostrx.NormalizeRelayList(metadataRelays, nostrx.MaxRelays),
+		IndexerRelays:                            nostrx.NormalizeRelayList(indexerRelays, 6),
+		IndexerNIP50Relays:                       nostrx.NormalizeRelayList(indexerNIP50Relays, 4),
+		TrendingSearchRelays:                     nostrx.NormalizeRelayList(trendingSearchRelays, 4),
+		IndexerMaxRelays:                         intEnv("PTXT_INDEXER_MAX_RELAYS", 6),
+		IndexerNIP50MaxRelays:                    intEnv("PTXT_INDEXER_NIP50_MAX_RELAYS", 4),
+		TrendingSearchMaxRelays:                  intEnv("PTXT_TRENDING_SEARCH_MAX_RELAYS", 4),
+		CuratedPubkeys:                           splitPubkeyEnv("PTXT_CURATED_PUBKEYS"),
+		ThreadMaxRelays:                          intEnv("PTXT_THREAD_MAX_RELAYS", 16),
+		ThreadOutboxMaxRouteGroups:               intEnv("PTXT_THREAD_OUTBOX_MAX_ROUTE_GROUPS", 8),
+		ThreadOutboxMaxRelaysPerAuthor:           intEnv("PTXT_THREAD_OUTBOX_MAX_RELAYS_PER_AUTHOR", 0),
+		ThreadContextWarmMaxIDs:                  intEnv("PTXT_THREAD_CONTEXT_WARM_MAX_IDS", 48),
+		HydrationNoteRepliesBatch:                intEnv("PTXT_HYDRATION_NOTE_REPLIES_BATCH", hydrationReplyBatchDefault),
+		OutboxMaxRelaysPerAuthor:                 intEnv("PTXT_OUTBOX_MAX_RELAYS_PER_AUTHOR", nostrx.MaxRelays),
+		OutboxMaxRouteGroups:                     intEnv("PTXT_OUTBOX_MAX_ROUTE_GROUPS", 6),
+		OutboxFoFSeeds:                           intEnv("PTXT_OUTBOX_FOF_SEEDS", 40),
+		FeedWindow:                               durationEnvDuration("PTXT_FEED_WINDOW", 7*24*time.Hour),
+		EventRetention:                           nonNegativeIntEnv("PTXT_EVENT_RETENTION", 20000),
+		RetentionByAccess:                        boolEnv("PTXT_RETENTION_BY_ACCESS", false),
+		DBDiskMaxPercent:                         intEnv("PTXT_DB_MAX_DISK_PERCENT", 0),
+		DBDiskPruneTargetPercent:                 intEnv("PTXT_DB_PRUNE_TARGET_PERCENT", 0),
+		DBMaxBytes:                               nonNegativeInt64Env("PTXT_DB_MAX_BYTES", 0),
+		DBPruneTargetBytes:                       nonNegativeInt64Env("PTXT_DB_PRUNE_TARGET_BYTES", 0),
+		DiskPressurePercent:                      intEnv("PTXT_DB_DISK_PRESSURE_PERCENT", 85),
+		VacuumTimeout:                            durationEnvDuration("PTXT_VACUUM_TIMEOUT", 60*time.Minute),
+		HydrationEnabled:                         boolEnv("PTXT_HYDRATION_ENABLED", true),
+		HydrationSweepInterval:                   durationEnvDuration("PTXT_HYDRATION_SWEEP_INTERVAL", 5*time.Minute),
+		GuestSliceV2Enabled:                      guestSliceV2,
+		GuestSliceInterval:                       durationEnvDuration("PTXT_GUEST_SLICE_INTERVAL", 5*time.Minute),
+		GuestSliceBudget:                         durationEnvDuration("PTXT_GUEST_SLICE_BUDGET", 45*time.Second),
+		GuestSliceCohortLimit:                    intEnv("PTXT_GUEST_SLICE_COHORT_LIMIT", 600),
+		GuestSliceCandidateLimit:                 intEnv("PTXT_GUEST_SLICE_CANDIDATE_LIMIT", 60),
+		GuestSlicePublishLimit:                   intEnv("PTXT_GUEST_SLICE_PUBLISH_LIMIT", 30),
+		GuestSliceTrustLimit:                     intEnv("PTXT_GUEST_SLICE_TRUST_LIMIT", 100000),
+		GuestSliceTrustTTL:                       durationEnvDuration("PTXT_GUEST_SLICE_TRUST_TTL", 6*time.Hour),
+		GuestSliceMetadataTTL:                    durationEnvDuration("PTXT_GUEST_SLICE_METADATA_TTL", 24*time.Hour),
+		WOTMaxAuthors:                            intEnv("PTXT_WOT_MAX_AUTHORS", 240),
+		SearchRateBurst:                          intEnv("PTXT_SEARCH_RATE_BURST", 5),
+		SearchRatePerSec:                         floatEnv("PTXT_SEARCH_RATE_PER_SEC", 1),
+		AnonymousRateBurst:                       intEnv("PTXT_ANON_RATE_BURST", 30),
+		AnonymousRatePerSec:                      floatEnv("PTXT_ANON_RATE_PER_SEC", 2),
+		BotRateBurst:                             intEnv("PTXT_BOT_RATE_BURST", 6),
+		BotRatePerSec:                            floatEnv("PTXT_BOT_RATE_PER_SEC", 0.1),
+		ViewerRateBurst:                          intEnv("PTXT_VIEWER_RATE_BURST", 240),
+		ViewerRatePerSec:                         floatEnv("PTXT_VIEWER_RATE_PER_SEC", 16),
+		SeedCrawlerEnabled:                       boolEnv("PTXT_SEED_CRAWLER_ENABLED", true),
+		SeedCrawlerInterval:                      durationEnvDuration("PTXT_SEED_CRAWLER_INTERVAL", 20*time.Second),
+		SeedCrawlerAuthorBatch:                   intEnv("PTXT_SEED_CRAWLER_AUTHOR_BATCH", 16),
+		SeedCrawlerFetchLimit:                    intEnv("PTXT_SEED_CRAWLER_FETCH_LIMIT", 60),
+		SeedCrawlerAuthorNoteLookback:            seedAuthorNoteLookbackEnv("PTXT_SEED_CRAWLER_AUTHOR_NOTE_LOOKBACK", 120*24*time.Hour),
+		SeedCrawlerReplyWarmLimit:                intEnv("PTXT_SEED_CRAWLER_REPLY_WARM_LIMIT", 48),
+		SeedBootstrapFollowEnqueueLimit:          intEnv("PTXT_SEED_BOOTSTRAP_FOLLOW_ENQUEUE_LIMIT", 80),
+		SeedBootstrapFollowEnqueueMaxTotal:       intEnv("PTXT_SEED_BOOTSTRAP_FOLLOW_ENQUEUE_MAX_TOTAL", 80),
+		SeedFrontierPauseThreshold:               intEnv("PTXT_SEED_FRONTIER_PAUSE_THRESHOLD", 1500),
+		SeedBootstrapSecondaryMaxTotal:           intEnv("PTXT_SEED_BOOTSTRAP_SECONDARY_MAX_TOTAL", 40),
+		SeedContactMaxFailCount:                  intEnv("PTXT_SEED_CONTACT_MAX_FAIL_COUNT", 12),
+		SeedContactFollowEnqueuePerTick:          intEnv("PTXT_SEED_CONTACT_FOLLOW_ENQUEUE_PER_TICK", 120),
+		TrendingSweepInterval:                    durationEnvDuration("PTXT_TRENDING_SWEEP_INTERVAL", 5*time.Minute),
+		TrendingMinRecompute:                     durationEnvDuration("PTXT_TRENDING_MIN_RECOMPUTE", 20*time.Minute),
+		ActiveViewerTrendingEnabled:              boolEnv("PTXT_ACTIVE_VIEWER_TRENDING", true),
+		HotFeedCrawlerEnabled:                    boolEnv("PTXT_HOT_FEED_CRAWLER_ENABLED", true),
+		HotFeedCrawlerInterval:                   durationEnvDuration("PTXT_HOT_FEED_CRAWLER_INTERVAL", DefaultHotFeedCrawlerInterval),
+		HotFeedCrawlerCohortLimit:                intEnv("PTXT_HOT_FEED_CRAWLER_COHORT_LIMIT", DefaultHotFeedCrawlerCohortLimit),
+		HotFeedCrawlerAuthorLimit:                intEnv("PTXT_HOT_FEED_CRAWLER_AUTHOR_LIMIT", DefaultHotFeedCrawlerAuthorLimit),
+		HotFeedCrawlerFetchLimit:                 intEnv("PTXT_HOT_FEED_CRAWLER_FETCH_LIMIT", DefaultHotFeedCrawlerFetchLimit),
+		HotFeedCrawlerLookback:                   durationEnvDuration("PTXT_HOT_FEED_CRAWLER_LOOKBACK", DefaultHotFeedCrawlerLookback),
+		HotFeedCrawlerSnapshotThrottle:           durationEnvDuration("PTXT_HOT_FEED_CRAWLER_SNAPSHOT_THROTTLE", DefaultHotFeedCrawlerSnapshotThrottle),
+		ReplaceableHistory:                       boolEnv("PTXT_REPLACEABLE_HISTORY", true),
+		IngestVerifyParallel:                     ingestVerifyParallelEnv(),
+		Debug:                                    boolEnv("PTXT_DEBUG", false),
+		CoalesceEnabled:                          boolEnv("PTXT_COALESCE_ENABLED", false),
+		CoalesceBuckets:                          intEnv("PTXT_COALESCE_BUCKETS", DefaultCoalesceBuckets),
+		CoalesceTimeout:                          durationEnv("PTXT_COALESCE_TIMEOUT_MS", 4000*time.Millisecond),
+		RelayMaxOutboundConns:                    relayMaxOutboundConnsEnv(relayMaxDefault),
+		WarmJobTimeout:                           durationEnv("PTXT_WARM_JOB_TIMEOUT_MS", warmTimeoutDefault),
+		WarmMaxAuthorsPerJob:                     intEnv("PTXT_WARM_MAX_AUTHORS_PER_JOB", 16),
+		WarmMaxNoteIDsPerJob:                     intEnv("PTXT_WARM_MAX_NOTE_IDS_PER_JOB", 32),
+		WarmWorkers:                              intEnv("PTXT_WARM_WORKERS", warmWorkersDefault),
+		WarmQueueCapacity:                        intEnv("PTXT_WARM_QUEUE_CAPACITY", warmQueueDefault),
+		NIP50FallbackRatePerMin:                  intEnv("PTXT_NIP50_FALLBACK_RATE", 30),
+		KnownViewerMax:                           intEnv("PTXT_KNOWN_VIEWER_MAX", 512),
+		ViewerCrawlerEnabled:                     boolEnv("PTXT_VIEWER_CRAWLER_ENABLED", true),
+		ViewerCrawlerInterval:                    durationEnvDuration("PTXT_VIEWER_CRAWLER_INTERVAL", 30*time.Second),
+		ViewerCrawlerDegreeTwoInterval:           durationEnvDuration("PTXT_VIEWER_CRAWLER_DEGREE2_INTERVAL", 5*time.Minute),
+		ViewerCrawlerDegreeThreeInterval:         durationEnvDuration("PTXT_VIEWER_CRAWLER_DEGREE3_INTERVAL", 30*time.Minute),
+		ViewerCrawlerReducedInterval:             durationEnvDuration("PTXT_VIEWER_CRAWLER_REDUCED_INTERVAL", 5*time.Minute),
+		ViewerCrawlerDirectMetadataInterval:      durationEnvDuration("PTXT_VIEWER_CRAWLER_DIRECT_METADATA_INTERVAL", 15*time.Minute),
+		ViewerCrawlerDegreeTwoMetadataInterval:   durationEnvDuration("PTXT_VIEWER_CRAWLER_DEGREE2_METADATA_INTERVAL", 6*time.Hour),
+		ViewerCrawlerDegreeThreeMetadataInterval: durationEnvDuration("PTXT_VIEWER_CRAWLER_DEGREE3_METADATA_INTERVAL", 24*time.Hour),
+		ViewerCrawlerProfileInterval:             durationEnvDuration("PTXT_VIEWER_CRAWLER_PROFILE_INTERVAL", 6*time.Hour),
+		ViewerCrawlerBatch:                       intEnv("PTXT_VIEWER_CRAWLER_BATCH", 8),
+		ViewerCrawlerReplyWarmLimit:              intEnv("PTXT_VIEWER_CRAWLER_REPLY_WARM_LIMIT", 48),
+		ViewerCrawlerFollowEnqueuePerTick:        intEnv("PTXT_VIEWER_CRAWLER_FOLLOW_ENQUEUE_PER_TICK", 80),
+		HealthProbeEnabled:                       boolEnv("PTXT_HEALTH_PROBE_ENABLED", false),
+		HealthProbeInterval:                      durationEnvDuration("PTXT_HEALTH_PROBE_INTERVAL", 30*time.Second),
+		HealthProbePath:                          env("PTXT_HEALTH_PROBE_PATH", "/healthz"),
+		HealthProbeTimeout:                       durationEnv("PTXT_HEALTH_PROBE_TIMEOUT_MS", 12_000*time.Millisecond),
+		HealthProbeDegradedThreshold:             intEnv("PTXT_HEALTH_PROBE_DEGRADED_THRESHOLD", 3),
+		PprofAddr:                                pprofAddrEnv("PTXT_PPROF_ADDR", "127.0.0.1:6060"),
+		DesktopMode:                              boolEnv("PTXT_DESKTOP_MODE", false),
+		DesktopSessionToken:                      desktopSessionTokenEnv(),
 	}
 	cfg.ServerMode = serverModeEnv("PTXT_SERVER_MODE", cfg.OptionalRelayBackend)
 
@@ -465,6 +486,15 @@ func Load() Config {
 	)
 
 	return cfg
+}
+
+func desktopSessionTokenEnv() string {
+	if token := strings.TrimSpace(os.Getenv("PTXT_DESKTOP_SESSION_TOKEN")); token != "" {
+		return token
+	}
+	// Compatibility with packages launched before the token protected all
+	// application routes rather than only activity updates.
+	return strings.TrimSpace(os.Getenv("PTXT_DESKTOP_ACTIVITY_TOKEN"))
 }
 
 // relayMaxOutboundConnsEnv returns the caller-selected runtime default when unset.

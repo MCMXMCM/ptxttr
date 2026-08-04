@@ -71,6 +71,22 @@ export function zapAmountSats(event) {
   return Math.floor(millisats / 1000);
 }
 
+export function zapTotalsForEvents(noteIDs, events, { sinceCreatedAt } = {}) {
+  const totals = new Map();
+  const ids = [...new Set((noteIDs || []).map(canonicalHex64).filter(Boolean))];
+  ids.forEach((id) => totals.set(id, 0));
+  if (!ids.length) return totals;
+  const wanted = new Set(ids);
+  const lowerBound = Number(sinceCreatedAt) > 0 ? Number(sinceCreatedAt) : 0;
+  for (const event of events || []) {
+    const id = zapTargetNoteID(event);
+    if (!wanted.has(id)) continue;
+    if (lowerBound > 0 && Number(event?.created_at || 0) < lowerBound) continue;
+    totals.set(id, (totals.get(id) || 0) + Math.max(0, Number(zapAmountSats(event) || 0)));
+  }
+  return totals;
+}
+
 export function zapSenderPubkey(event) {
   const request = zapRequestDescription(event);
   return normalizePubkey(request?.pubkey || "");

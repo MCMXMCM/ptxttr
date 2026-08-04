@@ -206,6 +206,10 @@ test.describe("relay-native client reads", () => {
     await expect(page.locator("#thread-focus .thread-focus-parent--skeleton")).toBeVisible({
       timeout: 2_000,
     });
+    const parentSkeletonHeader = await page.locator(
+      "#thread-focus .thread-focus-parent--skeleton pre",
+    ).textContent();
+    expect(parentSkeletonHeader?.split("\n")[0]).toMatch(/^ {3}░/);
     await expect(page.locator("#thread-focus .thread-focus-skeleton")).toHaveCount(0);
     await page.waitForTimeout(5_000);
     await expect(page.locator("#thread-focus").getByText("e2e-relay-native-thread-reply")).toBeVisible();

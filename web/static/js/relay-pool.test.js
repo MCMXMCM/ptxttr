@@ -3,10 +3,12 @@ import { afterEach, describe, it } from "node:test";
 
 import { cancelActiveRelayReads, closeRelayPool, relayFetch, relayPublish } from "./relay-pool.js";
 import { resetQueryClientForTests } from "./query-client.js";
+import { setAppBootstrapForTests } from "./app/bootstrap.js";
 
 afterEach(() => {
   closeRelayPool();
   resetQueryClientForTests();
+  setAppBootstrapForTests({ features: { localFirst: false } });
 });
 
 function mockPool({ query, event } = {}) {
@@ -24,13 +26,14 @@ function mockPool({ query, event } = {}) {
   };
 }
 
-function withBrowserGlobals(globals, fn) {
+async function withBrowserGlobals(globals, fn) {
   const previous = {
     window: globalThis.window,
     document: globalThis.document,
     navigator: globalThis.navigator,
     localStorage: globalThis.localStorage,
     matchMedia: globalThis.matchMedia,
+    fetch: globalThis.fetch,
   };
   Object.entries(globals).forEach(([key, value]) => {
     Object.defineProperty(globalThis, key, {
@@ -39,7 +42,7 @@ function withBrowserGlobals(globals, fn) {
     });
   });
   try {
-    return fn();
+    return await fn();
   } finally {
     Object.entries(previous).forEach(([key, value]) => {
       if (value === undefined) {
@@ -55,6 +58,33 @@ function withBrowserGlobals(globals, fn) {
 }
 
 describe("relayFetch batching", () => {
+  it("routes desktop relay reads through the authenticated sidecar", async () => {
+    const requests = [];
+    setAppBootstrapForTests({ features: { localFirst: true, desktopShell: true } });
+    const events = await withBrowserGlobals({
+      document: {
+        visibilityState: "visible",
+        documentElement: { dataset: { ptxtDesktopMode: "1" } },
+      },
+      fetch: async (url, init) => {
+        requests.push({ url, init });
+        return new Response(JSON.stringify([{ id: "sidecar-event", pubkey: "aa", kind: 1, created_at: 1 }]), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      },
+    }, () => relayFetch(["wss://relay.example"], [{ kinds: [1], limit: 10 }]));
+
+    assert.deepEqual(events.map((event) => event.id), ["sidecar-event"]);
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, "/__ptxt/desktop/relay-fetch");
+    assert.deepEqual(JSON.parse(requests[0].init.body), {
+      relays: ["wss://relay.example"],
+      filters: [{ kinds: [1], limit: 10 }],
+      timeout_ms: 8000,
+    });
+  });
+
   it("coalesces same-tick single-id lookups into one query", async () => {
     const calls = [];
     const poolOverride = mockPool({

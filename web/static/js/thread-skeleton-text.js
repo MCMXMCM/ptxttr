@@ -52,7 +52,10 @@ export function buildThreadReplySkeletonText(width, { isLast = false } = {}) {
 
 export function buildThreadParentSkeletonText(width) {
   const w = clampWidth(width);
-  const headerPrefix = "     ░░░░░░░░ -- ░░░░░ ";
+  // The web parent skeleton has a real absolutely-positioned avatar. Three
+  // leading columns place the author placeholder one column beyond its right
+  // edge; the five-column iOS offset assumes no separate avatar element.
+  const headerPrefix = "   ░░░░░░░░ -- ░░░░░ ";
   const headerSuffix = "[...]";
   const headerRule = repeat("-", Math.max(1, w - runeLength(headerPrefix) - runeLength(headerSuffix)));
   const contentPrefix = "|    ";

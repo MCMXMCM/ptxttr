@@ -138,4 +138,105 @@ test.describe("thread back navigation", () => {
     });
     await expect.poll(async () => (await feedNoteProfileState(page, FEED_NOTE_ID)).avatar).not.toEqual("");
   });
+
+  test("server thread handoff cannot downgrade a rendered author identity", async ({ page, request }) => {
+    const seed = await request.post(`/debug/seed-note?id=${ROOT_ID}&pubkey=${AUTHOR_PK}`);
+    expect(seed.ok()).toBeTruthy();
+
+    await page.goto("/feed");
+    await page.evaluate(({ noteID, pubkey }) => {
+      const feed = document.querySelector("#feed");
+      if (!(feed instanceof HTMLElement)) return;
+      const note = document.createElement("article");
+      note.className = "note";
+      note.id = `note-${noteID}`;
+      note.dataset.asciiKind = "note";
+      note.dataset.asciiAuthor = "Stable Local Author";
+      note.dataset.asciiAvatar = "/static/img/ascritch.png";
+      note.dataset.asciiUserHref = `/u/${pubkey}`;
+      note.dataset.replyPubkey = pubkey;
+      note.dataset.asciiSelectHref = `/thread/${noteID}`;
+      note.innerHTML = `<a class="note-feed-avatar" href="/u/${pubkey}"><img src="/static/img/ascritch.png" alt=""></a><a href="/thread/${noteID}" data-relay-aware>open local note</a>`;
+      feed.replaceChildren(note);
+    }, { noteID: ROOT_ID, pubkey: AUTHOR_PK });
+
+    await page.getByRole("link", { name: "open local note" }).tap();
+    await expect(page).toHaveURL(new RegExp(`/thread/${ROOT_ID}$`), { timeout: 5_000 });
+    const focused = page.locator("#thread-focus [data-ascii-kind]").last();
+    await expect(focused).toBeVisible({ timeout: 10_000 });
+    await expect.poll(() => focused.getAttribute("data-ascii-author")).toBe("Stable Local Author");
+    await expect(focused.locator(".note-feed-avatar img, .note-avatar img, .comment-avatar img")).toBeVisible();
+  });
+
+  test("relay-native tree handoff keeps the identity painted by the local server", async ({ page, request }) => {
+    const seed = await request.post(`/debug/seed-note?id=${ROOT_ID}&pubkey=${AUTHOR_PK}`);
+    expect(seed.ok()).toBeTruthy();
+
+    await installRelayNativeE2E(page, {
+      events: buildAvatarThreadFixture().filter((event) => event.kind !== 0),
+      wotEnabled: false,
+      responseDelayMs: 1_200,
+    });
+    await page.goto("/feed");
+    await expect(page.locator("#feed[data-relay-native-feed='1']")).toBeAttached({ timeout: 30_000 });
+    await navigateToThreadFromFeed(page, ROOT_ID);
+    await expect(page.locator("#thread-tree-view")).toBeAttached();
+    await page.evaluate(({ rootID, pubkey }) => {
+      const host = document.querySelector("#thread-tree-view");
+      if (!(host instanceof HTMLElement)) return;
+      host.innerHTML = `
+        <section data-thread-tree-view data-thread-tree-root-id="${rootID}">
+          <div class="thread-tree-root-note" data-thread-tree-note="note-${rootID}" data-reply-pubkey="${pubkey}">
+            <a class="hn-tree-avatar" href="/u/${pubkey}"><img class="thread-tree-avatar" src="/static/img/ascritch.png" alt=""></a>
+            <span class="hn-comhead"><a href="/u/${pubkey}">Stable Server Author</a></span>
+          </div>
+        </section>`;
+    }, { rootID: ROOT_ID, pubkey: AUTHOR_PK });
+    const serverTreeCard = page.locator(`#thread-tree-view [data-thread-tree-note="note-${ROOT_ID}"]`);
+    await expect(serverTreeCard).toBeAttached();
+    await page.evaluate(() => {
+      window.dispatchEvent(new CustomEvent("ptxt:viewer-prefs-changed"));
+    });
+
+    await expect(page.locator(".feed-column[data-relay-native-thread='1']")).toBeAttached({ timeout: 10_000 });
+    const settledTreeCard = page.locator(`#thread-tree-view [data-thread-tree-note="note-${ROOT_ID}"]`);
+    await expect(settledTreeCard.locator(".hn-comhead a[href^='/u/']")).toHaveText("Stable Server Author");
+    await expect(settledTreeCard.locator(".hn-tree-avatar img")).toBeAttached();
+  });
+
+  test("cosmetic session enrichment does not restart the settled feed loader", async ({ page }) => {
+    await installRelayNativeE2E(page, {
+      events: buildAvatarThreadFixture(),
+      wotEnabled: false,
+      responseDelayMs: 100,
+    });
+    await page.goto("/feed");
+    await expect(page.locator("#feed[data-relay-native-feed='1'] .note").first()).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator("[data-retro-loader-type='feed']")).toHaveCount(0);
+
+    await page.evaluate(() => {
+      window.__ptxtFeedLoaderInsertions = 0;
+      const feed = document.querySelector("#feed");
+      if (!(feed instanceof HTMLElement)) return;
+      const observer = new MutationObserver((records) => {
+        for (const record of records) {
+          for (const node of record.addedNodes) {
+            if (!(node instanceof Element)) continue;
+            if (node.matches("[data-retro-loader-type='feed']") || node.querySelector("[data-retro-loader-type='feed']")) {
+              window.__ptxtFeedLoaderInsertions += 1;
+            }
+          }
+        }
+      });
+      observer.observe(feed, { childList: true, subtree: true });
+      const session = JSON.parse(localStorage.getItem("ptxt_nostr_session") || "{}");
+      window.dispatchEvent(new CustomEvent("ptxt:session", {
+        detail: { ...session, profileLabel: "Enriched Local Profile", picture: "/static/img/ascritch.png" },
+      }));
+    });
+    await page.waitForTimeout(600);
+
+    await expect(page.locator("[data-retro-loader-type='feed']")).toHaveCount(0);
+    expect(await page.evaluate(() => window.__ptxtFeedLoaderInsertions)).toBe(0);
+  });
 });

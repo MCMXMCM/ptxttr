@@ -3,11 +3,11 @@ import { normalizeThreadPersonAvatars, wireAvatarImageFallbacks } from "./layout
 import { mentionPubkeysForEvent } from "./note-mention-pubkeys.js";
 import { applyAsciiMentionsToShell } from "./nip27.js";
 import { noteMainBodySourceText } from "./note-references.js";
-import { avatarRetryURL, preferredAvatarURL, profileAvatarURLsMatch } from "./profile-parse.js";
+import { avatarRetryURL, isFallbackProfileLabel, preferredAvatarURL, profileAvatarURLsMatch } from "./profile-parse.js";
 import { briefBioText } from "./thread-render-helpers.js";
 import { fetchProfiles } from "./relay-reads.js";
 import { normalizePubkey } from "./relay-utils.js";
-import { fetchWithSession, shortPubkey } from "./session.js";
+import { fetchWithSession } from "./session.js";
 import { setAvatarImageSource } from "./avatar-cache.js";
 import {
   PROFILE_MEMORY_CACHE_UPDATED_EVENT,
@@ -63,11 +63,6 @@ function profileItems(root, selector) {
   if (root instanceof Element && root.matches(selector)) items.push(root);
   root.querySelectorAll(selector).forEach((item) => items.push(item));
   return items;
-}
-
-function isFallbackProfileLabel(label, pubkey) {
-  const value = String(label || "").trim();
-  return !value || value === shortPubkey(pubkey) || value === pubkey.slice(0, 12);
 }
 
 function isFallbackAuthor(card, pubkey) {
@@ -265,6 +260,68 @@ function applyProfiles(root, profiles) {
   roots.forEach((scope) => wireAvatarImageFallbacks(scope));
 }
 
+function visibleAvatarURL(item) {
+  const avatar = avatarElementForProfileItem(item);
+  const img = avatar instanceof HTMLImageElement ? avatar : avatar?.querySelector?.("img");
+  if (!(img instanceof HTMLImageElement)) return "";
+  return String(
+    img.dataset.ptxtAvatarOriginalSrc ||
+    img.getAttribute("src") ||
+    img.currentSrc ||
+    "",
+  ).trim();
+}
+
+function addVisibleProfileSeed(profiles, pubkey, label = "", avatarURL = "") {
+  const pk = normalizePubkey(pubkey);
+  if (!pk) return;
+  const display = String(label || "").trim();
+  const avatar = String(avatarURL || "").trim();
+  const current = profiles[pk] || { pubkey: pk };
+  profiles[pk] = {
+    ...current,
+    pubkey: pk,
+    display_name: !isFallbackProfileLabel(display, pk) ? display : current.display_name || "",
+    name: !isFallbackProfileLabel(display, pk) ? display : current.name || "",
+    avatar_url: avatar || current.avatar_url || "",
+  };
+}
+
+// Capture the server-rendered identity projection before relay-native rendering
+// replaces a route. The local server and browser relay cache settle independently;
+// a thin client response must not turn a name/avatar that was already painted into
+// a short pubkey and placeholder.
+export function rememberVisibleNoteProfiles(root = document) {
+  const visible = {};
+  profileRoots(root).forEach((scope) => {
+    profileItems(scope, "[data-ascii-kind]").forEach((card) => {
+      addVisibleProfileSeed(
+        visible,
+        noteProfilePubkey(card),
+        card.dataset.asciiAuthor,
+        card.dataset.asciiAvatar || visibleAvatarURL(card),
+      );
+    });
+    profileItems(scope, "[data-thread-tree-note]").forEach((card) => {
+      addVisibleProfileSeed(
+        visible,
+        noteProfilePubkey(card),
+        card.querySelector(".hn-comhead a[href^='/u/']")?.textContent,
+        visibleAvatarURL(card),
+      );
+    });
+    profileItems(scope, "a.thread-person").forEach((linkEl) => {
+      addVisibleProfileSeed(
+        visible,
+        pubkeyFromHref(linkEl.getAttribute("href")),
+        linkEl.querySelector("strong")?.textContent,
+        visibleAvatarURL(linkEl),
+      );
+    });
+  });
+  return rememberProfiles(visible);
+}
+
 function applyProfileMemoryCacheUpdate(event) {
   const profile = event?.detail?.profile;
   const pubkey = normalizePubkey(profile?.pubkey);
@@ -275,6 +332,30 @@ function applyProfileMemoryCacheUpdate(event) {
 
 if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
   window.addEventListener(PROFILE_MEMORY_CACHE_UPDATED_EVENT, applyProfileMemoryCacheUpdate);
+}
+
+function insertedNodeMayContainProfiles(node) {
+  if (!(node instanceof Element)) return false;
+  const selector = "[data-ascii-kind], [data-thread-tree-note], a.thread-person";
+  return node.matches(selector) || Boolean(node.querySelector(selector));
+}
+
+// Server fragments, cached previews, and relay-native results can settle in any
+// order on desktop. Promote identity-bearing DOM as soon as it is inserted so a
+// later renderer in the same hydration window cannot miss and downgrade it.
+if (
+  typeof document !== "undefined" &&
+  typeof MutationObserver === "function" &&
+  document.documentElement
+) {
+  const profileInsertionObserver = new MutationObserver((records) => {
+    records.forEach((record) => {
+      record.addedNodes.forEach((node) => {
+        if (insertedNodeMayContainProfiles(node)) rememberVisibleNoteProfiles(node);
+      });
+    });
+  });
+  profileInsertionObserver.observe(document.documentElement, { childList: true, subtree: true });
 }
 
 // Resolve profile metadata through the server projection first, then wait for a

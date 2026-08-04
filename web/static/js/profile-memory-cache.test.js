@@ -24,6 +24,29 @@ describe("profile memory cache", () => {
     assert.equal(cachedProfile(pk).picture, "https://example.com/a.jpg");
   });
 
+  it("lets a newer authoritative metadata event clear old fields", () => {
+    rememberProfile({
+      pubkey: pk,
+      event_id: "11".repeat(32),
+      display_name: "Alice",
+      picture: "https://example.com/a.jpg",
+      about: "old bio",
+      created_at: 10,
+    });
+    rememberProfile({
+      pubkey: pk,
+      event_id: "22".repeat(32),
+      display_name: "Alice Updated",
+      picture: "",
+      about: "",
+      created_at: 11,
+    });
+
+    assert.equal(cachedProfile(pk).display_name, "Alice Updated");
+    assert.equal(cachedProfile(pk).picture, "");
+    assert.equal(cachedProfile(pk).about, "");
+  });
+
   it("accepts pubkey-keyed API maps that omit pubkey in the value", () => {
     rememberProfiles({
       [pk]: { display_name: "Bob", avatar_url: "/avatar/bob", created_at: 5 },
@@ -71,5 +94,20 @@ describe("profile memory cache", () => {
     assert.equal(merged[pk].display_name, "Alice");
     assert.equal(merged[pk].picture, "https://example.com/a.jpg");
     assert.equal(merged[pk].avatar_url, "/avatar/alice?v=one");
+  });
+
+  it("normalizes server profile JSON and derives the local avatar proxy", () => {
+    const pubkey = "55".repeat(32);
+    const remembered = rememberProfiles({
+      [pubkey]: {
+        PubKey: pubkey,
+        Display: "Server Author",
+        Picture: "https://images.example/avatar.png",
+      },
+    });
+
+    assert.equal(remembered[pubkey].display_name, "Server Author");
+    assert.equal(remembered[pubkey].picture, "https://images.example/avatar.png");
+    assert.equal(remembered[pubkey].avatar_url, `/avatar/${pubkey}`);
   });
 });

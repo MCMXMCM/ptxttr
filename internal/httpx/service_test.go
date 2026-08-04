@@ -725,6 +725,61 @@ func TestReferencedHydrationFetchesFromRelaysWhenMissingFromStore(t *testing.T) 
 	}
 }
 
+func TestReferencedHydrationCachesSignedEmbeddedRepostForThreadNavigation(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+
+	original := fnostr.Event{
+		CreatedAt: fnostr.Timestamp(time.Now().Unix() - 30),
+		Kind:      fnostr.Kind(nostrx.KindTextNote),
+		Content:   "embedded original opens as a thread",
+	}
+	if err := original.Sign(fnostr.Generate()); err != nil {
+		t.Fatalf("Sign() original: %v", err)
+	}
+	embedded := fnostrToNostrxEvent(original)
+	content, err := json.Marshal(embedded)
+	if err != nil {
+		t.Fatalf("Marshal() embedded: %v", err)
+	}
+	repost := nostrx.Event{
+		ID:        strings.Repeat("2", 64),
+		PubKey:    strings.Repeat("b", 64),
+		CreatedAt: time.Now().Unix() - 10,
+		Kind:      nostrx.KindRepost,
+		Content:   string(content),
+		Tags: [][]string{
+			{"e", embedded.ID, "wss://relay.example"},
+			{"p", embedded.PubKey},
+		},
+	}
+	if err := st.SaveEvent(ctx, repost); err != nil {
+		t.Fatal(err)
+	}
+
+	referenced, _ := srv.referencedHydrationFromStore(ctx, []nostrx.Event{repost})
+	if got := referenced[embedded.ID].Content; got != embedded.Content {
+		t.Fatalf("referenced content = %q, want %q", got, embedded.Content)
+	}
+	cached, err := st.GetEvent(ctx, embedded.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached == nil || cached.Content != embedded.Content {
+		t.Fatalf("embedded event was not promoted to thread cache: %#v", cached)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/thread/"+embedded.ID, nil)
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("thread status = %d, want 200; body=%q", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), embedded.Content) {
+		t.Fatalf("thread body did not include embedded note: %s", rec.Body.String())
+	}
+}
+
 func TestUserPageRendersThinMetadataShell(t *testing.T) {
 	srv, st := testServer(t)
 	pubkey := strings.Repeat("d", 64)
@@ -2250,7 +2305,10 @@ func TestPlanPublishRelaysPrioritizesExplicitAndAuthorWriteHints(t *testing.T) {
 			PubKey:    rootAuthor,
 			CreatedAt: 9,
 			Kind:      nostrx.KindRelayListMetadata,
-			Tags:      [][]string{{"r", "wss://root-write.example", "write"}},
+			Tags: [][]string{
+				{"r", "wss://root-write.example", "write"},
+				{"r", "wss://root-inbox.example", "read"},
+			},
 		},
 		{
 			ID:        strings.Repeat("c", 64),
@@ -2286,6 +2344,9 @@ func TestPlanPublishRelaysPrioritizesExplicitAndAuthorWriteHints(t *testing.T) {
 	}
 	if !strings.Contains(joined, "wss://root-write.example") {
 		t.Fatalf("thread participant relay missing from plan: %#v", planned)
+	}
+	if !strings.Contains(joined, "wss://root-inbox.example") {
+		t.Fatalf("thread participant inbox relay missing from plan: %#v", planned)
 	}
 }
 

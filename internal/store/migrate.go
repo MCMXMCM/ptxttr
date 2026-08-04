@@ -302,6 +302,12 @@ func (s *Store) migrate(ctx context.Context) error {
 			PRIMARY KEY(event_id, generation, reason)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_event_pins_expiry ON event_pins(expires_at, event_id)`,
+		`CREATE TABLE IF NOT EXISTS hot_thread_pins (
+			root_id TEXT PRIMARY KEY,
+			pinned_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_hot_thread_pins_recent ON hot_thread_pins(pinned_at DESC)`,
 		`CREATE TABLE IF NOT EXISTS nip05_verifications (
 			identifier TEXT NOT NULL,
 			pubkey TEXT NOT NULL,

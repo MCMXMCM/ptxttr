@@ -201,7 +201,7 @@ async function startSidecar() {
       PTXT_ADDR: `127.0.0.1:${port}`,
       PTXT_DESKTOP_DATA_DIR: dataDir(),
       PTXT_DESKTOP_MODE: "1",
-      PTXT_DESKTOP_ACTIVITY_TOKEN: activityToken,
+      PTXT_DESKTOP_SESSION_TOKEN: activityToken,
     },
     stdio: ["ignore", sidecarLogFD, sidecarLogFD],
     windowsHide: true,
@@ -240,6 +240,7 @@ async function restartSidecar(win = BrowserWindow.getFocusedWindow()) {
     await stopSidecar();
     await startSidecar();
     await waitForReady();
+		await installLoopbackSession();
     await win?.loadURL(`${origin}/`);
     await updateActivity();
   } catch (error) {
@@ -252,6 +253,18 @@ async function restartSidecar(win = BrowserWindow.getFocusedWindow()) {
       requestApplicationWindow();
     }
   }
+}
+
+async function installLoopbackSession() {
+	if (!appSession) throw new Error("The application session is unavailable.");
+	await appSession.cookies.set({
+		url: origin,
+		name: "ptxt_desktop_token",
+		value: activityToken,
+		httpOnly: true,
+		sameSite: "strict",
+		path: "/",
+	});
 }
 
 async function stopSidecar() {
@@ -557,9 +570,10 @@ function installPowerPolicy() {
 
 async function updateActivity() {
   if (!sidecar || sidecar.exitCode !== null) return;
-  const active = !suspended && [...windows].some((win) => (
+  const visible = !suspended && [...windows].some((win) => (
     !win.isDestroyed() && win.isVisible() && !win.isMinimized()
   ));
+  const mode = suspended ? "paused" : (visible ? "foreground" : "reduced");
   try {
     await fetch(`${origin}/__ptxt/desktop/activity`, {
       method: "POST",
@@ -567,7 +581,7 @@ async function updateActivity() {
         "Content-Type": "application/json",
         "X-Ptxt-Desktop-Token": activityToken,
       },
-      body: JSON.stringify({ active }),
+      body: JSON.stringify({ mode }),
       signal: AbortSignal.timeout(1_000),
     });
   } catch {

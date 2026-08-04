@@ -59,6 +59,13 @@ class FakeElement {
 
 function transitionableNote(id = "note-abc", extras = {}) {
   const body = extras.body || new FakeElement(`${id}-body`);
+  const content = extras.content || new FakeElement(`${id}-content`);
+  const actions = extras.actions || new FakeElement(`${id}-actions`);
+  body.queryMap = {
+    ".note-content, .ascii-note-content, .reply-content": content,
+    ".ascii-line:has([data-reply-action])": actions,
+    ...(body.queryMap || {}),
+  };
   const author = extras.author || new FakeElement(`${id}-author`);
   const avatarImg = extras.avatarImg || new FakeElement(`${id}-avatar-img`);
   const avatarHost = extras.avatarHost || new FakeElement(`${id}-avatar-host`, { img: avatarImg });
@@ -68,7 +75,7 @@ function transitionableNote(id = "note-abc", extras = {}) {
     ":scope .ascii-line-feed-header a[href^='/u/'], :scope .ascii-reply > .ascii-line:first-child a[href^='/u/'], :scope .hn-comhead a[href^='/u/']": author,
     ...(extras.queryMap || {}),
   });
-  return { note, body, author, avatarHost, avatarImg };
+  return { note, body, content, actions, author, avatarHost, avatarImg };
 }
 
 globalThis.Element = FakeElement;
@@ -114,6 +121,7 @@ globalThis.document ??= {
 
 const {
   prepareThreadTransition,
+  prepareThreadFocusTransition,
   prepareThreadToProfileTransition,
   runNoteViewTransition,
   takeCarriedThreadNote,
@@ -126,7 +134,7 @@ const {
 
 describe("note-transition carried note handling", () => {
   it("applies lightweight transition names to note parts", () => {
-    const { note: source, avatarImg, avatarHost, body, author } = transitionableNote("note-abc");
+    const { note: source, avatarImg, avatarHost, body, content, actions, author } = transitionableNote("note-abc");
 
     const transition = prepareThreadTransition(source, "/thread/abc");
     assert.equal(transition?.selectedNoteID, "abc");
@@ -134,7 +142,9 @@ describe("note-transition carried note handling", () => {
     assert.equal(avatarImg.style.viewTransitionName, "ptxt-note-avatar-abc");
     assert.equal(avatarHost.style.viewTransitionName, undefined);
     assert.equal(author.style.viewTransitionName, "ptxt-note-author-abc");
-    assert.equal(body.style.viewTransitionName, "ptxt-note-body-abc");
+    assert.equal(body.style.viewTransitionName, "ptxt-note-chrome-abc");
+    assert.equal(content.style.viewTransitionName, "ptxt-note-content-abc");
+    assert.equal(actions.style.viewTransitionName, "ptxt-note-actions-abc");
 
     clearThreadTransition("abc");
   });
@@ -160,14 +170,14 @@ describe("note-transition carried note handling", () => {
     applyThreadTransitionNames(carried, "abc");
     const carriedBody = carried.querySelector(":scope > pre.ascii-card, :scope > pre.ascii-reply");
     assert.equal(source.style.viewTransitionName, undefined);
-    assert.equal(sourceBody.style.viewTransitionName, "ptxt-note-body-abc");
-    assert.equal(carriedBody.style.viewTransitionName, "ptxt-note-body-abc");
+    assert.equal(sourceBody.style.viewTransitionName, "ptxt-note-chrome-abc");
+    assert.equal(carriedBody.style.viewTransitionName, "ptxt-note-chrome-abc");
 
     clearNoteTransitionNames(source);
 
     assert.equal(sourceBody.style.viewTransitionName, "");
     assert.equal(sourceBody.dataset.ptxtViewTransitionName, undefined);
-    assert.equal(carriedBody.style.viewTransitionName, "ptxt-note-body-abc");
+    assert.equal(carriedBody.style.viewTransitionName, "ptxt-note-chrome-abc");
 
     clearThreadTransition("abc");
   });
@@ -200,6 +210,95 @@ describe("note-transition carried note handling", () => {
     globalThis.window.location.pathname = "/";
   });
 
+  it("names both notes during an in-thread focus promotion and demotion", () => {
+    globalThis.window.location.pathname = "/thread/root";
+    const { note: parent, body: parentChrome } = transitionableNote("note-parent");
+    const { note: selectedReply, body: replyChrome } = transitionableNote("note-reply");
+    const root = {
+      querySelector(selector) {
+        return String(selector).includes("#thread-focus") ? selectedReply : null;
+      },
+    };
+
+    const transition = prepareThreadFocusTransition(parent, "/thread/parent", root);
+    assert.equal(transition?.selectedNoteID, "parent");
+    assert.equal(transition?.previousSelectedNoteID, "reply");
+    assert.deepEqual(transition?.noteIDs, ["parent", "reply"]);
+    assert.equal(parentChrome.style.viewTransitionName, "ptxt-note-chrome-parent");
+    assert.equal(replyChrome.style.viewTransitionName, "ptxt-note-chrome-reply");
+
+    clearThreadTransition("parent");
+    globalThis.window.location.pathname = "/";
+  });
+
+  it("moves the promoted note into focus and the prior selection into replies", () => {
+    globalThis.window.location.pathname = "/thread/root";
+    const { note: parent } = transitionableNote("note-parent");
+    const { note: selectedReply } = transitionableNote("note-reply");
+    const { note: focusedParent, body: focusedChrome } = transitionableNote("note-parent");
+    const { note: demotedReply, body: demotedChrome } = transitionableNote("note-reply");
+    const sourceRoot = {
+      querySelector(selector) {
+        return String(selector).includes("#thread-focus") ? selectedReply : null;
+      },
+    };
+    prepareThreadFocusTransition(parent, "/thread/parent", sourceRoot);
+    const destinationRoot = {
+      querySelector(selector) {
+        const value = String(selector);
+        if (value.includes("#thread-focus") && value.includes("note-parent")) return focusedParent;
+        if (value.includes("#thread-replies") && value.includes("note-reply")) return demotedReply;
+        return null;
+      },
+      querySelectorAll() {
+        return [];
+      },
+    };
+
+    const destination = applyDestinationThreadTransition(destinationRoot, "parent");
+    assert.equal(destination, focusedParent);
+    assert.equal(focusedChrome.style.viewTransitionName, "ptxt-note-chrome-parent");
+    assert.equal(demotedChrome.style.viewTransitionName, "ptxt-note-chrome-reply");
+
+    clearThreadTransition("parent");
+    globalThis.window.location.pathname = "/";
+  });
+
+  it("keeps the current child paired as the parent when focusing its child", () => {
+    globalThis.window.location.pathname = "/thread/root";
+    globalThis.window.location.href = "http://localhost/thread/parent";
+    const { note: child } = transitionableNote("note-child");
+    const { note: currentParent } = transitionableNote("note-parent");
+    const { note: focusedChild, body: childChrome } = transitionableNote("note-child");
+    const { note: demotedParent, body: parentChrome } = transitionableNote("note-parent");
+    const sourceRoot = {
+      querySelector(selector) {
+        return String(selector).includes("#thread-focus") ? currentParent : null;
+      },
+    };
+    prepareThreadFocusTransition(child, "/thread/child", sourceRoot);
+    const destinationRoot = {
+      querySelector(selector) {
+        const value = String(selector);
+        if (value.includes("#thread-focus") && value.includes("note-child")) return focusedChild;
+        if (value.includes("#thread-focus") && value.includes("note-parent")) return demotedParent;
+        return null;
+      },
+      querySelectorAll() {
+        return [];
+      },
+    };
+
+    const destination = applyDestinationThreadTransition(destinationRoot, "child");
+    assert.equal(destination, focusedChild);
+    assert.equal(childChrome.style.viewTransitionName, "ptxt-note-chrome-child");
+    assert.equal(parentChrome.style.viewTransitionName, "ptxt-note-chrome-parent");
+
+    clearThreadTransition("child");
+    globalThis.window.location.pathname = "/";
+    globalThis.window.location.href = "http://localhost/";
+  });
+
   it("skips carried-note transitions for thread links outside note cards", () => {
     const link = new FakeElement("plain-link");
     link.closest = (selector) => {
@@ -226,7 +325,7 @@ describe("note-transition carried note handling", () => {
     const matched = applyDestinationThreadTransition(globalThis.document, "abc");
     assert.equal(matched, threadNote);
     assert.equal(threadNote.style.viewTransitionName, undefined);
-    assert.equal(body.style.viewTransitionName, "ptxt-note-body-abc");
+    assert.equal(body.style.viewTransitionName, "ptxt-note-chrome-abc");
     assert.equal(feedNote.style.viewTransitionName, undefined);
 
     clearThreadTransition("abc");
@@ -245,7 +344,7 @@ describe("note-transition carried note handling", () => {
     const matched = applyDestinationThreadTransition(globalThis.document, "abc");
     assert.equal(matched, threadNote);
     assert.equal(threadNote.style.viewTransitionName, undefined);
-    assert.equal(body.style.viewTransitionName, "ptxt-note-body-abc");
+    assert.equal(body.style.viewTransitionName, "ptxt-note-chrome-abc");
     assert.equal(feedNote.style.viewTransitionName, undefined);
 
     clearThreadTransition("abc");
@@ -263,7 +362,7 @@ describe("note-transition carried note handling", () => {
     assert.equal(transition?.selectedNoteID, "abc");
     assert.equal(transition?.sourceRoute, "thread");
     assert.equal(threadNote.style.viewTransitionName, undefined);
-    assert.equal(body.style.viewTransitionName, "ptxt-note-body-abc");
+    assert.equal(body.style.viewTransitionName, "ptxt-note-chrome-abc");
 
     clearThreadTransition("abc");
     globalThis.window.location.pathname = "/";
@@ -278,7 +377,7 @@ describe("note-transition carried note handling", () => {
     assert.equal(transition?.sourceRoute, "feed");
     assert.equal(transition?.sourceList, "feed");
     assert.equal(feedNote.style.viewTransitionName, undefined);
-    assert.equal(body.style.viewTransitionName, "ptxt-note-body-abc");
+    assert.equal(body.style.viewTransitionName, "ptxt-note-chrome-abc");
 
     const carried = takeCarriedThreadNote("abc");
     assert.notEqual(carried, null);
@@ -305,7 +404,7 @@ describe("note-transition carried note handling", () => {
     const matched = applyDestinationProfileTransition(globalThis.document, "abc");
     assert.equal(matched, profileNote);
     assert.equal(profileNote.style.viewTransitionName, undefined);
-    assert.equal(body.style.viewTransitionName, "ptxt-note-body-abc");
+    assert.equal(body.style.viewTransitionName, "ptxt-note-chrome-abc");
     assert.equal(threadNote.style.viewTransitionName, undefined);
 
     clearThreadTransition("abc");

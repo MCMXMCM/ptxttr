@@ -53,6 +53,29 @@ async function portIsAvailable() {
   });
 }
 
+async function measureWideTreeLayout(page) {
+  return page.evaluate(() => {
+    const feed = document.querySelector(".feed-column");
+    const participants = document.querySelector(".right-rail");
+    const priorFragment = participants?.dataset.threadFragment;
+    if (participants) participants.dataset.threadFragment = "participants";
+    document.body.classList.add("thread-tree-wide-layout");
+    const box = feed?.getBoundingClientRect();
+    const result = {
+      left: box?.left || 0,
+      right: box?.right || 0,
+      viewportWidth: window.innerWidth,
+      width: box?.width || 0,
+    };
+    document.body.classList.remove("thread-tree-wide-layout");
+    if (participants) {
+      if (priorFragment === undefined) delete participants.dataset.threadFragment;
+      else participants.dataset.threadFragment = priorFragment;
+    }
+    return result;
+  });
+}
+
 test("desktop starts one sandboxed sidecar and keeps native tabs session-shared", { timeout: 90_000 }, async (t) => {
   const userData = fs.mkdtempSync(path.join(os.tmpdir(), "ptxttr-electron-"));
   t.after(() => removeTree(userData));
@@ -65,11 +88,17 @@ test("desktop starts one sandboxed sidecar and keeps native tabs session-shared"
   const expandedSidebar = await home.locator(".left-rail").boundingBox();
   assert.ok(expandedSidebar.x <= 1);
   assert.equal(expandedSidebar.width, 224);
+  const wideTreeLayout = await measureWideTreeLayout(home);
+  assert.ok(wideTreeLayout.width > 800);
+  assert.ok(wideTreeLayout.right >= wideTreeLayout.viewportWidth - 1);
   await sidebarToggle.click();
   await home.waitForFunction(() => document.documentElement.dataset.ptxtSidebarCollapsed === "1");
   assert.equal(await sidebarToggle.getAttribute("aria-expanded"), "false");
   assert.equal(await home.evaluate(() => localStorage.getItem("ptxt_desktop_sidebar_collapsed")), "1");
   assert.equal(await home.locator(".left-rail").isVisible(), false);
+  const collapsedWideTreeLayout = await measureWideTreeLayout(home);
+  assert.ok(collapsedWideTreeLayout.left <= 1);
+  assert.ok(collapsedWideTreeLayout.right >= collapsedWideTreeLayout.viewportWidth - 1);
   const titlebarToggle = await sidebarToggle.boundingBox();
   assert.equal(titlebarToggle.x, 88);
   assert.equal(titlebarToggle.y, 5);
@@ -191,7 +220,34 @@ test("port collision stays on the diagnostic startup screen", { timeout: 30_000 
 	const electronApp = await step("collision Electron launch", launch(userData), 30_000);
 	t.after(async () => closeElectron(electronApp).catch(() => {}));
   const page = await electronApp.firstWindow();
+  const startupDetails = page.locator("[data-startup-details]");
+  await startupDetails.waitFor({ state: "attached" });
+  assert.deepEqual(await startupDetails.evaluate((details) => {
+    const [reveal] = details.getAnimations();
+    reveal.pause();
+    reveal.currentTime = 0;
+    const style = getComputedStyle(details);
+    return {
+      delay: reveal.effect.getTiming().delay,
+      visibility: style.visibility,
+      maxHeight: style.maxHeight,
+      paddingTop: style.paddingTop,
+    };
+  }), {
+    delay: 3_000,
+    visibility: "hidden",
+    maxHeight: "0px",
+    paddingTop: "0px",
+  });
+  await page.waitForFunction(
+    () => document.getElementById("status")?.textContent.includes("Port 24787 is already in use."),
+  );
+  await startupDetails.evaluate((details) => {
+    const [reveal] = details.getAnimations();
+    reveal.currentTime = reveal.effect.getComputedTiming().endTime;
+  });
   await page.waitForSelector("text=Port 24787 is already in use.");
+  assert.equal(await startupDetails.evaluate((details) => getComputedStyle(details).visibility), "visible");
   const lightIcon = page.locator('[data-startup-icon="light"]');
   const darkIcon = page.locator('[data-startup-icon="dark"]');
   await lightIcon.waitFor({ state: "attached" });
