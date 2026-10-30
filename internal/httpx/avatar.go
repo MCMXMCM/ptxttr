@@ -31,16 +31,21 @@ const (
 	avatarFingerprintSize   = 12 // hex chars, ~48 bits of entropy on the URL
 	// avatarFetchUserAgent is browser-like so CDNs and hotlink guards that block unknown bots still serve images.
 	avatarFetchUserAgent = "Mozilla/5.0 (compatible; ptxt-nstr/1; +https://plaintextnostr.com) AppleWebKit/537.36 (KHTML, like Gecko) avatar-proxy"
+	// avatarContentSecurityPolicy stops proxied bytes from running script if an
+	// avatar URL is ever opened as a document on the app's own origin.
+	avatarContentSecurityPolicy = "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; sandbox"
 )
 
+// avatarAllowedTypes lists raster formats only. SVG is a document format that
+// can carry script, and avatars are served same-origin with the session's
+// signing keys, so SVG profile pictures fall back to the client placeholder.
 var avatarAllowedTypes = map[string]bool{
-	"image/jpeg":    true,
-	"image/jpg":     true,
-	"image/png":     true,
-	"image/gif":     true,
-	"image/webp":    true,
-	"image/avif":    true,
-	"image/svg+xml": true,
+	"image/jpeg": true,
+	"image/jpg":  true,
+	"image/png":  true,
+	"image/gif":  true,
+	"image/webp": true,
+	"image/avif": true,
 }
 
 // avatarEntry holds a cached upstream avatar response.
@@ -196,6 +201,8 @@ func (s *Server) handleAvatar(w http.ResponseWriter, r *http.Request) {
 		entry = fetched
 	}
 
+	w.Header().Set("Content-Security-Policy", avatarContentSecurityPolicy)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if match := r.Header.Get("If-None-Match"); match != "" && match == quotedETag(entry.bodyHash) {
 		w.Header().Set("ETag", quotedETag(entry.bodyHash))
 		w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, immutable", avatarSuccessMaxAge))
@@ -206,7 +213,6 @@ func (s *Server) handleAvatar(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", entry.contentType)
 	w.Header().Set("Cache-Control", fmt.Sprintf("public, max-age=%d, immutable", avatarSuccessMaxAge))
 	w.Header().Set("ETag", quotedETag(entry.bodyHash))
-	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(entry.body)))
 	if r.Method == http.MethodHead {
 		return

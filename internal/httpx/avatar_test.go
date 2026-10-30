@@ -64,6 +64,9 @@ func TestHandleAvatarServesUpstreamBytesWithCacheHeaders(t *testing.T) {
 	if rr.Header().Get("ETag") == "" {
 		t.Fatal("ETag should be set")
 	}
+	if csp := rr.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "sandbox") || !strings.Contains(csp, "default-src 'none'") {
+		t.Fatalf("Content-Security-Policy = %q, want a sandboxed default-src 'none' policy", csp)
+	}
 	if rr.Body.String() != tinyPNG {
 		t.Fatalf("body = %q, want passthrough", rr.Body.String())
 	}
@@ -187,6 +190,32 @@ func TestHandleAvatarRejectsDisallowedContentType(t *testing.T) {
 	srv.handleAvatar(rr, httptest.NewRequest(http.MethodGet, "/avatar/"+pubkey+"?v="+avatarFingerprint(pictureURL), nil))
 	if rr.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502 for disallowed content-type", rr.Code)
+	}
+}
+
+func TestHandleAvatarRejectsSVG(t *testing.T) {
+	const scriptedSVG = `<svg xmlns="http://www.w3.org/2000/svg" onload="alert(localStorage.length)"/>`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/svg+xml")
+		_, _ = w.Write([]byte(scriptedSVG))
+	}))
+	t.Cleanup(upstream.Close)
+
+	srv, _ := testServer(t)
+	pubkey := "alice"
+	pictureURL := upstream.URL + "/avatar.svg"
+	writeProfilePicture(t, srv, pubkey, pictureURL)
+
+	rr := httptest.NewRecorder()
+	srv.handleAvatar(rr, httptest.NewRequest(http.MethodGet, "/avatar/"+pubkey+"?v="+avatarFingerprint(pictureURL), nil))
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 so SVG is never served from the app origin", rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), "<svg") {
+		t.Fatalf("body = %q, must not echo the SVG document", rr.Body.String())
+	}
+	if got := rr.Header().Get("Content-Type"); strings.Contains(got, "svg") {
+		t.Fatalf("content-type = %q, must not be SVG", got)
 	}
 }
 

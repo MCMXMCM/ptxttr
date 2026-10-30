@@ -385,3 +385,118 @@ describe("relayPublish", () => {
     assert.match(payload.relay_stats[0].error, /did not return a promise/);
   });
 });
+
+/** In-memory relay socket that accepts every published event. */
+class FakeRelaySocket extends EventTarget {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+  static instances = [];
+
+  CONNECTING = 0;
+  OPEN = 1;
+  CLOSING = 2;
+  CLOSED = 3;
+
+  constructor(url) {
+    super();
+    this.url = url;
+    this.readyState = FakeRelaySocket.CONNECTING;
+    FakeRelaySocket.instances.push(this);
+    setTimeout(() => {
+      if (this.readyState !== FakeRelaySocket.CONNECTING) return;
+      this.readyState = FakeRelaySocket.OPEN;
+      this.dispatchEvent(new Event("open"));
+    }, 0);
+  }
+
+  send(data) {
+    const message = JSON.parse(data);
+    if (message[0] !== "EVENT") return;
+    setTimeout(() => {
+      this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(["OK", message[1].id, true, ""]) }));
+    }, 0);
+  }
+
+  close() {
+    if (this.readyState === FakeRelaySocket.CLOSED) return;
+    this.readyState = FakeRelaySocket.CLOSED;
+    setTimeout(() => this.dispatchEvent(new Event("close")), 0);
+  }
+}
+
+function signedReaction(index) {
+  return {
+    id: String(index).padStart(64, "0"),
+    pubkey: "b".repeat(64),
+    kind: 7,
+    created_at: 1,
+    tags: [],
+    content: "+",
+    sig: "c".repeat(128),
+  };
+}
+
+/**
+ * Runs `fn` against the real nostrify pool with fake sockets and a window
+ * whose timers are captured instead of scheduled.
+ */
+async function withFakeRelaySockets(fn) {
+  const previousSocket = Object.getOwnPropertyDescriptor(globalThis, "WebSocket");
+  const previousWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const timers = [];
+  FakeRelaySocket.instances = [];
+  Object.defineProperty(globalThis, "WebSocket", { configurable: true, writable: true, value: FakeRelaySocket });
+  Object.defineProperty(globalThis, "window", {
+    configurable: true,
+    value: {
+      setTimeout(callback, ms) {
+        timers.push({ callback, ms });
+        return timers.length;
+      },
+      clearTimeout() {},
+    },
+  });
+  try {
+    return await fn({ sockets: FakeRelaySocket.instances, timers });
+  } finally {
+    closeRelayPool();
+    if (previousWindow) Object.defineProperty(globalThis, "window", previousWindow);
+    else delete globalThis.window;
+    if (previousSocket) Object.defineProperty(globalThis, "WebSocket", previousSocket);
+    else delete globalThis.WebSocket;
+  }
+}
+
+describe("relay connection lifecycle", () => {
+  it("opens a fresh relay connection after the idle sweep closes one", async (t) => {
+    await withFakeRelaySockets(async ({ sockets, timers }) => {
+      const first = await relayPublish(["wss://relay.example"], signedReaction(1));
+      assert.equal(first.accepted, 1);
+
+      const sweep = timers.find((timer) => timer.ms === 5000);
+      assert.ok(sweep, "publishing should schedule the idle sweep");
+      const later = Date.now() + 60_000;
+      t.mock.method(Date, "now", () => later);
+      sweep.callback();
+
+      const second = await relayPublish(["wss://relay.example"], signedReaction(2));
+      assert.equal(second.accepted, 1, JSON.stringify(second.relay_stats));
+      assert.equal(sockets.length, 2, "the swept relay should reconnect with a new socket");
+    });
+  });
+
+  it("opens a fresh pool after the hidden-page cleanup closes every relay", async () => {
+    await withFakeRelaySockets(async ({ sockets }) => {
+      const first = await relayPublish(["wss://relay.example"], signedReaction(3));
+      assert.equal(first.accepted, 1);
+
+      closeRelayPool();
+
+      const second = await relayPublish(["wss://relay.example"], signedReaction(4));
+      assert.equal(second.accepted, 1, JSON.stringify(second.relay_stats));
+      assert.equal(sockets.length, 2);
+    });
+  });
+});

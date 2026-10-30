@@ -251,6 +251,15 @@ export async function fetchMuteList(pubkey) {
   };
 }
 
+/**
+ * Newest copy of a viewer's replaceable list to base an edit on. Always
+ * refetches instead of trusting a cached copy that may be empty, stale, or
+ * loaded while the tab was hidden. Resolves null when no list was found.
+ */
+export async function fetchLatestListForWrite(pubkey, kind) {
+  return fetchReplaceable(pubkey, kind, { forceRefresh: true });
+}
+
 export async function fetchViewerProfile(pubkey, { forceRefresh = false } = {}) {
   const event = await fetchReplaceable(pubkey, KIND_PROFILE, { forceRefresh });
   return rememberProfile(parseProfile(pubkey, event));

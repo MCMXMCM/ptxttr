@@ -1,36 +1,21 @@
 import { publishSignedEvent } from "./publish.js";
-import { getSession, normalizedPubkey } from "./session.js";
-import { activeSignerState, signEventDraft } from "./signer.js";
+import { normalizedPubkey } from "./session.js";
+import { activeSignerState } from "./signer.js";
 import { fetchBookmarks } from "./relay-reads.js";
+import { bookmarkEntries } from "./relay-utils.js";
+import { updateReplaceableList } from "./replaceable-list.js";
 
 export { publishSignedEvent };
 
 const KIND_BOOKMARK_LIST = 10003;
+const NEW_BOOKMARK_LIST_CONFIRM =
+  "No existing bookmark list was found on your relays. Bookmarking now publishes a new list that contains only this note. Continue?";
 const bookmarkState = {
   pubkey: "",
   entries: new Map(),
   loaded: false,
   loading: null,
 };
-
-/** Serialize bookmark writes so parallel clicks cannot interleave list state. */
-let bookmarkWriteChain = Promise.resolve();
-
-function runSerializedBookmarkWrite(fn) {
-  const prev = bookmarkWriteChain;
-  let done;
-  bookmarkWriteChain = new Promise((resolve) => {
-    done = resolve;
-  });
-  return prev
-    .catch(() => {
-      /* keep queue moving if a prior bookmark write failed */
-    })
-    .then(fn)
-    .finally(() => {
-      done();
-    });
-}
 
 function noteIDsInRoot(root = document) {
   const ids = [];
@@ -105,54 +90,28 @@ async function loadBookmarks(pubkey) {
   return bookmarkState.loading;
 }
 
-function buildBookmarkTags(entries) {
-  const tags = [];
-  entries.forEach((relay, id) => {
-    if (relay) {
-      tags.push(["e", id, relay]);
-      return;
-    }
-    tags.push(["e", id]);
-  });
-  return tags;
-}
-
-async function toggleBookmark(noteID) {
-  return runSerializedBookmarkWrite(() => toggleBookmarkOnce(noteID));
-}
-
-async function toggleBookmarkOnce(noteID) {
+/**
+ * Add or remove one bookmark. The list is refetched and edited in place, so
+ * `a`/`t` tags, private (encrypted) entries and bookmarks past the display
+ * limit survive the republish.
+ */
+async function setBookmarked(noteID, bookmarked) {
   const signer = activeSignerState();
   if (!signer.isLoggedIn || !signer.canSign) {
     throw new Error("A signing-capable login is required.");
   }
   const pubkey = normalizedPubkey();
   if (!pubkey) throw new Error("Log in first to manage bookmarks.");
-  await loadBookmarks(pubkey);
-  const hadBookmark = bookmarkState.entries.has(noteID);
-  const previousRelay = bookmarkState.entries.get(noteID) || "";
-  if (hadBookmark) {
-    bookmarkState.entries.delete(noteID);
-  } else {
-    bookmarkState.entries.set(noteID, "");
-  }
-  const draft = {
+  const { event } = await updateReplaceableList({
+    pubkey,
     kind: KIND_BOOKMARK_LIST,
-    created_at: Math.floor(Date.now() / 1000),
-    tags: buildBookmarkTags(bookmarkState.entries),
-    content: "",
-  };
-  try {
-    const signed = await signEventDraft(draft, getSession());
-    await publishSignedEvent(signed);
-  } catch (error) {
-    if (hadBookmark) {
-      bookmarkState.entries.set(noteID, previousRelay);
-    } else {
-      bookmarkState.entries.delete(noteID);
-    }
-    throw error;
-  }
+    tag: ["e", noteID],
+    enabled: bookmarked,
+    confirm: (current) => Boolean(current) || window.confirm(NEW_BOOKMARK_LIST_CONFIRM),
+  });
+  bookmarkState.pubkey = pubkey;
+  bookmarkState.entries = entriesFromPayload({ entries: bookmarkEntries(event) });
+  bookmarkState.loaded = true;
 }
 
 function bindBookmarkActions(root = document) {
@@ -163,15 +122,16 @@ function bindBookmarkActions(root = document) {
     if (!(trigger instanceof HTMLButtonElement)) return;
     event.preventDefault();
     event.stopPropagation();
-    const noteID = String(trigger.dataset.noteId || "");
-    if (!/^[0-9a-f]{64}$/i.test(noteID)) return;
+    const noteID = String(trigger.dataset.noteId || "").toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(noteID)) return;
     if (trigger.dataset.loading === "1") return;
+    const bookmarked = trigger.ownerDocument.getElementById(`note-${noteID}`)?.dataset?.bookmarked === "1";
     const previousLabel = trigger.textContent;
     trigger.dataset.loading = "1";
     trigger.disabled = true;
     trigger.textContent = "[saving...]";
     try {
-      await toggleBookmark(noteID.toLowerCase());
+      await setBookmarked(noteID, !bookmarked);
       setBookmarkDecorations(document);
       syncBookmarkToggleLabels(document);
     } catch (error) {

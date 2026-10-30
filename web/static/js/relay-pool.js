@@ -2,7 +2,7 @@ import { normalizeRelayList } from "./relay-config.js";
 import { dedupeEventsByID } from "./relay-utils.js";
 import { pageIsHidden, powerLimitedCount, powerLimitedTimeoutMs, powerSaverActive } from "./power-mode.js";
 import { putEvents } from "./event-store.js";
-import { getNostrPool } from "./nostr-provider.js";
+import { closeNostrPool, getNostrPool } from "./nostr-provider.js";
 import { fetchCachedQuery, queryKeys } from "./query-client.js";
 import { desktopModeEnabled } from "./viewer-defaults.js";
 
@@ -189,6 +189,21 @@ function scheduleRelayIdleSweep() {
   }, RELAY_IDLE_SWEEP_MS);
 }
 
+// nostrify's NRelay1.close() is permanent and NPool.relay() keeps returning
+// the cached instance, so a closed relay must leave the pool before the next
+// read or publish can open a fresh connection.
+function retirePoolRelay(p, relay) {
+  const relays = p?.relays;
+  const client = relays instanceof Map ? relays.get(relay) : null;
+  if (!client) return;
+  relays.delete(relay);
+  try {
+    void Promise.resolve(client.close?.()).catch(() => {});
+  } catch {
+    // ignore
+  }
+}
+
 function sweepIdleRelays() {
   if (!pool) return;
   const now = Date.now();
@@ -198,19 +213,11 @@ function sweepIdleRelays() {
     if (now - lastUsedAt < RELAY_IDLE_CLOSE_MS) return;
     idleRelays.push(relay);
   });
-  if (idleRelays.length) {
-    idleRelays.forEach((relay) => {
-      try {
-        pool?.relay?.(relay)?.close?.();
-      } catch {
-        // ignore
-      }
-    });
-    idleRelays.forEach((relay) => {
-      relayLastUsedAt.delete(relay);
-      relayLeaseCounts.delete(relay);
-    });
-  }
+  idleRelays.forEach((relay) => {
+    retirePoolRelay(pool, relay);
+    relayLastUsedAt.delete(relay);
+    relayLeaseCounts.delete(relay);
+  });
   if (relayLastUsedAt.size) scheduleRelayIdleSweep();
 }
 
@@ -646,16 +653,14 @@ export function cancelActiveRelayReads(reason = "relay reads cancelled") {
 export function closeRelayPool() {
   if (typeof window !== "undefined") {
     window.clearTimeout(relayCooldownTimer);
-    relayCooldownTimer = 0;
     window.clearTimeout(relayIdleSweepTimer);
-    relayIdleSweepTimer = 0;
   }
+  relayCooldownTimer = 0;
+  relayIdleSweepTimer = 0;
   cancelActiveRelayReads("relay pool closed");
-  try {
-    pool?.close?.();
-  } catch {
-    // ignore
-  }
+  // Closing relays is permanent, so retire the shared pool itself; the next
+  // read or publish builds a fresh one instead of reusing closed relays.
+  closeNostrPool();
   pool = null;
   relayFetchBatchCollectors.clear();
   relayReadActiveByRelay.clear();
