@@ -1,11 +1,16 @@
 import { escapeHTML } from "./render-utils.js";
 
+// A profile's website is untrusted text. Only http(s) becomes a link, so a
+// javascript: URL or another app's scheme is shown as plain text instead.
+const PROFILE_WEBSITE_PROTOCOLS = new Set(["http:", "https:"]);
+
+/** Link target for a profile website, or "" when it must not be a link. */
 export function profileWebsiteURL(website) {
   const trimmed = String(website || "").trim();
   if (!trimmed) return "";
   try {
     const parsed = new URL(trimmed);
-    if (parsed.protocol) return trimmed;
+    return PROFILE_WEBSITE_PROTOCOLS.has(parsed.protocol) ? trimmed : "";
   } catch {
     // Fall through to https:// normalization.
   }
@@ -57,11 +62,14 @@ export function renderProfilePaymentHTML(profile) {
 export function renderProfileHeroWebsiteHTML(website) {
   const trimmed = String(website || "").trim();
   if (!trimmed) return "";
-  const href = escapeHTML(profileWebsiteURL(trimmed));
+  const href = profileWebsiteURL(trimmed);
   const label = escapeHTML(profileWebsiteDisplay(trimmed));
+  const value = href
+    ? `<a href="${escapeHTML(href)}" rel="noopener noreferrer" target="_blank">${label}</a>`
+    : label;
   return `<p class="profile-website-line">
     <span class="profile-website-symbol muted">↗</span>
-    <span class="profile-website-value"><a href="${href}" rel="noopener noreferrer" target="_blank">${label}</a></span>
+    <span class="profile-website-value">${value}</span>
   </p>`;
 }
 
