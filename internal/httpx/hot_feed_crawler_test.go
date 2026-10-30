@@ -233,6 +233,50 @@ func TestHotFeedCrawlerUsesDiscoveredRelayHintsForDefaultWoTNotes(t *testing.T) 
 	}
 }
 
+func TestRefreshPinnedGuestAuthorsFetchesNonDirectPinnedNote(t *testing.T) {
+	srv, st := newTestServer(t, testServerOptions{relayTimeout: 500 * time.Millisecond})
+	ctx := context.Background()
+
+	secret := fnostr.Generate()
+	note := fnostr.Event{
+		CreatedAt: fnostr.Timestamp(time.Now().Unix()),
+		Kind:      fnostr.Kind(nostrx.KindTextNote),
+		Content:   "non-direct pinned profile note",
+	}
+	if err := note.Sign(secret); err != nil {
+		t.Fatalf("Sign() note error = %v", err)
+	}
+	author := note.PubKey.Hex()
+
+	hintedRelay := filteredRelayWithEvents(t, []nostrx.Event{fnostrToNostrxEvent(note)})
+	defer hintedRelay.Close()
+	hintedRelayURL := wsURL(hintedRelay.URL)
+	relayList := fnostr.Event{
+		CreatedAt: fnostr.Timestamp(time.Now().Unix()),
+		Kind:      fnostr.Kind(nostrx.KindRelayListMetadata),
+		Tags:      fnostr.Tags{{"r", hintedRelayURL, "write"}},
+	}
+	if err := relayList.Sign(secret); err != nil {
+		t.Fatalf("Sign() relay list error = %v", err)
+	}
+	defaultRelay := filteredRelayWithEvents(t, []nostrx.Event{fnostrToNostrxEvent(relayList)})
+	defer defaultRelay.Close()
+	defaultRelayURL := wsURL(defaultRelay.URL)
+	srv.cfg.DefaultRelays = []string{defaultRelayURL}
+	srv.cfg.MetadataRelays = []string{defaultRelayURL}
+
+	if got := srv.refreshPinnedGuestAuthors(ctx, strings.Repeat("a", 64), []string{author}, time.Now()); got != 1 {
+		t.Fatalf("refreshPinnedGuestAuthors() = %d, want 1", got)
+	}
+	stored, err := st.GetEvent(ctx, note.ID.Hex())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored == nil || stored.Content != note.Content {
+		t.Fatalf("pinned profile note was not cached: %#v", stored)
+	}
+}
+
 func filteredRelayWithEvents(t *testing.T, events []nostrx.Event) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

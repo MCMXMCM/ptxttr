@@ -186,6 +186,15 @@ func (s *Server) buildGuestSliceGeneration(ctx context.Context) error {
 		}
 	}
 
+	// Pinned profiles are explicit exceptions to the seed's kind-3 graph. They
+	// are part of the published cohort below, but allDirect intentionally only
+	// contains real direct follows, so the normal activity tiers never select a
+	// non-follow pin for relay refresh. Refresh pins separately (including their
+	// relay-list metadata) so their public profile timelines stay current.
+	if ctx.Err() == nil {
+		s.refreshPinnedGuestAuthors(ctx, seed, defaultLoggedOutPinnedPubkeys(), now)
+	}
+
 	for _, tier := range guestRefreshTiers {
 		if ctx.Err() != nil {
 			break
@@ -374,6 +383,36 @@ func (s *Server) buildGuestSliceGeneration(ctx context.Context) error {
 	s.metrics.Add("guest_slice.published", 1)
 	s.metrics.Add("guest_slice.pinned_events", int64(len(readiness.Dependencies)))
 	return nil
+}
+
+func (s *Server) refreshPinnedGuestAuthors(ctx context.Context, viewer string, authors []string, now time.Time) int {
+	if s == nil || s.store == nil || s.nostr == nil || ctx.Err() != nil {
+		return 0
+	}
+	authors = uniqueNonEmptyStrings(authors)
+	if len(authors) == 0 {
+		return 0
+	}
+
+	// Discover fresh kind-10002 write hints before routing the note query.
+	for _, author := range authors {
+		if ctx.Err() != nil {
+			return -1
+		}
+		s.refreshAuthor(ctx, author, nil)
+	}
+
+	relays := s.filterCrawlerRelays(s.outboxSeedRelays(ctx, viewer, authors, nil))
+	if len(relays) == 0 {
+		relays = s.crawlRelays(nil)
+	}
+	result := s.refreshRecent(ctx, viewer, authors, 0, 120, relays, now.Add(-guestSliceActivityWindow).Unix())
+	if result < 0 {
+		s.metrics.Add("guest_slice.pinned_refresh_error", 1)
+		return result
+	}
+	s.metrics.Add("guest_slice.pinned_refresh_events", int64(result))
+	return result
 }
 
 func guestFollowFingerprint(event *nostrx.Event) int64 {
