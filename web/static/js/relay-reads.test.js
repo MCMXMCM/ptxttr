@@ -2,8 +2,8 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
 import { resetClientDBForTests } from "./client-store.js";
-import { INDEXER_NIP50_RELAYS } from "./relay-config.js";
-import { chunkValues, eventFetchRelayStages, fetchEventsByIDs, groupedRelayHintBatches, nip50Search, relayPreferencesFromKind10002Event } from "./relay-reads.js";
+import { INDEXER_NIP50_RELAYS, TRENDING_SEARCH_RELAYS } from "./relay-config.js";
+import { chunkValues, eventFetchRelayStages, fetchEventsByIDs, groupedRelayHintBatches, nip50Search, nip50TrendingSearch, relayPreferencesFromKind10002Event } from "./relay-reads.js";
 
 describe("relay-reads batching helpers", () => {
   it("chunks values into bounded groups", () => {
@@ -58,6 +58,25 @@ describe("relay-reads batching helpers", () => {
     assert.deepEqual(results, []);
     assert.deepEqual(capturedRelays, [...INDEXER_NIP50_RELAYS]);
     assert.deepEqual(capturedFilters, [{ search: "hello", kinds: [1], limit: 5 }]);
+  });
+
+  it("reads hot trending from the NIP-50 hot-rank relays", async () => {
+    let capturedRelays = null;
+    let capturedFilters = null;
+    const results = await nip50TrendingSearch({
+      since: 1,
+      limit: 5,
+      relayFetchImpl: async (relays, filters) => {
+        capturedRelays = relays;
+        capturedFilters = filters;
+        return [];
+      },
+    });
+
+    assert.deepEqual(results, []);
+    assert.deepEqual(capturedRelays, [...TRENDING_SEARCH_RELAYS]);
+    assert.ok(capturedRelays.length > 0);
+    assert.deepEqual(capturedFilters, [{ search: "sort:hot protocol:nostr", kinds: [1, 30023], limit: 5, since: 1 }]);
   });
 
   it("plans event fetch relays as hints, author outbox, then fallback relays", () => {

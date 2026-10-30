@@ -10,8 +10,9 @@ const FETCH_TIMEOUT_MS = 8000;
 const PUBLISH_TIMEOUT_MS = 10000;
 const SAVER_FETCH_TIMEOUT_MS = 6500;
 const SAVER_MAX_FETCH_RELAYS = 6;
-const RELAY_IDLE_CLOSE_MS = 15000;
+const RELAY_IDLE_CLOSE_MS = 60000;
 const RELAY_IDLE_SWEEP_MS = 5000;
+const RELAY_HIDDEN_CLOSE_MS = 60000;
 const RELAY_FETCH_BATCH_SIZE = 50;
 const RELAY_FAILURE_WINDOW_MS = 12000;
 const RELAY_COOLDOWN_MS = 7000;
@@ -19,6 +20,8 @@ const RELAY_COOLDOWN_MS = 7000;
 let pool = null;
 let relayCooldownTimer = 0;
 let relayIdleSweepTimer = 0;
+let relayHiddenCloseTimer = 0;
+let relayHiddenAt = 0;
 const relayFetchBatchCollectors = new Map();
 const relayReadQueue = [];
 const relayReadActiveByRelay = new Map();
@@ -221,6 +224,31 @@ function sweepIdleRelays() {
   if (relayLastUsedAt.size) scheduleRelayIdleSweep();
 }
 
+// A quick tab switch keeps its relay sockets and in-flight reads, since
+// reopening them costs a TLS and WebSocket handshake per relay. A page that
+// stays hidden for a minute still closes every relay.
+function syncRelayPageVisibility() {
+  if (pageIsHidden()) {
+    relayHiddenAt = Date.now();
+    if (typeof window === "undefined" || relayHiddenCloseTimer) return;
+    relayHiddenCloseTimer = window.setTimeout(() => {
+      relayHiddenCloseTimer = 0;
+      if (pageIsHidden()) closeRelayPool();
+    }, RELAY_HIDDEN_CLOSE_MS);
+    return;
+  }
+  // Mobile browsers can freeze timers in hidden pages, so a page that was
+  // away longer than that starts over with fresh connections.
+  const hiddenFor = relayHiddenAt ? Date.now() - relayHiddenAt : 0;
+  relayHiddenAt = 0;
+  if (hiddenFor >= RELAY_HIDDEN_CLOSE_MS) {
+    closeRelayPool();
+  } else if (relayHiddenCloseTimer && typeof window !== "undefined") {
+    window.clearTimeout(relayHiddenCloseTimer);
+    relayHiddenCloseTimer = 0;
+  }
+}
+
 function withTimeout(promise, ms, label = "operation") {
   if (!promise || typeof promise.then !== "function") {
     return Promise.reject(new Error(`${label} did not return a promise`));
@@ -328,12 +356,14 @@ class RelayFetchBatchCollector {
     const uniqueKeys = [...new Set(batch.map((item) => item.key))];
     try {
       const out = new Map();
+      let complete = true;
       for (let index = 0; index < uniqueKeys.length; index += RELAY_FETCH_BATCH_SIZE) {
         const chunk = uniqueKeys.slice(index, index + RELAY_FETCH_BATCH_SIZE);
-        const rows = await this.executeBatch(chunk);
-        rows.forEach((value, key) => out.set(key, value));
+        const read = await this.executeBatch(chunk);
+        read.rows.forEach((value, key) => out.set(key, value));
+        if (!read.complete) complete = false;
       }
-      batch.forEach(({ key, resolve }) => resolve(out.get(key) || []));
+      batch.forEach(({ key, resolve }) => resolve({ events: out.get(key) || [], complete }));
     } catch (error) {
       batch.forEach(({ reject }) => reject(error));
     }
@@ -393,7 +423,12 @@ async function queryRelayFilters(p, relay, filters, signal) {
   return client.query(filters, { signal, relays: [relay] });
 }
 
+/**
+ * Runs the filters on every relay. `complete` is false when any relay's read
+ * failed, timed out or was aborted, so its events may be missing.
+ */
 async function querySyncPerRelay(p, normalized, filters, effectiveTimeout, signal = null) {
+  let complete = true;
   const tasks = normalized.map(async (relay) => {
     const relayController = new AbortController();
     activeRelayReadControllers.add(relayController);
@@ -420,6 +455,7 @@ async function querySyncPerRelay(p, normalized, filters, effectiveTimeout, signa
         relayRequest.signal,
       );
     } catch {
+      complete = false;
       return [];
     } finally {
       relayRequest.dispose();
@@ -427,7 +463,7 @@ async function querySyncPerRelay(p, normalized, filters, effectiveTimeout, signa
     }
   });
   const batches = await Promise.all(tasks);
-  return dedupeEventsByID(batches.flat());
+  return { events: dedupeEventsByID(batches.flat()), complete };
 }
 
 function eventsMatchingTag(events = [], tagName, value) {
@@ -455,12 +491,12 @@ async function maybeRelayFetchBatched(p, normalized, filter, effectiveTimeout) {
 
   if (isIDsOnlyFilter(filter)) {
     const collector = collectorForKey(`ids:${relaysKey}`, async (ids) => {
-      const events = await querySyncPerRelay(p, normalized, [{ ids, limit: ids.length }], effectiveTimeout);
+      const { events, complete } = await querySyncPerRelay(p, normalized, [{ ids, limit: ids.length }], effectiveTimeout);
       const out = new Map();
       ids.forEach((id) => {
         out.set(id, events.filter((event) => event.id === id));
       });
-      return out;
+      return { rows: out, complete };
     });
     return collector.request(filter.ids[0]);
   }
@@ -469,7 +505,7 @@ async function maybeRelayFetchBatched(p, normalized, filter, effectiveTimeout) {
     const kind = filter.kinds[0];
     const limit = Math.max(1, Number(filter.limit) || 1);
     const collector = collectorForKey(`replaceable:${relaysKey}:${kind}:${limit}`, async (authors) => {
-      const events = await querySyncPerRelay(
+      const { events, complete } = await querySyncPerRelay(
         p,
         normalized,
         [{ authors, kinds: [kind], limit: authors.length * limit }],
@@ -480,7 +516,7 @@ async function maybeRelayFetchBatched(p, normalized, filter, effectiveTimeout) {
         const event = latestEventByAuthor(events, author);
         out.set(author, event ? [event] : []);
       });
-      return out;
+      return { rows: out, complete };
     });
     return collector.request(filter.authors[0]);
   }
@@ -489,7 +525,7 @@ async function maybeRelayFetchBatched(p, normalized, filter, effectiveTimeout) {
     const kindsKey = [...filter.kinds].sort((left, right) => left - right).join(",");
     const limit = Math.max(1, Number(filter.limit) || 1);
     const collector = collectorForKey(`etag:${relaysKey}:${kindsKey}:${limit}`, async (ids) => {
-      const events = await querySyncPerRelay(
+      const { events, complete } = await querySyncPerRelay(
         p,
         normalized,
         [{ kinds: filter.kinds, "#e": ids, limit: ids.length * limit }],
@@ -499,7 +535,7 @@ async function maybeRelayFetchBatched(p, normalized, filter, effectiveTimeout) {
       ids.forEach((id) => {
         out.set(id, eventsMatchingTag(events, "e", id));
       });
-      return out;
+      return { rows: out, complete };
     });
     return collector.request(filter["#e"][0]);
   }
@@ -509,7 +545,7 @@ async function maybeRelayFetchBatched(p, normalized, filter, effectiveTimeout) {
     const kindsKey = [...filter.kinds].sort((left, right) => left - right).join(",");
     const limit = Math.max(1, Number(filter.limit) || 1);
     const collector = collectorForKey(`author-etag:${relaysKey}:${author}:${kindsKey}:${limit}`, async (ids) => {
-      const events = await querySyncPerRelay(
+      const { events, complete } = await querySyncPerRelay(
         p,
         normalized,
         [{ authors: [author], kinds: filter.kinds, "#e": ids, limit: ids.length * limit }],
@@ -519,7 +555,7 @@ async function maybeRelayFetchBatched(p, normalized, filter, effectiveTimeout) {
       ids.forEach((id) => {
         out.set(id, eventsMatchingTag(events, "e", id));
       });
-      return out;
+      return { rows: out, complete };
     });
     return collector.request(filter["#e"][0]);
   }
@@ -527,55 +563,74 @@ async function maybeRelayFetchBatched(p, normalized, filter, effectiveTimeout) {
   return null;
 }
 
+/** Events from a read that did not finish on every relay; never cached. */
+class IncompleteRelayRead extends Error {
+  constructor(events) {
+    super("relay read incomplete");
+    this.events = events;
+  }
+}
+
 /**
  * Fetch events from relays (parallel fan-out, dedupe by id).
  * Mirrors iOS WebSocketRelayClient.fetch(from:filters:).
+ * Results are briefly cached; `cache: false` always reads the relays again.
  */
-export async function relayFetch(relays, filters, { timeoutMs = FETCH_TIMEOUT_MS, poolOverride = null, signal = null } = {}) {
+export async function relayFetch(relays, filters, { timeoutMs = FETCH_TIMEOUT_MS, poolOverride = null, signal = null, cache = true } = {}) {
   if (pageIsHidden()) return [];
   const normalized = normalizeRelayList(relays, powerLimitedCount(undefined, SAVER_MAX_FETCH_RELAYS));
   if (!normalized.length || !filters?.length) return [];
   const list = Array.isArray(filters) ? filters : [filters];
   const effectiveTimeout = powerLimitedTimeoutMs(timeoutMs, Math.min(timeoutMs, SAVER_FETCH_TIMEOUT_MS));
-  return fetchCachedQuery({
-    queryKey: queryKeys.relayFetch(normalized, list),
-    staleTime: Math.max(1_000, Math.min(effectiveTimeout, 15_000)),
-    queryFn: async () => {
-      if (desktopModeEnabled()) {
-        const composed = composedAbortSignal([signal], effectiveTimeout + 2_000);
-        try {
-          const response = await fetch("/__ptxt/desktop/relay-fetch", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Accept: "application/json" },
-            body: JSON.stringify({
-              relays: normalized,
-              filters: list,
-              timeout_ms: effectiveTimeout,
-            }),
-            signal: composed.signal || undefined,
-          });
-          if (!response.ok) throw new Error(`desktop relay fetch failed (${response.status})`);
-          const events = await response.json();
-          return Array.isArray(events) ? dedupeEventsByID(events) : [];
-        } finally {
-          composed.dispose();
-        }
+  const readRelays = async () => {
+    if (desktopModeEnabled()) {
+      const composed = composedAbortSignal([signal], effectiveTimeout + 2_000);
+      try {
+        const response = await fetch("/__ptxt/desktop/relay-fetch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({
+            relays: normalized,
+            filters: list,
+            timeout_ms: effectiveTimeout,
+          }),
+          signal: composed.signal || undefined,
+        });
+        if (!response.ok) throw new Error(`desktop relay fetch failed (${response.status})`);
+        const events = await response.json();
+        return Array.isArray(events) ? dedupeEventsByID(events) : [];
+      } finally {
+        composed.dispose();
       }
-      const p = poolOverride || sharedPool();
-      let events;
-      if (list.length === 1) {
-        const batched = await maybeRelayFetchBatched(p, normalized, list[0], effectiveTimeout);
-        events = batched ? dedupeEventsByID(batched) : null;
-      }
-      if (!events) {
-        events = await querySyncPerRelay(p, normalized, list, effectiveTimeout, signal);
-      }
-      if (events?.length) {
-        await putEvents(events).catch(() => {});
-      }
-      return events || [];
-    },
-  });
+    }
+    const p = poolOverride || sharedPool();
+    let read = null;
+    if (list.length === 1) {
+      read = await maybeRelayFetchBatched(p, normalized, list[0], effectiveTimeout);
+    }
+    if (!read) {
+      read = await querySyncPerRelay(p, normalized, list, effectiveTimeout, signal);
+    }
+    const events = dedupeEventsByID(read.events);
+    if (events.length) {
+      await putEvents(events).catch(() => {});
+    }
+    // A relay that failed or was aborted may have held more events, so
+    // hand these back without letting a repeat read reuse them.
+    if (!read.complete) throw new IncompleteRelayRead(events);
+    return events;
+  };
+  try {
+    if (!cache) return await readRelays();
+    return await fetchCachedQuery({
+      queryKey: queryKeys.relayFetch(normalized, list),
+      staleTime: Math.max(1_000, Math.min(effectiveTimeout, 15_000)),
+      queryFn: readRelays,
+    });
+  } catch (error) {
+    if (error instanceof IncompleteRelayRead) return error.events;
+    throw error;
+  }
 }
 
 /**
@@ -654,9 +709,11 @@ export function closeRelayPool() {
   if (typeof window !== "undefined") {
     window.clearTimeout(relayCooldownTimer);
     window.clearTimeout(relayIdleSweepTimer);
+    window.clearTimeout(relayHiddenCloseTimer);
   }
   relayCooldownTimer = 0;
   relayIdleSweepTimer = 0;
+  relayHiddenCloseTimer = 0;
   cancelActiveRelayReads("relay pool closed");
   // Closing relays is permanent, so retire the shared pool itself; the next
   // read or publish builds a fresh one instead of reusing closed relays.
@@ -671,7 +728,9 @@ export function closeRelayPool() {
 }
 
 if (typeof document !== "undefined") {
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "hidden") closeRelayPool();
-  });
+  document.addEventListener("visibilitychange", syncRelayPageVisibility);
+}
+
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener("pagehide", () => closeRelayPool());
 }

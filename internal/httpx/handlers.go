@@ -130,7 +130,6 @@ func cacheableAnonymousThreadDocument(r *http.Request) bool {
 	}
 	q := r.URL.Query()
 	for _, key := range []string{
-		"selected",
 		"tree_note",
 		"back",
 		"back_note",
@@ -460,18 +459,19 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	}
 	wot := webOfTrustOptionsFromRequest(r)
 	var resolvedWoT requestAuthors
+	var wotMembership authorMembership
 	if loggedOut {
 		seed, _ := nostrx.DecodeIdentifier(defaultLoggedOutWOTSeedNPub)
-		authors := anonymousMembership.Authors()
 		resolvedWoT = requestAuthors{
-			allAuthors:      authors,
-			authors:         clampAuthorsWithLimit(authors, s.resolvedAuthorLimit(webOfTrustOptions{Enabled: true, Depth: defaultLoggedOutThreadWOTDepth})),
 			userPubkey:      viewerPub,
 			wotViewerPubkey: seed,
 			loggedOut:       true,
 			wotEnabled:      true,
 			seedWOTEnabled:  true,
 		}
+		// The guest scope is already a membership; sorting it back into an
+		// author list only to hash it again cost more than the render.
+		wotMembership = anonymousMembership
 	} else if threadRequestDefersWoT(r, fragment) {
 		if wot.Enabled {
 			publishTelemetry("authors", "deferring trust filtering until after thread render", 62)
@@ -487,7 +487,9 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		publishTelemetry("authors", "checking optional trust metadata", 62)
 		resolvedWoT = s.resolveRequestAuthors(r.Context(), viewerPub, seedPubkeyFromRequest(r), relays, wot)
 	}
-	wotMembership := newAuthorMembership(resolvedWoT.allAuthors)
+	if !loggedOut {
+		wotMembership = newAuthorMembership(resolvedWoT.allAuthors)
+	}
 	woTApply := s.applyThreadWoT(
 		r, fragment, resolvedWoT.wotEnabled,
 		replies, fullReplies, fullReplyWalk,
@@ -797,6 +799,11 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 		WebOfTrustFiltered:   len(filteredReplies),
 		WebOfTrustDeferred:   wotDeferred,
 	}
+	if loggedOut && s.runtimeCapabilities().HostedGuestAdmission && fragment != "" {
+		// Guest fragments, like the guest document, are store-only renders of
+		// the URL, so the edge can share them.
+		setAnonymousRouteCache(w, r)
+	}
 	switch fragment {
 	case "hydrate":
 		setPaginationHeaders(w, nextCursor, nextID, hasMore)
@@ -828,6 +835,12 @@ func (s *Server) handleThread(w http.ResponseWriter, r *http.Request) {
 	data.OG = threadOG(r, *selected, profiles)
 	threadETag := threadPageETag(selected.ID, totalReplyCount, threadRenderCacheIDs(data)...)
 	cacheableThreadDocument := cacheableAnonymousThreadDocument(r)
+	if cacheableThreadDocument && !s.runtimeCapabilities().HostedGuestAdmission && r.URL.Query().Has("selected") {
+		// Hosted guests share ?selected= documents through the anonymous
+		// document path. Desktop renders them here with no shared cache in
+		// front, so they stay uncached.
+		cacheableThreadDocument = false
+	}
 	if cacheableThreadDocument {
 		if matchesETag(r, threadETag) {
 			writeThreadPageNotModified(w, threadETag)

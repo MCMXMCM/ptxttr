@@ -5,7 +5,6 @@ import { applyAsciiMentionsToShell } from "./nip27.js";
 import { noteMainBodySourceText } from "./note-references.js";
 import { avatarRetryURL, isFallbackProfileLabel, preferredAvatarURL, profileAvatarURLsMatch } from "./profile-parse.js";
 import { briefBioText } from "./thread-render-helpers.js";
-import { fetchProfiles } from "./relay-reads.js";
 import { normalizePubkey } from "./relay-utils.js";
 import { fetchWithSession } from "./session.js";
 import { setAvatarImageSource } from "./avatar-cache.js";
@@ -384,6 +383,7 @@ export async function fetchNoteProfiles(pubkeys) {
     return !profileLabel(profile) && !preferredAvatarURL(profile);
   });
   if (!missing.length) return rememberProfiles(serverProfiles);
+  const { fetchProfiles } = await import("./relay-reads.js");
   const relayProfiles = await fetchProfiles(missing);
   const merged = { ...serverProfiles };
   missing.forEach((pubkey) => {

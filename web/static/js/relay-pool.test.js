@@ -1,11 +1,24 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
 
-import { cancelActiveRelayReads, closeRelayPool, relayFetch, relayPublish } from "./relay-pool.js";
-import { resetQueryClientForTests } from "./query-client.js";
 import { setAppBootstrapForTests } from "./app/bootstrap.js";
 
+/** Page visibility the relay pool follows; it starts listening when the module loads. */
+const page = new (class extends EventTarget {
+  visibilityState = "visible";
+})();
+globalThis.document = page;
+
+const { cancelActiveRelayReads, closeRelayPool, relayFetch, relayPublish } = await import("./relay-pool.js");
+const { resetQueryClientForTests } = await import("./query-client.js");
+
+function setPageVisibility(state) {
+  page.visibilityState = state;
+  page.dispatchEvent(new Event("visibilitychange"));
+}
+
 afterEach(() => {
+  if (page.visibilityState !== "visible") setPageVisibility("visible");
   closeRelayPool();
   resetQueryClientForTests();
   setAppBootstrapForTests({ features: { localFirst: false } });
@@ -320,6 +333,83 @@ describe("relayFetch batching", () => {
     );
   });
 
+  it("reuses a complete read for a repeat call", async () => {
+    let calls = 0;
+    const poolOverride = mockPool({
+      async query(_relay, filters) {
+        calls += 1;
+        return [{ id: filters[0].ids[0], kind: 1, pubkey: "pk-aa" }];
+      },
+    });
+
+    await relayFetch(["wss://relay.example"], [{ ids: ["aa"], limit: 1 }], { poolOverride });
+    const repeat = await relayFetch(["wss://relay.example"], [{ ids: ["aa"], limit: 1 }], { poolOverride });
+
+    assert.deepEqual(repeat.map((event) => event.id), ["aa"]);
+    assert.equal(calls, 1);
+  });
+
+  it("reads the relays again when the cache is skipped", async () => {
+    let calls = 0;
+    const poolOverride = mockPool({
+      async query(_relay, filters) {
+        calls += 1;
+        return [{ id: `list-${calls}`, kind: 3, pubkey: filters[0].authors[0], created_at: calls }];
+      },
+    });
+    const filters = [{ authors: ["viewer"], kinds: [3], limit: 3 }];
+
+    const cached = await relayFetch(["wss://relay.example"], filters, { poolOverride });
+    const fresh = await relayFetch(["wss://relay.example"], filters, { poolOverride, cache: false });
+
+    assert.deepEqual(cached.map((event) => event.id), ["list-1"]);
+    assert.deepEqual(fresh.map((event) => event.id), ["list-2"]);
+    assert.equal(calls, 2);
+  });
+
+  it("does not cache a read that failed on one of its relays", async () => {
+    const calls = [];
+    const poolOverride = mockPool({
+      async query(relay, filters) {
+        calls.push(relay);
+        if (relay === "wss://flaky.example" && calls.filter((row) => row === relay).length === 1) {
+          throw new Error("relay error");
+        }
+        return [{ id: filters[0].ids[0], kind: 1, pubkey: "pk-aa" }];
+      },
+    });
+    const read = () => relayFetch(["wss://relay.example", "wss://flaky.example"], [{ ids: ["aa"], limit: 1 }], { poolOverride });
+
+    assert.deepEqual((await read()).map((event) => event.id), ["aa"]);
+    assert.deepEqual((await read()).map((event) => event.id), ["aa"]);
+    assert.equal(calls.length, 4, "the partial read should not satisfy the retry");
+    await read();
+    assert.equal(calls.length, 4, "the complete retry should be reused");
+  });
+
+  it("does not cache a read aborted mid-flight", async () => {
+    let calls = 0;
+    const poolOverride = mockPool({
+      query(_relay, filters, { signal }) {
+        calls += 1;
+        if (calls > 1) return Promise.resolve(filters.map((filter) => ({ id: filter.ids[0], kind: 1, pubkey: "pk" })));
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+    });
+    const filters = [{ ids: ["aa"], limit: 1 }, { ids: ["ab"], limit: 1 }];
+
+    const pending = relayFetch(["wss://relay.example"], filters, { poolOverride, timeoutMs: 500 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    cancelActiveRelayReads("page hidden");
+    assert.deepEqual(await pending, []);
+
+    const retry = await relayFetch(["wss://relay.example"], filters, { poolOverride, timeoutMs: 500 });
+    assert.deepEqual(retry.map((event) => event.id), ["aa", "ab"]);
+    assert.equal(calls, 2);
+  });
+
   it("falls back when AbortSignal.any and AbortSignal.timeout are unavailable", async () => {
     await withBrowserGlobals(
       {
@@ -477,13 +567,70 @@ describe("relay connection lifecycle", () => {
 
       const sweep = timers.find((timer) => timer.ms === 5000);
       assert.ok(sweep, "publishing should schedule the idle sweep");
-      const later = Date.now() + 60_000;
-      t.mock.method(Date, "now", () => later);
+      const start = Date.now();
+      const now = t.mock.method(Date, "now", () => start + 30_000);
       sweep.callback();
+      assert.equal(sockets[0].readyState, FakeRelaySocket.OPEN, "a relay idle for 30 s should stay open");
+
+      now.mock.mockImplementation(() => start + 61_000);
+      timers.filter((timer) => timer.ms === 5000).at(-1).callback();
+      assert.equal(sockets[0].readyState, FakeRelaySocket.CLOSED);
 
       const second = await relayPublish(["wss://relay.example"], signedReaction(2));
       assert.equal(second.accepted, 1, JSON.stringify(second.relay_stats));
       assert.equal(sockets.length, 2, "the swept relay should reconnect with a new socket");
+    });
+  });
+
+  it("keeps relay sockets open through a short hidden period", async () => {
+    await withFakeRelaySockets(async ({ sockets, timers }) => {
+      const first = await relayPublish(["wss://relay.example"], signedReaction(5));
+      assert.equal(first.accepted, 1);
+
+      setPageVisibility("hidden");
+      const hiddenClose = timers.find((timer) => timer.ms === 60_000);
+      assert.ok(hiddenClose, "hiding the page should schedule the relay cleanup");
+      assert.equal(sockets[0].readyState, FakeRelaySocket.OPEN);
+
+      setPageVisibility("visible");
+      // A cleanup timer that still fires after the page is back must not close it.
+      hiddenClose.callback();
+      const second = await relayPublish(["wss://relay.example"], signedReaction(6));
+      assert.equal(second.accepted, 1, JSON.stringify(second.relay_stats));
+      assert.equal(sockets.length, 1, "a short hide should reuse the open socket");
+    });
+  });
+
+  it("closes every relay after a minute hidden and reconnects when visible", async () => {
+    await withFakeRelaySockets(async ({ sockets, timers }) => {
+      const first = await relayPublish(["wss://relay.example"], signedReaction(7));
+      assert.equal(first.accepted, 1);
+
+      setPageVisibility("hidden");
+      timers.find((timer) => timer.ms === 60_000).callback();
+      assert.equal(sockets[0].readyState, FakeRelaySocket.CLOSED);
+
+      setPageVisibility("visible");
+      const second = await relayPublish(["wss://relay.example"], signedReaction(8));
+      assert.equal(second.accepted, 1, JSON.stringify(second.relay_stats));
+      assert.equal(sockets.length, 2);
+    });
+  });
+
+  it("starts over with fresh connections when a hidden page's timer was frozen", async (t) => {
+    await withFakeRelaySockets(async ({ sockets }) => {
+      const first = await relayPublish(["wss://relay.example"], signedReaction(9));
+      assert.equal(first.accepted, 1);
+
+      setPageVisibility("hidden");
+      const later = Date.now() + 61_000;
+      t.mock.method(Date, "now", () => later);
+      setPageVisibility("visible");
+      assert.equal(sockets[0].readyState, FakeRelaySocket.CLOSED);
+
+      const second = await relayPublish(["wss://relay.example"], signedReaction(10));
+      assert.equal(second.accepted, 1, JSON.stringify(second.relay_stats));
+      assert.equal(sockets.length, 2);
     });
   });
 

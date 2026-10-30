@@ -150,6 +150,13 @@ func runStartupMaintenance(cfg config.Config, st *store.Store, timeout time.Dura
 	if used, ok := store.DBDiskUsagePercent(cfg.DBPath); ok && used >= float64(cfg.DiskPressurePercent) {
 		shouldCompact = true
 	}
+	// Both compact paths end in a full VACUUM. With PTXT_VACUUM_FULL_ENABLED=0
+	// only an explicit PTXT_COMPACT_ON_START may run one; an automatic one that
+	// fails or runs out of memory here would restart-loop the service.
+	if (shouldCompact || shouldVacuum) && !cfg.CompactOnStart && !store.FullVacuumEnabled() {
+		slog.Warn("startup compact skipped; full vacuum disabled")
+		shouldCompact, shouldVacuum = false, false
+	}
 	if shouldCompact && cfg.EventRetention > 0 {
 		compactCtx, cancel := context.WithTimeout(context.Background(), timeout)
 		_, err := st.Compact(compactCtx, cfg.EventRetention)

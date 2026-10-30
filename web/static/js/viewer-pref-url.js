@@ -35,3 +35,19 @@ export function canonicalHomeFeedURL(urlLike) {
   url.pathname = "/";
   return url;
 }
+
+/**
+ * Anonymous guest-v2 pages do not run the full document router, so feed sort
+ * changes must be expressed on a real document request. Keep display-only
+ * query state (for example the negotiated ASCII width), but replace any stale
+ * viewer preferences with the one server preference needed for this request.
+ */
+export function guestFeedSortDocumentHref(urlLike, sortMode) {
+  const url = new URL(urlLike, globalThis.location?.origin || "http://localhost");
+  stripViewerPrefSearchParams(url);
+  const sort = String(sortMode || "").trim();
+  if (sort === "trend24h" || sort === "trend7d") {
+    url.searchParams.set("sort", sort);
+  }
+  return `${url.pathname}${url.search}${url.hash}`;
+}

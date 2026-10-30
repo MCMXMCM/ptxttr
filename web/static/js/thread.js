@@ -1,7 +1,6 @@
 import { openImageViewer, refreshAscii, refreshThreadTreeQuotes } from "./ascii.js";
 import { addAsciiWidthHint } from "./ascii-width-hint.js";
 import { createMediaGrid, hydrateMediaGrid, mediaGridSignature } from "./media-grid.js";
-import { refreshVisibleFeedReactionStats } from "./feed-metadata.js";
 import { fetchWithSession } from "./session.js";
 import { threadRepliesPageSkeletonMarkup, threadTreeSkeletonMarkup } from "./shell.js";
 import {
@@ -14,7 +13,6 @@ import {
 import { syncMobileAppNavHeight } from "./layout.js";
 import { scrollRouteToTop } from "./shell-swap.js";
 import { getImageModePref, getThreadRenderModePref, setThreadRenderModePref } from "./sort-prefs.js";
-import { openThreadInlineComposer } from "./mutations.js";
 import { withRelays } from "./nav-routing.js";
 import { refreshVisibleNoteProfiles, rememberVisibleNoteProfiles } from "./note-profiles.js";
 
@@ -852,6 +850,9 @@ async function handleThreadReplyComposeClick(link, container) {
     await doubleRaf();
   }
 
+  // mutations.js carries signing and relay publishing; anonymous thread pages
+  // load thread.js without it until someone opens the reply composer.
+  const { openThreadInlineComposer } = await import("./mutations.js");
   const anchor = visibleThreadNoteElement(targetID, container);
   if (!anchor) return;
 
@@ -914,7 +915,7 @@ function consumePendingThreadInlineReply() {
   } catch {
     /* ignore */
   }
-  void doubleRaf().then(() => {
+  void Promise.all([doubleRaf(), import("./mutations.js")]).then(([, { openThreadInlineComposer }]) => {
     const anchor = visibleThreadNoteElement(p.targetID);
     if (anchor) {
       void openThreadInlineComposer(document, {
@@ -1190,7 +1191,7 @@ function refreshThreadViewerReactionState(root = document) {
   if (!ids.length) return;
   // opts.ids bypasses the feed-only scope in refreshVisibleFeedReactionStats;
   // reply counts are server-truthful + viewer-agnostic, so we skip them here.
-  void refreshVisibleFeedReactionStats(root, null, "", { ids });
+  void import("./feed-metadata.js").then(({ refreshVisibleFeedReactionStats }) => refreshVisibleFeedReactionStats(root, null, "", { ids }));
 }
 
 function refreshThreadViewerReactionStateDeferred(root = document) {

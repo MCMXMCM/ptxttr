@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"ptxt-nstr/internal/nostrx"
 	"ptxt-nstr/internal/store"
@@ -141,7 +142,7 @@ func (s *Server) userPageData(ctx context.Context, r *http.Request, pubkey strin
 	if contactProfiles == nil {
 		contactProfiles = s.contactProfiles(ctx, contacts, contactRelays)
 	}
-	counts, countsErr := s.store.ProfileTimelineCounts(ctx, pubkey)
+	counts, countsErr := s.profileTimelineCounts(ctx, pubkey, guestStoreOnly)
 	data := UserPageData{
 		BasePageData:            s.userBasePageData(r, "User", "feed", "feed-shell"),
 		Profile:                 profile,
@@ -174,6 +175,22 @@ func (s *Server) userPageData(ctx context.Context, r *http.Request, pubkey strin
 	}
 	data.Profiles[pubkey] = data.Profile
 	return data
+}
+
+// profileTimelineCounts serves guests from a short shared cache; signed-in
+// viewers always get a fresh count.
+func (s *Server) profileTimelineCounts(ctx context.Context, pubkey string, guest bool) (store.ProfileTimelineCounts, error) {
+	if !guest {
+		return s.store.ProfileTimelineCounts(ctx, pubkey)
+	}
+	if counts, ok := s.guestProfileCountsCache.get(pubkey, time.Now()); ok {
+		return counts, nil
+	}
+	counts, err := s.store.ProfileTimelineCounts(ctx, pubkey)
+	if err == nil {
+		s.guestProfileCountsCache.put(pubkey, counts, time.Now())
+	}
+	return counts, err
 }
 
 func (s *Server) profileTimelinePage(ctx context.Context, pubkey string, fragment string, cursor int64, cursorID string, limit int, relays []string, storeOnly bool) ([]nostrx.Event, bool) {

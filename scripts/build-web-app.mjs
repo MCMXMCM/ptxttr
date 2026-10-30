@@ -34,29 +34,41 @@ await esbuild.build({
 });
 
 const outputMap = result.metafile.outputs;
-const guestOutput = Object.entries(outputMap).find(([, meta]) => meta.entryPoint?.endsWith("/app/guest-entry.js"))?.[0];
-const initialOutputs = new Set();
-function visitStatic(output) {
-	if (!output || initialOutputs.has(output)) return;
-	initialOutputs.add(output);
-	for (const imported of outputMap[output]?.imports || []) {
-		if (imported.kind === "dynamic-import" || imported.external) continue;
-		visitStatic(imported.path);
+const outputForEntry = (suffix) => Object.entries(outputMap).find(([, meta]) => meta.entryPoint?.endsWith(suffix))?.[0];
+
+// Static import closure of an output, minus chunks the page already loaded.
+function staticOutputs(start, loaded = new Set()) {
+	const outputs = new Set();
+	const visit = (output) => {
+		if (!output || outputs.has(output) || loaded.has(output)) return;
+		outputs.add(output);
+		for (const imported of outputMap[output]?.imports || []) {
+			if (imported.kind === "dynamic-import" || imported.external) continue;
+			visit(imported.path);
+		}
+	};
+	visit(start);
+	return outputs;
+}
+
+async function checkBudget(label, outputs, unit, maxGzip, maxRequests) {
+	let gzip = 0;
+	const report = [];
+	for (const output of outputs) {
+		const gzipBytes = gzipSync(await readFile(path.join(root, output))).byteLength;
+		gzip += gzipBytes;
+		report.push({ output, gzipBytes });
 	}
+	if (gzip > maxGzip || outputs.size > maxRequests) {
+		console.error(report.sort((a, b) => b.gzipBytes - a.gzipBytes));
+		throw new Error(`${label} budget exceeded: ${gzip} gzip bytes across ${outputs.size} ${unit} (limits ${maxGzip}/${maxRequests})`);
+	}
+	console.log(`${label} budget: ${gzip} gzip bytes across ${outputs.size} ${unit}`);
 }
-visitStatic(guestOutput);
-let initialGzip = 0;
-const initialReport = [];
-for (const output of initialOutputs) {
-	const gzipBytes = gzipSync(await readFile(path.join(root, output))).byteLength;
-	initialGzip += gzipBytes;
-	initialReport.push({ output, gzipBytes });
-}
-const initialRequests = initialOutputs.size;
-const maxGzip = 150 * 1024;
-const maxRequests = 20;
-if (initialGzip > maxGzip || initialRequests > maxRequests) {
-	console.error(initialReport.sort((a, b) => b.gzipBytes - a.gzipBytes));
-	throw new Error(`anonymous app budget exceeded: ${initialGzip} gzip bytes across ${initialRequests} initial chunks (limits ${maxGzip}/${maxRequests})`);
-}
-console.log(`anonymous app budget: ${initialGzip} gzip bytes across ${initialRequests} initial chunks`);
+
+const initialOutputs = staticOutputs(outputForEntry("/app/guest-entry.js"));
+await checkBudget("anonymous app", initialOutputs, "initial chunks", 150 * 1024, 20);
+// Every guest page imports ascii.js once the browser is idle, so its chunks
+// count against what an anonymous first visit downloads too.
+const asciiOutputs = staticOutputs(outputForEntry("/js/ascii.js"), initialOutputs);
+await checkBudget("anonymous idle ASCII", asciiOutputs, "more chunks", 64 * 1024, 12);

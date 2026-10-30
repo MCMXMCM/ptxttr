@@ -6,7 +6,6 @@ import { fetchWithSession } from "./session.js";
 import {
   INDEXER_NIP50_RELAYS,
   TRENDING_SEARCH_RELAYS,
-  REACTION_SEARCH_RELAYS,
 } from "./relay-config.js";
 import {
   KIND_BOOKMARK,
@@ -75,10 +74,6 @@ function replaceableRelaysForFetch(preferred = [], { includeViewerRelays = true 
     ? [...preferred, ...readRelaysForViewer(), ...effectiveWriteRelays()]
     : preferred;
   return normalizeRelayList(relays);
-}
-
-function metadataFetchRelays(preferred = []) {
-  return normalizeRelayList([...preferred, ...readRelaysForViewer(), ...REACTION_SEARCH_RELAYS]);
 }
 
 function mergeReplyCountMaps(remote = {}, local = new Map()) {
@@ -177,7 +172,7 @@ async function withServerFallback(directFn, serverFn) {
   return directFn();
 }
 
-async function fetchReplaceable(pubkey, kind, { relays = [], forceRefresh = false, includeViewerRelays = true } = {}) {
+async function fetchReplaceable(pubkey, kind, { relays = [], forceRefresh = false, includeViewerRelays = true, relayCache = true } = {}) {
   const pk = normalizePubkey(pubkey);
   if (!pk) return null;
   if (appFeatures().localFirst) {
@@ -196,13 +191,16 @@ async function fetchReplaceable(pubkey, kind, { relays = [], forceRefresh = fals
   const queryKey = queryKeys.replaceable(pk, kind, relayList);
   const queryFn = async () => {
     const cached = await latestReplaceable(pk, kind);
-    const events = await relayFetch(relayList, [{ authors: [pk], kinds: [kind], limit: 3 }]);
+    const events = await relayFetch(relayList, [{ authors: [pk], kinds: [kind], limit: 3 }], { cache: relayCache });
     const latest = dedupeEventsByID(events).sort((a, b) => Number(b.created_at) - Number(a.created_at))[0];
     if (latest) void putEvents([latest]);
     if (!latest) return cached;
     if (!cached || Number(latest.created_at) >= Number(cached.created_at)) return latest;
     return cached;
   };
+
+  // An uncached relay read must not share an earlier in-flight query either.
+  if (!relayCache) return queryFn();
 
   if (!forceRefresh) {
     const seeded = peekQueryData(queryKey);
@@ -253,11 +251,12 @@ export async function fetchMuteList(pubkey) {
 
 /**
  * Newest copy of a viewer's replaceable list to base an edit on. Always
- * refetches instead of trusting a cached copy that may be empty, stale, or
- * loaded while the tab was hidden. Resolves null when no list was found.
+ * reads the relays again instead of trusting a cached copy or cached relay
+ * result that may be empty, stale, or loaded while the tab was hidden.
+ * Resolves null when no list was found.
  */
 export async function fetchLatestListForWrite(pubkey, kind) {
-  return fetchReplaceable(pubkey, kind, { forceRefresh: true });
+  return fetchReplaceable(pubkey, kind, { forceRefresh: true, relayCache: false });
 }
 
 export async function fetchViewerProfile(pubkey, { forceRefresh = false } = {}) {
@@ -590,7 +589,7 @@ export async function fetchReplyCounts(noteIDs) {
   const local = await localReplyCounts(ids);
   return withServerFallback(
     async () => {
-      const relays = metadataFetchRelays();
+      const relays = mergedReadRelays();
       const out = Object.fromEntries(ids.map((id) => [id, 0]));
       const localRows = await Promise.all(
         ids.map(async (id) => ({ id, events: await eventsByTag("e", id, { kind: KIND_NOTE, limit: 200 }) })),
@@ -629,7 +628,7 @@ export async function fetchReactionStats(noteIDs, viewerPubkey = "") {
   const local = await localReactionTotals(ids);
   return withServerFallback(
     async () => {
-      const relays = metadataFetchRelays();
+      const relays = mergedReadRelays();
       const localRows = await Promise.all(
         ids.map(async (id) => ({ id, reactions: await eventsByTag("e", id, { kind: KIND_REACTION, limit: 500 }) })),
       );
@@ -917,7 +916,9 @@ export async function nip50TrendingSearch({
   until,
   limit = DEFAULT_QUERY_LIMIT,
   kinds = [KIND_NOTE, KIND_LONG_FORM],
+  relayFetchImpl = relayFetch,
 } = {}) {
+  if (!TRENDING_SEARCH_RELAYS.length) return [];
   const filter = {
     search: TRENDING_HOT_SEARCH,
     kinds: Array.isArray(kinds) && kinds.length ? kinds : [KIND_NOTE, KIND_LONG_FORM],
@@ -925,7 +926,7 @@ export async function nip50TrendingSearch({
   };
   if (since) filter.since = since;
   if (until) filter.until = until;
-  const events = await relayFetch(TRENDING_SEARCH_RELAYS, [filter]);
+  const events = await relayFetchImpl(TRENDING_SEARCH_RELAYS, [filter]);
   await putEvents(events);
   return dedupeEventsByID(events);
 }

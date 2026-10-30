@@ -2,10 +2,13 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -23,6 +26,10 @@ const (
 	GuestSlicePinTTL           = 2 * time.Hour
 	guestSliceFirstReplyPage   = 25
 	guestSliceMaxStateJSONSize = 8 << 20
+	// guestSliceProfileAttemptWindow is how long a profile lookup that found
+	// nothing still counts as checked. It spans several scheduler runs, so a
+	// participant without a profile does not block every publish.
+	guestSliceProfileAttemptWindow = time.Hour
 )
 
 var ErrGuestSliceNotReady = errors.New("guest slice snapshot is not ready")
@@ -41,6 +48,20 @@ type GuestSliceState struct {
 	TopCreatedAt int64            `json:"top_created_at"`
 	TopID        string           `json:"top_id"`
 	LastError    string           `json:"last_error,omitempty"`
+	// TrustFingerprint identifies the published Trust list; empty for a
+	// generation published before the list moved to guest_slice_trust.
+	TrustFingerprint string `json:"trust_fingerprint,omitempty"`
+}
+
+// GuestSliceTrustFingerprint identifies a trust list so a publish can tell
+// whether it changed without comparing the lists.
+func GuestSliceTrustFingerprint(trust []string) string {
+	h := sha256.New()
+	for _, pubkey := range trust {
+		_, _ = io.WriteString(h, pubkey)
+		_, _ = io.WriteString(h, "\n")
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 type GuestSliceMember struct {
@@ -306,6 +327,29 @@ func (s *Store) SetGuestSliceBuildTrust(ctx context.Context, key string, trust [
 	return err
 }
 
+// GetGuestSliceGeneration reads only the publication marker. Request paths use
+// it to validate cached state: generation and status sit at the front of the
+// row, so SQLite never touches the cohort and trust JSON overflow pages.
+func (s *Store) GetGuestSliceGeneration(ctx context.Context, key string) (int64, string, bool, error) {
+	if s == nil || s.db == nil {
+		return 0, "", false, nil
+	}
+	if key == "" {
+		key = GuestSliceDefaultKey
+	}
+	var generation int64
+	var status string
+	err := s.db.QueryRowContext(ctx, `SELECT generation, status FROM guest_slice_state WHERE slice_key = ?`, key).
+		Scan(&generation, &status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, "", false, nil
+	}
+	if err != nil {
+		return 0, "", false, err
+	}
+	return generation, status, true, nil
+}
+
 func (s *Store) GetGuestSliceState(ctx context.Context, key string) (GuestSliceState, bool, error) {
 	if s == nil || s.db == nil {
 		return GuestSliceState{}, false, nil
@@ -315,11 +359,20 @@ func (s *Store) GetGuestSliceState(ctx context.Context, key string) (GuestSliceS
 	}
 	var state GuestSliceState
 	var cohortJSON, trustJSON, cursorJSON string
-	err := s.db.QueryRowContext(ctx, `SELECT slice_key, generation, status, seed_pubkey,
-		cohort_json, trust_json, cursor_json, computed_at, top_created_at, top_id, last_error
-		FROM guest_slice_state WHERE slice_key = ?`, key).Scan(
+	// One statement reads both rows from the same snapshot. A non-empty
+	// state.trust_json is a generation published before guest_slice_trust
+	// existed (or by an older binary) and stays authoritative until the next
+	// publish moves it.
+	err := s.db.QueryRowContext(ctx, `SELECT s.slice_key, s.generation, s.status, s.seed_pubkey,
+		s.cohort_json,
+		CASE WHEN s.trust_json != '[]' OR t.slice_key IS NULL THEN s.trust_json ELSE t.trust_json END,
+		CASE WHEN s.trust_json != '[]' OR t.slice_key IS NULL THEN '' ELSE t.fingerprint END,
+		s.cursor_json, s.computed_at, s.top_created_at, s.top_id, s.last_error
+		FROM guest_slice_state s LEFT JOIN guest_slice_trust t ON t.slice_key = s.slice_key
+		WHERE s.slice_key = ?`, key).Scan(
 		&state.Key, &state.Generation, &state.Status, &state.SeedPubKey,
-		&cohortJSON, &trustJSON, &cursorJSON, &state.ComputedAt, &state.TopCreatedAt, &state.TopID, &state.LastError)
+		&cohortJSON, &trustJSON, &state.TrustFingerprint, &cursorJSON,
+		&state.ComputedAt, &state.TopCreatedAt, &state.TopID, &state.LastError)
 	if errors.Is(err, sql.ErrNoRows) {
 		return GuestSliceState{}, false, nil
 	}
@@ -500,6 +553,7 @@ func validateGuestSliceSnapshot(ctx context.Context, q guestSliceQueryer, snap *
 			}
 		}
 	}
+	profileAttemptCutoff := time.Now().Add(-guestSliceProfileAttemptWindow).Unix()
 	for pubkey := range participants {
 		var ready int
 		err := q.QueryRowContext(ctx, `SELECT 1 WHERE
@@ -507,8 +561,9 @@ func validateGuestSliceSnapshot(ctx context.Context, q guestSliceQueryer, snap *
 			OR EXISTS (SELECT 1 FROM guest_slice_members
 				WHERE generation = ? AND pubkey = ? AND metadata_checked_at > 0)
 			OR EXISTS (SELECT 1 FROM hydration_state
-				WHERE entity_type = 'profile' AND entity_id = ? AND last_attempt_at > 0 AND next_retry_at > unixepoch())
-			LIMIT 1`, pubkey, generation, pubkey, pubkey).Scan(&ready)
+				WHERE entity_type = 'profile' AND entity_id = ? AND last_attempt_at > 0
+					AND (next_retry_at > unixepoch() OR last_attempt_at >= ?))
+			LIMIT 1`, pubkey, generation, pubkey, pubkey, profileAttemptCutoff).Scan(&ready)
 		if err != nil {
 			result.MissingParticipants = append(result.MissingParticipants, pubkey)
 		}
@@ -575,10 +630,6 @@ func (s *Store) PublishGuestSliceSnapshots(ctx context.Context, state GuestSlice
 	snap.Version = defaultSeedGuestFeedSnapshotVersion
 	snap.ComputedAtUnix = state.ComputedAt
 	cohortJSON, err := json.Marshal(state.Cohort)
-	if err != nil {
-		return GuestSliceReadiness{}, err
-	}
-	trustJSON, err := json.Marshal(state.Trust)
 	if err != nil {
 		return GuestSliceReadiness{}, err
 	}
@@ -657,16 +708,19 @@ func (s *Store) PublishGuestSliceSnapshots(ctx context.Context, state GuestSlice
 			return readiness, err
 		}
 	}
+	if err := publishGuestSliceTrustTx(ctx, tx, state.Key, state.Trust); err != nil {
+		return readiness, err
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO guest_slice_state(
 		slice_key, generation, status, seed_pubkey, cohort_json, trust_json, cursor_json,
 		computed_at, top_created_at, top_id, last_error
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')
+	) VALUES (?, ?, ?, ?, ?, '[]', ?, ?, ?, ?, '')
 	ON CONFLICT(slice_key) DO UPDATE SET
 		generation = excluded.generation, status = excluded.status, seed_pubkey = excluded.seed_pubkey,
 		cohort_json = excluded.cohort_json, trust_json = excluded.trust_json, cursor_json = excluded.cursor_json,
 		computed_at = excluded.computed_at, top_created_at = excluded.top_created_at,
 		top_id = excluded.top_id, last_error = ''`, state.Key, state.Generation, state.Status,
-		state.SeedPubKey, string(cohortJSON), string(trustJSON), string(cursorJSON), state.ComputedAt,
+		state.SeedPubKey, string(cohortJSON), string(cursorJSON), state.ComputedAt,
 		state.TopCreatedAt, state.TopID); err != nil {
 		return readiness, err
 	}
@@ -694,6 +748,34 @@ func (s *Store) PublishGuestSliceSnapshots(ctx context.Context, state GuestSlice
 		return readiness, err
 	}
 	return readiness, nil
+}
+
+// publishGuestSliceTrustTx writes the trust list only when its fingerprint
+// changed. It is recomputed every few hours, while generations publish every
+// few minutes.
+func publishGuestSliceTrustTx(ctx context.Context, tx *sql.Tx, key string, trust []string) error {
+	fingerprint := GuestSliceTrustFingerprint(trust)
+	var stored string
+	err := tx.QueryRowContext(ctx, `SELECT fingerprint FROM guest_slice_trust WHERE slice_key = ?`, key).Scan(&stored)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil && stored == fingerprint {
+		return nil
+	}
+	raw, err := json.Marshal(trust)
+	if err != nil {
+		return err
+	}
+	if len(raw) > guestSliceMaxStateJSONSize {
+		return fmt.Errorf("guest slice trust JSON exceeds safety limit")
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO guest_slice_trust(slice_key, fingerprint, trust_json, updated_at)
+		VALUES(?, ?, ?, ?)
+		ON CONFLICT(slice_key) DO UPDATE SET fingerprint = excluded.fingerprint,
+			trust_json = excluded.trust_json, updated_at = excluded.updated_at`,
+		key, fingerprint, string(raw), time.Now().Unix())
+	return err
 }
 
 func defaultSeedSnapshotFromFeedRecord(rec *FeedSnapshotRecord) *DefaultSeedGuestFeedSnapshot {

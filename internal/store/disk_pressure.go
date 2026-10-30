@@ -111,6 +111,20 @@ func vacuumTimeout() time.Duration {
 	return time.Duration(vacuumTimeoutMinutes()) * time.Minute
 }
 
+// FullVacuumEnabled reports whether the app may run a full VACUUM on its own
+// (PTXT_VACUUM_FULL_ENABLED, read the same way as ptxt-nstr-vacuum.sh: unset
+// means on, and only 1/true/yes/on enable it). A full VACUUM rewrites the
+// whole database under the write lock, and with temp_store=MEMORY it builds
+// the new copy in RAM, so production disables it outside maintenance windows.
+func FullVacuumEnabled() bool {
+	switch strings.TrimSpace(os.Getenv("PTXT_VACUUM_FULL_ENABLED")) {
+	case "", "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
 func freelistVacuumRatioThreshold() float64 {
 	raw := strings.TrimSpace(os.Getenv("PTXT_FREELIST_VACUUM_RATIO"))
 	if raw == "" {

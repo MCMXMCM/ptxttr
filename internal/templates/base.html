@@ -6,11 +6,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
   <link rel="icon" href="{{assetPath .AssetBasePath "/static/img/ascritch_icon_black.ico"}}" type="image/x-icon" media="(prefers-color-scheme: light), (prefers-color-scheme: no-preference)">
   <link rel="icon" href="{{assetPath .AssetBasePath "/static/img/ascritch_icon_white.ico"}}" type="image/x-icon" media="(prefers-color-scheme: dark)">
-  <link rel="icon" type="image/png" href="{{assetPath .AssetBasePath "/static/img/ascritch_icon_black.png"}}" media="(prefers-color-scheme: light), (prefers-color-scheme: no-preference)">
-  <link rel="icon" type="image/png" href="{{assetPath .AssetBasePath "/static/img/ascritch_icon_white.png"}}" media="(prefers-color-scheme: dark)">
-  <link rel="apple-touch-icon" href="{{assetPath .AssetBasePath "/static/img/ascritch_icon_black.png"}}" media="(prefers-color-scheme: light)">
-  <link rel="apple-touch-icon" href="{{assetPath .AssetBasePath "/static/img/ascritch_icon_white.png"}}" media="(prefers-color-scheme: dark)">
-  <link rel="apple-touch-icon" href="{{assetPath .AssetBasePath "/static/img/ascritch_icon_black.png"}}">
+  <link rel="icon" type="image/png" href="{{assetPath .AssetBasePath "/static/img/ascritch_icon_black_180.png"}}" media="(prefers-color-scheme: light), (prefers-color-scheme: no-preference)">
+  <link rel="icon" type="image/png" href="{{assetPath .AssetBasePath "/static/img/ascritch_icon_white_180.png"}}" media="(prefers-color-scheme: dark)">
+  <link rel="apple-touch-icon" href="{{assetPath .AssetBasePath "/static/img/ascritch_icon_black_180.png"}}" media="(prefers-color-scheme: light)">
+  <link rel="apple-touch-icon" href="{{assetPath .AssetBasePath "/static/img/ascritch_icon_white_180.png"}}" media="(prefers-color-scheme: dark)">
+  <link rel="apple-touch-icon" href="{{assetPath .AssetBasePath "/static/img/ascritch_icon_black_180.png"}}">
   <title>{{if .Title}}{{.Title}} | {{end}}Plain Text Nostr</title>
   {{if .OG.Title}}
   <meta property="og:type" content="{{if .OG.Type}}{{.OG.Type}}{{else}}website{{end}}">
@@ -27,6 +27,7 @@
   {{end}}
   <script src="{{assetPath .AssetBasePath "/static/js/thread-view-bootstrap.js"}}"></script>
   <link rel="stylesheet" href="{{assetPath .AssetBasePath "/static/css/app.css"}}">
+  <link rel="preload" href="{{assetPath .AssetBasePath "/static/fonts/local-mono-variable.woff2"}}" as="font" type="font/woff2" crossorigin>
   {{if .GuestSliceV2}}
   <script type="module" src="{{assetPath .AssetBasePath "/static/build/guest.js"}}"></script>
   {{else}}

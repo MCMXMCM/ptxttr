@@ -453,8 +453,8 @@ export function mobileMenu(searchQuery = "") {
         <div class="mobile-menu-header">
           <div class="mobile-menu-header-logo" aria-hidden="true">
             <span class="about-page-logo">
-              <img src="${assetURL("img/ascritch_icon_black.png")}" alt="" width="80" height="80" decoding="async" class="about-logo about-logo-light-scheme">
-              <img src="${assetURL("img/ascritch_icon_white.png")}" alt="" width="80" height="80" decoding="async" class="about-logo about-logo-dark-scheme">
+              <img src="${assetURL("img/ascritch_icon_black_256.png")}" alt="" width="80" height="80" loading="lazy" decoding="async" class="about-logo about-logo-light-scheme">
+              <img src="${assetURL("img/ascritch_icon_white_256.png")}" alt="" width="80" height="80" loading="lazy" decoding="async" class="about-logo about-logo-dark-scheme">
             </span>
           </div>
           <section class="mobile-menu-intro" aria-label="Plain Text Nostr summary">

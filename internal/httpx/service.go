@@ -250,9 +250,28 @@ func feedSortSince(sortMode string, now time.Time) int64 {
 	return trendingSince(feedSortTimeframe(sortMode), now)
 }
 
+// builtinDefaultRelays holds the app's default relays that browsers send
+// unless the viewer picked others.
+var builtinDefaultRelays = func() map[string]bool {
+	set := make(map[string]bool)
+	for _, relay := range nostrx.NormalizeRelayList(config.BuiltinDefaultRelays(), 0) {
+		set[relay] = true
+	}
+	return set
+}()
+
+// requestRelays merges the server's default relays with the viewer's. The
+// app's built-in defaults are skipped: when PTXT_RELAYS replaces them on this
+// host, a viewer on the defaults still resolves to the same relays, and the
+// same canonical guest snapshots, as a request that sent none.
 func (s *Server) requestRelays(r *http.Request) []string {
-	requestRelays := nostrx.ParseRelayParams(relayParamsFromRequest(r))
-	return nostrx.NormalizeRelayList(append(append([]string(nil), s.cfg.DefaultRelays...), requestRelays...), nostrx.MaxRelays)
+	relays := append([]string(nil), s.cfg.DefaultRelays...)
+	for _, relay := range nostrx.ParseRelayParams(relayParamsFromRequest(r)) {
+		if normalized, err := nostrx.NormalizeRelayURL(relay); err == nil && !builtinDefaultRelays[normalized] {
+			relays = append(relays, normalized)
+		}
+	}
+	return nostrx.NormalizeRelayList(relays, nostrx.MaxRelays)
 }
 
 func (s *Server) asciiWidthForRequest(r *http.Request) int {
@@ -1065,9 +1084,8 @@ func (s *Server) resolveAuthorsForSeed(ctx context.Context, seedPubkey string, r
 		return nil, "", false
 	}
 	if s != nil && s.cfg.GuestSliceV2Enabled && isDefaultLoggedOutSeed(seedPubkey) && s.store != nil {
-		state, ok, err := s.store.GetGuestSliceState(ctx, store.GuestSliceDefaultKey)
-		if err == nil && ok && state.Status == store.GuestSliceStatusReady && len(state.Cohort) > 0 {
-			return append([]string(nil), state.Cohort...), state.SeedPubKey, true
+		if view := s.currentGuestSliceView(ctx); view != nil && len(view.state.Cohort) > 0 {
+			return append([]string(nil), view.state.Cohort...), view.state.SeedPubKey, true
 		}
 	}
 	authors, decoded, loggedOut := s.resolveAuthorsAll(ctx, seedPubkey, relays, wot)

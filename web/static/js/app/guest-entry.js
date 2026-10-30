@@ -49,6 +49,22 @@ if (document.querySelector("[data-profile-shell]")) {
 
 if (window.location.pathname.startsWith("/thread/")) {
 	let threadInteractionsLoaded = false;
+	let threadInteractionsPromise = null;
+	const loadThreadInteractions = () => {
+		if (threadInteractionsPromise) return threadInteractionsPromise;
+		threadInteractionsPromise = import("../thread.js").then(({ initThreadPage }) => {
+			threadInteractionsLoaded = true;
+			initThreadPage();
+		});
+		return threadInteractionsPromise;
+	};
+	// Anonymous thread documents intentionally defer the full OP-rooted tree.
+	// When the early preference bootstrap selects tree mode, load that fragment
+	// immediately; otherwise the valid linear thread is hidden behind an empty
+	// tree host until the user happens to click a thread control.
+	if (document.documentElement.dataset.ptxtThreadView === "tree") {
+		void loadThreadInteractions();
+	}
 	document.addEventListener("click", (event) => {
 		if (threadInteractionsLoaded) return;
 		const control = event.target?.closest?.([
@@ -65,9 +81,7 @@ if (window.location.pathname.startsWith("/thread/")) {
 		if (!(control instanceof HTMLElement)) return;
 		event.preventDefault();
 		event.stopImmediatePropagation();
-		void import("../thread.js").then(({ initThreadPage }) => {
-			threadInteractionsLoaded = true;
-			initThreadPage();
+		void loadThreadInteractions().then(() => {
 			control.click();
 		});
 	}, true);

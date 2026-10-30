@@ -22,6 +22,11 @@ const (
 	anonymousHTMLCacheMaxLen = 512
 	relayTrendingCacheTTL    = 2 * time.Minute
 	relayTrendingCacheMaxLen = 8
+	// Guest profile post/reply/media counts scan every cached note of the
+	// author and every profile tab asks for them, so guests share them for
+	// the guest profile s-maxage.
+	guestProfileCountsCacheTTL    = 5 * time.Minute
+	guestProfileCountsCacheMaxLen = 1024
 )
 
 var searchKindsKey = hashIntSlice(noteTimelineKinds)

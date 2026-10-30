@@ -120,6 +120,9 @@ func (s *Server) handleReads(w http.ResponseWriter, r *http.Request) {
 	req := s.readsRequestFromHTTP(r)
 	data := s.readsData(r.Context(), req, normalizeTrendingTimeframe(readsTrendingTfFromRequest(r)))
 	data.BasePageData = s.basePageData(r, "Reads", "reads", "feed-shell")
+	if s.runtimeCapabilities().HostedGuestAdmission {
+		setAnonymousRouteCache(w, r)
+	}
 	if r.URL.Query().Get("fragment") != "" {
 		setPaginationHeaders(w, data.Cursor, data.CursorID, data.HasMore)
 		s.render(w, "reads_items", data)
@@ -142,6 +145,9 @@ func (s *Server) handleRead(w http.ResponseWriter, r *http.Request) {
 	}
 	data := s.readDetailData(r.Context(), *event, relays, true)
 	data.BasePageData = s.basePageData(r, data.Read.Title, "reads", "feed-shell")
+	if s.runtimeCapabilities().HostedGuestAdmission {
+		setAnonymousRouteCache(w, r)
+	}
 	s.render(w, "read", data)
 }
 

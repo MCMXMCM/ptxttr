@@ -176,6 +176,16 @@ const olderProfileBundle = (() => {
   return { profile, older, newer };
 })();
 
+const pollBundle = (() => {
+  const poll = signEvent({
+    kind: 1068,
+    content: "e2e-relay-native-poll",
+    tags: [["option", "yes", "Yes"], ["option", "no", "No"], ["polltype", "singlechoice"]],
+    created_at: T0 + 140,
+  });
+  return { poll };
+})();
+
 export const FEED_NOTE_ID = feedBundle.note.id;
 export const ROOT_ID = threadBundle.root.id;
 export const REPLY_ID = threadBundle.reply.id;
@@ -186,6 +196,7 @@ export const OLDER_PROFILE_NOTE_ID = olderProfileBundle.older.id;
 export const LEGACY_ROOT_ID = legacyPositionalThreadBundle.root.id;
 export const LEGACY_PARENT_ID = legacyPositionalThreadBundle.parent.id;
 export const LEGACY_SELECTED_ID = legacyPositionalThreadBundle.selected.id;
+export const POLL_ID = pollBundle.poll.id;
 
 export function buildFeedFixture() {
   return [feedBundle.profile, feedBundle.note];
@@ -193,6 +204,11 @@ export function buildFeedFixture() {
 
 export function buildThreadFixture() {
   return [threadBundle.profile, threadBundle.replyProfile, threadBundle.follow, threadBundle.root, threadBundle.reply];
+}
+
+export function buildPollThreadFixture() {
+  // The kind 1 root gives the relay-native feed a note to open the thread from.
+  return [threadBundle.profile, threadBundle.root, pollBundle.poll];
 }
 
 export function buildReplyOnlyFixture() {

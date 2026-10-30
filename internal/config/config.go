@@ -225,10 +225,10 @@ type Config struct {
 	IngestVerifyParallel int
 	Debug                bool
 	// CoalesceEnabled toggles per-URL request coalescing in front of GET
-	// handlers. Off by default; only meaningful behind a CDN that can absorb
-	// the 302 redirects late arrivers receive.
+	// handlers: identical concurrent anonymous documents wait for the first
+	// render, then render from the origin cache it filled. Off by default.
 	CoalesceEnabled bool
-	// CoalesceBuckets is the number of FNV-1a buckets URLs are hashed into.
+	// CoalesceBuckets is the number of FNV-1a lock shards for in-flight URLs.
 	CoalesceBuckets int
 	// CoalesceTimeout caps how long a contended request waits for the lead
 	// renderer before timing out with 504.
@@ -264,6 +264,21 @@ type Config struct {
 	DesktopSessionToken string
 }
 
+// BuiltinDefaultRelays is the app's default relay set, mirrored by
+// DEFAULT_RELAYS in web/static/js/relay-config.js. PTXT_RELAYS replaces it for
+// the server's own reads. nostr.wine is intentionally omitted: it is a paid /
+// member-only relay (see https://docs.nostr.wine), so anonymous reads fail
+// closed and every query against it just inflates latency and failure
+// metrics. Paying members can re-add it via PTXT_RELAYS once we support
+// per-relay NIP-42 auth.
+func BuiltinDefaultRelays() []string {
+	return []string{
+		"wss://relay.primal.net",
+		"wss://relay.damus.io",
+		"wss://nos.lol",
+	}
+}
+
 func Load() Config {
 	guestSliceV2 := boolEnv("PTXT_GUEST_SLICE_V2", false)
 	warmWorkersDefault, warmQueueDefault := 4, 256
@@ -274,29 +289,21 @@ func Load() Config {
 		warmTimeoutDefault = 20 * time.Second
 		relayMaxDefault, hydrationReplyBatchDefault = 12, 8
 	}
-	// Default relay set. nostr.wine is intentionally omitted: it is a paid /
-	// member-only relay (see https://docs.nostr.wine), so anonymous reads
-	// fail closed and every query against it just inflates latency and
-	// failure metrics. Paying members can re-add it via PTXT_RELAYS once we
-	// support per-relay NIP-42 auth.
-	defaultRelays := splitEnv("PTXT_RELAYS", []string{
-		"wss://relay.primal.net",
-		"wss://relay.damus.io",
-		"wss://nos.lol",
-	})
+	defaultRelays := splitEnv("PTXT_RELAYS", BuiltinDefaultRelays())
 	metadataRelays := splitEnv("PTXT_METADATA_RELAYS", defaultRelays)
+	// relay.nostr.band is left out of every tier: it stopped accepting
+	// connections, so each query against it only waited for a timeout.
 	indexerRelays := splitEnv("PTXT_INDEXER_RELAYS", []string{
-		"wss://relay.nostr.band",
 		"wss://relay.primal.net",
 	})
-	indexerNIP50Relays := splitEnv("PTXT_INDEXER_NIP50_RELAYS", []string{
-		"wss://relay.nostr.band",
-		"wss://relay.primal.net",
-	})
+	// The NIP-50 reply fallback searches for a hex note id. No reachable public
+	// relay answers that now: relay.primal.net rejects search filters,
+	// search.nos.today never replies, and relay.ditto.pub returns unrelated
+	// notes. It stays off unless a relay that supports it is configured.
+	indexerNIP50Relays := splitEnv("PTXT_INDEXER_NIP50_RELAYS", nil)
+	// relay.ditto.pub is the only tested relay that honors "sort:hot";
+	// search.nos.today returns nothing for it and primal rejects search.
 	trendingSearchRelays := splitEnv("PTXT_TRENDING_SEARCH_RELAYS", []string{
-		"wss://relay.nostr.band",
-		"wss://search.nos.today",
-		"wss://relay.primal.net",
 		"wss://relay.ditto.pub",
 	})
 

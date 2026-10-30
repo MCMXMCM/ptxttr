@@ -2,6 +2,8 @@ package httpx
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -134,6 +136,52 @@ func TestNip50RelaysUsesDedicatedTier(t *testing.T) {
 	}
 	if !strings.Contains(joined, "relay.nostr.band") {
 		t.Fatalf("nip50Relays missing nostr.band: %v", got)
+	}
+}
+
+func TestSearchTiersDoNotFallBackToGeneralRelays(t *testing.T) {
+	srv, _ := newTestServer(t, testServerOptions{})
+	srv.cfg.IndexerRelays = []string{"wss://relay.primal.net"}
+	srv.cfg.IndexerNIP50Relays = nil
+	srv.cfg.TrendingSearchRelays = nil
+	if got := srv.nip50Relays(); len(got) != 0 {
+		t.Fatalf("nip50Relays = %v, want none: general relays reject NIP-50 search", got)
+	}
+	if got := srv.trendingSearchRelays(); len(got) != 0 {
+		t.Fatalf("trendingSearchRelays = %v, want none: general relays reject NIP-50 search", got)
+	}
+}
+
+func TestRequestRelaysSkipReplacedBuiltinDefaults(t *testing.T) {
+	srv, _ := newTestServer(t, testServerOptions{})
+	srv.cfg.DefaultRelays = []string{"wss://relay.primal.net", "wss://nos.lol", "wss://relay.ditto.pub", "wss://relay.nostr.net"}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(headerRelays, "wss://relay.primal.net,wss://relay.damus.io/,wss://nos.lol")
+	if got := srv.requestRelays(req); strings.Join(got, ",") != strings.Join(srv.cfg.DefaultRelays, ",") {
+		t.Fatalf("requestRelays = %v, want the server defaults %v", got, srv.cfg.DefaultRelays)
+	}
+	if !srv.isGuestCanonicalSnapshotTarget(srv.feedRequestFromHTTP(req)) {
+		t.Fatal("an anonymous feed request carrying the built-in relays should match the canonical guest snapshot")
+	}
+
+	req.Header.Set(headerRelays, "wss://relay.damus.io,wss://custom.example/")
+	want := append(append([]string(nil), srv.cfg.DefaultRelays...), "wss://custom.example")
+	if got := srv.requestRelays(req); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("requestRelays = %v, want %v", got, want)
+	}
+}
+
+func TestEventsTaggingEventKeepsOnlyRepliesAndQuotes(t *testing.T) {
+	id := strings.Repeat("a", 64)
+	events := []nostrx.Event{
+		{ID: "reply", Tags: [][]string{{"e", id, "", "reply"}}},
+		{ID: "quote", Tags: [][]string{{"q", strings.ToUpper(id)}}},
+		{ID: "full-text-hit", Content: "mentions " + id, Tags: [][]string{{"t", "nostr"}}},
+		{ID: "other-thread", Tags: [][]string{{"e", strings.Repeat("b", 64)}}},
+	}
+	got := eventsTaggingEvent(events, id)
+	if len(got) != 2 || got[0].ID != "reply" || got[1].ID != "quote" {
+		t.Fatalf("eventsTaggingEvent = %v, want the reply and the quote", got)
 	}
 }
 

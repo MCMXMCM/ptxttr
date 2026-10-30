@@ -1,12 +1,6 @@
-import { planPublishTargets, publishSignedEvent } from "./publish.js";
-import { putEvents, eventsByTag } from "./event-store.js";
-import { relayFetch } from "./relay-pool.js";
-import { readRelaysForViewer } from "./publish-plan.js";
 import { KIND_POLL, KIND_POLL_RESPONSE } from "./nostr-kinds.js";
 import { canonicalHex64, dedupeEventsByID, normalizePubkey } from "./relay-utils.js";
 import { normalizedPubkey } from "./session.js";
-import { signEventDraft } from "./signer.js";
-import { pendingPublishStatus, showPublishStatusSheet } from "./publish-status.js";
 
 const pollDraftSelections = new Map();
 let pollDelegatesBound = false;
@@ -160,6 +154,13 @@ function syncPollState(container, poll, votes = []) {
 async function fetchPollVotesFor(poll) {
   const pollID = canonicalHex64(poll?.id);
   if (!pollID) return [];
+  // ascii.js renders polls on anonymous pages too, so the relay and event
+  // store modules load only once votes are actually fetched or cast.
+  const [{ eventsByTag, putEvents }, { readRelaysForViewer }, { relayFetch }] = await Promise.all([
+    import("./event-store.js"),
+    import("./publish-plan.js"),
+    import("./relay-pool.js"),
+  ]);
   const cached = await eventsByTag("e", pollID, { kind: KIND_POLL_RESPONSE, limit: 500 }).catch(() => []);
   const relays = [...new Set([...(poll.relays || []), ...readRelaysForViewer()])];
   if (!relays.length) return dedupePollVotes(cached);
@@ -193,6 +194,17 @@ async function publishPollVote(container, poll, optionIDs) {
   if (!viewer) throw new Error("Login to vote in polls.");
   const picked = [...new Set((optionIDs || []).map((id) => String(id || "").trim()).filter(Boolean))];
   if (!picked.length) throw new Error("Choose at least one option.");
+  const [
+    { planPublishTargets, publishSignedEvent },
+    { putEvents },
+    { signEventDraft },
+    { pendingPublishStatus, showPublishStatusSheet },
+  ] = await Promise.all([
+    import("./publish.js"),
+    import("./event-store.js"),
+    import("./signer.js"),
+    import("./publish-status.js"),
+  ]);
   const tags = [["e", poll.id], ["p", poll.event.pubkey]];
   picked.forEach((id) => tags.push(["response", id]));
   const signed = await signEventDraft({

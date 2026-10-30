@@ -8,7 +8,6 @@ import { prepareInlineVideo } from "./inline-video.js";
 import { createMediaGrid, hydrateMediaGrid, mediaGridSignature } from "./media-grid.js";
 import { pollDescriptorForContainer, pollDraftSelection, bindPollDelegates, PollType } from "./poll.js";
 import { bindBroadcastDelegates } from "./broadcast.js";
-import { hydrateVisibleZapTotals } from "./zap-display.js";
 import { formatCompactSats } from "./zap-utils.js";
 import {
   buildThreadParentSkeletonText,
@@ -2888,7 +2887,7 @@ function initAscii(root = document) {
   bindBroadcastDelegates();
   asciiKindRoots(root).forEach(observeAscii);
   if (!document.body?.dataset?.guestV2) {
-    void hydrateVisibleZapTotals(root).catch(() => {});
+    void import("./zap-display.js").then(({ hydrateVisibleZapTotals }) => hydrateVisibleZapTotals(root)).catch(() => {});
   }
 }
 

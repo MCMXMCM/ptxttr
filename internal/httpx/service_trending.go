@@ -73,10 +73,7 @@ func (s *Server) trendingData(ctx context.Context, timeframe string, cohortKey s
 func (s *Server) trendingItems(ctx context.Context, timeframe string, cohortKey string, authors []string, cacheOnly bool) []store.TrendingItem {
 	timeframe = normalizeTrendingTimeframe(timeframe)
 	now := time.Now()
-	minRecompute := s.cfg.TrendingMinRecompute
-	if minRecompute <= 0 || minRecompute > 10*time.Minute {
-		minRecompute = 10 * time.Minute
-	}
+	minRecompute := s.trendingMinRecompute()
 	items, computedAt, err := s.store.ReadTrendingCache(ctx, timeframe, cohortKey)
 	if err != nil {
 		s.metrics.Add("trending.cache_read_error", 1)

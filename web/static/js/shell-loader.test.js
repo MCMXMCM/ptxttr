@@ -49,6 +49,7 @@ globalThis.document = {
 
 const {
   feedLoaderMarkup,
+  mobileMenu,
   notificationsLoaderMarkup,
   profileFeedLoaderMarkup,
   profileListLoaderMarkup,
@@ -106,6 +107,15 @@ describe("retro loader shell markup", () => {
     assert.doesNotMatch(threadRouteLoaderMarkup(), /<p class="retro-loader-title"/);
     assert.match(threadRouteLoaderMarkup(), /data-retro-loader-quiet-after-ms=""/);
     assert.doesNotMatch(threadRouteLoaderMarkup(), /data-retro-loader-hide-progress-when-quiet/);
+  });
+
+  it("keeps the hidden mobile menu logos from loading until the menu opens", () => {
+    const logos = mobileMenu().match(/<img [^>]*class="about-logo[^"]*"[^>]*>/g) || [];
+    assert.equal(logos.length, 2);
+    for (const logo of logos) {
+      assert.match(logo, /src="\/static\/img\/ascritch_icon_(black|white)_256\.png"/);
+      assert.match(logo, /loading="lazy"/);
+    }
   });
 
   it("renders search mode controls in the static right rail", () => {

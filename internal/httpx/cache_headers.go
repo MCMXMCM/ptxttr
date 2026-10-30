@@ -48,6 +48,17 @@ func setContentAddressedCache(w http.ResponseWriter, etag string) {
 	w.Header().Set("ETag", quotedETag(etag))
 }
 
+// setAnonymousRouteCache gives a logged-out, store-backed route response the
+// same shared-cache window as guest profile pages. Requests carrying a viewer
+// or any per-viewer preference (see appShellRequestIsPersonalized) keep their
+// default headers, because their response shape can depend on that state.
+func setAnonymousRouteCache(w http.ResponseWriter, r *http.Request) {
+	if w == nil || appShellRequestIsPersonalized(r) {
+		return
+	}
+	w.Header().Set("Cache-Control", cacheControlContentAddressed)
+}
+
 func setThreadNegativeCache(w http.ResponseWriter) {
 	if w == nil {
 		return

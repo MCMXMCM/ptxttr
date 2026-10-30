@@ -1,6 +1,7 @@
 package config
 
 import (
+	"slices"
 	"testing"
 	"time"
 )
@@ -75,6 +76,23 @@ func TestGuestSliceV2UsesSmallInstanceWorkerDefaults(t *testing.T) {
 	if !cfg.GuestSliceV2Enabled || cfg.WarmWorkers != 2 || cfg.WarmQueueCapacity != 128 ||
 		cfg.WarmJobTimeout != 20*time.Second || cfg.RelayMaxOutboundConns != 12 || cfg.HydrationNoteRepliesBatch != 8 {
 		t.Fatalf("unexpected v2 small-instance defaults: %#v", cfg)
+	}
+}
+
+func TestRelayTierDefaultsLeaveOutUnreachableNostrBand(t *testing.T) {
+	for _, key := range []string{"PTXT_INDEXER_RELAYS", "PTXT_INDEXER_NIP50_RELAYS", "PTXT_TRENDING_SEARCH_RELAYS"} {
+		t.Setenv(key, "")
+	}
+	cfg := Load()
+	if want := []string{"wss://relay.primal.net"}; !slices.Equal(cfg.IndexerRelays, want) {
+		t.Fatalf("IndexerRelays = %v, want %v", cfg.IndexerRelays, want)
+	}
+	// Search tiers only list relays that answer their queries.
+	if len(cfg.IndexerNIP50Relays) != 0 {
+		t.Fatalf("IndexerNIP50Relays = %v, want none by default", cfg.IndexerNIP50Relays)
+	}
+	if want := []string{"wss://relay.ditto.pub"}; !slices.Equal(cfg.TrendingSearchRelays, want) {
+		t.Fatalf("TrendingSearchRelays = %v, want %v", cfg.TrendingSearchRelays, want)
 	}
 }
 

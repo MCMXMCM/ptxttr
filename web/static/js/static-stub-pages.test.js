@@ -57,6 +57,15 @@ describe("static-stub-pages", () => {
     assert.doesNotMatch(html, /Browser Extension|NIP-07|YOLO|Dangerous:/);
   });
 
+  it("loads the small brand logos lazily so only the active color scheme fetches one", () => {
+    const logos = renderStaticStubMainContent("/about").match(/<img [^>]*class="about-logo[^"]*"[^>]*>/g) || [];
+    assert.equal(logos.length, 2);
+    for (const logo of logos) {
+      assert.match(logo, /src="\/static\/img\/ascritch_icon_(black|white)_256\.png"/);
+      assert.match(logo, /loading="lazy"/);
+    }
+  });
+
   it("returns an empty string for unknown stub paths", () => {
     assert.equal(renderStaticStubMainContent("/nope"), "");
   });

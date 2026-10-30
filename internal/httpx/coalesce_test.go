@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -27,11 +28,12 @@ func TestNewCoalesceMiddlewareDisabledIsPassthrough(t *testing.T) {
 	}
 }
 
-func TestNewCoalesceMiddlewareSerializesAndRedirects(t *testing.T) {
+func TestNewCoalesceMiddlewareWaiterRendersAfterLeader(t *testing.T) {
 	gate := make(chan struct{})
 	release := make(chan struct{})
 	var concurrent atomic.Int32
 	var maxConcurrent atomic.Int32
+	var calls atomic.Int32
 	handler := newCoalesceMiddleware(coalesceConfig{Enabled: true, Buckets: 4, Timeout: 500 * time.Millisecond})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c := concurrent.Add(1)
 		for {
@@ -43,8 +45,10 @@ func TestNewCoalesceMiddlewareSerializesAndRedirects(t *testing.T) {
 				break
 			}
 		}
-		gate <- struct{}{}
-		<-release
+		if calls.Add(1) == 1 {
+			gate <- struct{}{}
+			<-release
+		}
 		concurrent.Add(-1)
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -60,8 +64,8 @@ func TestNewCoalesceMiddlewareSerializesAndRedirects(t *testing.T) {
 	// Wait for the lead arriver to enter the handler.
 	<-gate
 
-	// A second request for the same path should NOT enter the handler; it
-	// should be redirected as soon as the lead releases.
+	// An identical request must not enter the handler until the lead returns,
+	// and then renders itself instead of redirecting.
 	lateRR := httptest.NewRecorder()
 	lateDone := make(chan struct{})
 	go func() {
@@ -69,10 +73,10 @@ func TestNewCoalesceMiddlewareSerializesAndRedirects(t *testing.T) {
 		close(lateDone)
 	}()
 
-	// Give the late request a moment to block on the bucket.
+	// Give the late request a moment to block behind the lead.
 	time.Sleep(20 * time.Millisecond)
-	if got := concurrent.Load(); got != 1 {
-		t.Fatalf("concurrent in-flight = %d, want 1", got)
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("handler calls while the lead renders = %d, want 1", got)
 	}
 	close(release)
 
@@ -80,19 +84,68 @@ func TestNewCoalesceMiddlewareSerializesAndRedirects(t *testing.T) {
 	<-lateDone
 
 	if got := maxConcurrent.Load(); got != 1 {
-		t.Fatalf("max concurrent in-flight = %d, want 1 (handler must serialize)", got)
+		t.Fatalf("max concurrent in-flight = %d, want 1 (late arriver must wait)", got)
 	}
-	if leadRR.Code != http.StatusOK {
-		t.Fatalf("lead status = %d, want 200", leadRR.Code)
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("handler calls = %d, want 2", got)
 	}
-	if lateRR.Code != http.StatusFound {
-		t.Fatalf("late status = %d, want 302", lateRR.Code)
+	for name, rr := range map[string]*httptest.ResponseRecorder{"lead": leadRR, "late": lateRR} {
+		if rr.Code != http.StatusOK || rr.Body.String() != "ok" {
+			t.Fatalf("%s response = %d %q, want 200 ok", name, rr.Code, rr.Body.String())
+		}
+		if loc := rr.Header().Get("Location"); loc != "" {
+			t.Fatalf("%s response redirected to %q", name, loc)
+		}
 	}
-	if loc := lateRR.Header().Get("Location"); loc != "/thread/abc" {
-		t.Fatalf("late Location = %q, want /thread/abc", loc)
+}
+
+func TestNewCoalesceMiddlewareOnlyHoldsIdenticalRequests(t *testing.T) {
+	mobileUA := "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148"
+	cases := map[string]func() *http.Request{
+		"other path": func() *http.Request { return httptest.NewRequest("GET", "/thread/other", nil) },
+		"other query": func() *http.Request {
+			return httptest.NewRequest("GET", "/thread/abc?selected="+strings.Repeat("b", 64), nil)
+		},
+		"other width": func() *http.Request {
+			r := httptest.NewRequest("GET", "/thread/abc", nil)
+			r.Header.Set("User-Agent", mobileUA)
+			return r
+		},
+		"signed in": func() *http.Request {
+			r := httptest.NewRequest("GET", "/thread/abc", nil)
+			markTestRequestLoggedIn(r)
+			return r
+		},
 	}
-	if cc := lateRR.Header().Get("Cache-Control"); cc != "no-store" {
-		t.Fatalf("late Cache-Control = %q, want no-store", cc)
+	for name, second := range cases {
+		t.Run(name, func(t *testing.T) {
+			release := make(chan struct{})
+			entered := make(chan struct{}, 2)
+			// One shard puts every key in the same lock, so only the key itself
+			// can keep the second request from running alongside the first.
+			handler := newCoalesceMiddleware(coalesceConfig{Enabled: true, Buckets: 1, Timeout: time.Second})(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				entered <- struct{}{}
+				<-release
+				w.WriteHeader(http.StatusOK)
+			}))
+			var wg sync.WaitGroup
+			for _, r := range []*http.Request{httptest.NewRequest("GET", "/thread/abc", nil), second()} {
+				wg.Add(1)
+				go func(r *http.Request) {
+					defer wg.Done()
+					handler.ServeHTTP(httptest.NewRecorder(), r)
+				}(r)
+			}
+			for i := 0; i < 2; i++ {
+				select {
+				case <-entered:
+				case <-time.After(time.Second):
+					t.Fatal("second request waited on a different coalescing key")
+				}
+			}
+			close(release)
+			wg.Wait()
+		})
 	}
 }
 
@@ -174,6 +227,14 @@ func TestShouldCoalesceSkipsBypassPrefixes(t *testing.T) {
 		if got := shouldCoalesce(r); got != want {
 			t.Fatalf("shouldCoalesce(%q) = %v, want %v", path, got, want)
 		}
+	}
+}
+
+func TestShouldCoalesceSkipsSignedInRequests(t *testing.T) {
+	r := httptest.NewRequest(http.MethodGet, "/thread/abc", nil)
+	markTestRequestLoggedIn(r)
+	if shouldCoalesce(r) {
+		t.Fatal("signed-in request should not coalesce")
 	}
 }
 

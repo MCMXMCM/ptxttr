@@ -48,7 +48,8 @@ var avatarAllowedTypes = map[string]bool{
 	"image/avif": true,
 }
 
-// avatarEntry holds a cached upstream avatar response.
+// avatarEntry holds a cached avatar: the upstream bytes, or a downscaled copy
+// of a large still picture (see avatarThumbnail).
 type avatarEntry struct {
 	bodyHash    string // strong fingerprint of the response body
 	contentType string
@@ -293,6 +294,9 @@ func (s *Server) fetchAvatarOnce(ctx context.Context, upstream string) (avatarEn
 	}
 	if !avatarAllowedTypes[contentType] {
 		return avatarEntry{}, fmt.Errorf("avatar: disallowed content-type %q", contentType)
+	}
+	if thumb, thumbType, ok := avatarThumbnail(ctx, body, contentType); ok {
+		body, contentType = thumb, thumbType
 	}
 	hash := sha1.Sum(body)
 	return avatarEntry{

@@ -20,3 +20,21 @@ func TestAnonymousHTMLCacheKeyPartitionsASCIIWidths(t *testing.T) {
 		t.Fatalf("measured cache key = %q", got)
 	}
 }
+
+func TestAnonymousHTMLCacheKeyKeepsPreviewBotsApart(t *testing.T) {
+	browser := httptest.NewRequest(http.MethodGet, "/thread/abc", nil)
+	browser.Header.Set("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0)")
+	telegram := httptest.NewRequest(http.MethodGet, "/thread/abc", nil)
+	telegram.Header.Set("User-Agent", "TelegramBot (like TwitterBot)")
+	slack := httptest.NewRequest(http.MethodGet, "/thread/abc", nil)
+	slack.Header.Set("User-Agent", "Slackbot-LinkExpanding 1.0 (+https://api.slack.com/robots)")
+
+	keys := map[string]bool{
+		anonymousHTMLCacheKey(browser):  true,
+		anonymousHTMLCacheKey(telegram): true,
+		anonymousHTMLCacheKey(slack):    true,
+	}
+	if len(keys) != 3 {
+		t.Fatalf("preview bots share cache keys with browsers: %v", keys)
+	}
+}

@@ -1,10 +1,15 @@
 package store
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"ptxt-nstr/internal/nostrx"
 )
 
 func TestDBDiskUsagePercentOnTempDir(t *testing.T) {
@@ -83,5 +88,63 @@ func TestEstimateBytePruneKeepEvents(t *testing.T) {
 	}
 	if got := estimateBytePruneKeepEvents(1000, 1_700, 1_800); got != 1000 {
 		t.Fatalf("keep below target = %d, want all events", got)
+	}
+}
+
+func TestFullVacuumEnabledMatchesVacuumScript(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"": true, "1": true, "true": true, "yes": true, "on": true,
+		"0": false, "false": false, "off": false, "no": false, "TRUE": false,
+	} {
+		t.Setenv("PTXT_VACUUM_FULL_ENABLED", raw)
+		if got := FullVacuumEnabled(); got != want {
+			t.Fatalf("FullVacuumEnabled(%q) = %v, want %v", raw, got, want)
+		}
+	}
+}
+
+func TestAutomaticFullVacuumsRespectDisabledFlag(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, ctx)
+	st.SetDiskRetentionPolicy(80, 70)
+	ids := make([]string, 0, 200)
+	for i := 0; i < 200; i++ {
+		event := nostrx.Event{
+			ID:        fmt.Sprintf("%064x", 9000+i),
+			PubKey:    strings.Repeat("5", 64),
+			CreatedAt: int64(1000 + i),
+			Kind:      nostrx.KindTextNote,
+			Content:   strings.Repeat("vacuum fodder ", 200),
+			Sig:       strings.Repeat("1", 128),
+		}
+		mustSaveEvent(t, ctx, st, event)
+		ids = append(ids, event.ID)
+	}
+	if err := st.DeleteEventsForTesting(ctx, ids); err != nil {
+		t.Fatal(err)
+	}
+	freePages := func() int64 {
+		t.Helper()
+		var pages int64
+		if err := st.db.QueryRowContext(ctx, `PRAGMA freelist_count`).Scan(&pages); err != nil {
+			t.Fatal(err)
+		}
+		return pages
+	}
+	if freePages() == 0 {
+		t.Fatal("test setup left no free pages to vacuum")
+	}
+
+	t.Setenv("PTXT_VACUUM_FULL_ENABLED", "0")
+	st.periodicFullVacuum()
+	st.runVacuumWithTimeout("test")
+	if freePages() == 0 {
+		t.Fatal("a disabled full vacuum still rewrote the database")
+	}
+
+	t.Setenv("PTXT_VACUUM_FULL_ENABLED", "1")
+	st.periodicFullVacuum()
+	if got := freePages(); got != 0 {
+		t.Fatalf("enabled periodic full vacuum left %d free pages", got)
 	}
 }

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"hash/fnv"
 	"log/slog"
+	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"ptxt-nstr/internal/nostrx"
@@ -17,6 +19,12 @@ const (
 	guestSliceMetadataBatch  = 40
 	guestSliceNoteBatch      = 80
 	guestSliceNIP05PerTick   = 2
+	// A run looks up a rejected candidate's gaps at most this many times,
+	// refreshing at most guestSliceLookupReplyPages reply pages each time,
+	// and starts a round only with guestSliceLookupMinBudget left to finish.
+	guestSliceLookupRounds     = 2
+	guestSliceLookupReplyPages = 3
+	guestSliceLookupMinBudget  = 20 * time.Second
 )
 
 type guestRefreshTier struct {
@@ -354,7 +362,9 @@ func (s *Server) buildGuestSliceGeneration(ctx context.Context) error {
 		Trust:      trust,
 		Cursors:    previous.Cursors,
 	}
-	readiness, err := s.store.PublishGuestSliceSnapshots(ctx, state, members, snap, sortSnapshots, store.GuestSlicePinTTL)
+	readiness, err := s.publishGuestSliceWithLookups(ctx, seed, func() (store.GuestSliceReadiness, error) {
+		return s.store.PublishGuestSliceSnapshots(ctx, state, members, snap, sortSnapshots, store.GuestSlicePinTTL)
+	})
 	if err != nil {
 		if errors.Is(err, store.ErrGuestSliceNotReady) {
 			missingThreadIDs := uniqueNonEmptyStable(append(append(append(append(
@@ -372,17 +382,137 @@ func (s *Server) buildGuestSliceGeneration(ctx context.Context) error {
 				"missing_roots", len(readiness.MissingRoots),
 				"missing_parents", len(readiness.MissingParents),
 				"missing_reply_pages", len(readiness.MissingReplyPages),
-				"missing_participants", len(readiness.MissingParticipants))
+				"missing_participants", len(readiness.MissingParticipants),
+				"sample", guestSliceMissingSample(readiness))
 		}
 		return err
 	}
-	_, _ = s.store.DeleteNonDirectSeedContacts(ctx, seed, defaultLoggedOutPinnedPubkeys())
-	s.invalidateResolvedViewerAuthors(seed)
-	s.guestFeedCache.reset()
-	s.anonymousHTMLCache.reset()
+	s.finishGuestSlicePublish(ctx, seed, previous.TrustFingerprint != store.GuestSliceTrustFingerprint(trust))
 	s.metrics.Add("guest_slice.published", 1)
 	s.metrics.Add("guest_slice.pinned_events", int64(len(readiness.Dependencies)))
 	return nil
+}
+
+// publishGuestSliceWithLookups validates a candidate and, when it is not
+// ready, looks up what was missing and validates again in the same run.
+// Waiting for the next run instead lets newer notes bring in new gaps.
+func (s *Server) publishGuestSliceWithLookups(ctx context.Context, seed string, publish func() (store.GuestSliceReadiness, error)) (store.GuestSliceReadiness, error) {
+	readiness, err := publish()
+	for round := 1; round <= guestSliceLookupRounds && errors.Is(err, store.ErrGuestSliceNotReady); round++ {
+		if deadline, ok := ctx.Deadline(); ctx.Err() != nil || (ok && time.Until(deadline) < guestSliceLookupMinBudget) {
+			break
+		}
+		if !s.lookUpGuestSliceGaps(ctx, seed, round, readiness) {
+			break
+		}
+		readiness, err = publish()
+	}
+	return readiness, err
+}
+
+// lookUpGuestSliceGaps fetches the notes a rejected candidate was missing,
+// refreshes the first reply page of roots that have none, and looks up
+// participant profiles. It reports whether anything was found or recorded.
+func (s *Server) lookUpGuestSliceGaps(ctx context.Context, seed string, round int, readiness store.GuestSliceReadiness) bool {
+	ids := uniqueNonEmptyStable(append(append(append(append([]string(nil),
+		readiness.MissingEvents...), readiness.MissingRoots...), readiness.MissingParents...), readiness.MissingReplyPages...))
+	stored, _ := s.store.GetEvents(ctx, ids)
+	relays := s.canonicalDefaultLoggedOutRelays()
+	var missing []string
+	for _, id := range ids {
+		if stored[id] == nil {
+			missing = append(missing, id)
+		}
+	}
+	found := 0
+	if len(missing) > 0 {
+		fetched := s.eventsByID(ctx, missing, relays)
+		for _, id := range missing {
+			if fetched[id] != nil {
+				found++
+			}
+		}
+	}
+	replyPages := 0
+	for _, id := range readiness.MissingReplyPages {
+		root := stored[id]
+		if root == nil || replyPages >= guestSliceLookupReplyPages || ctx.Err() != nil {
+			continue
+		}
+		s.refreshRepliesBackground(ctx, id, seed, root, relays)
+		s.buildThreadGraphCache(ctx, id)
+		replyPages++
+	}
+	profiles := len(readiness.MissingParticipants) > 0 && s.lookUpGuestSliceProfiles(ctx, readiness.MissingParticipants)
+	slog.Info("guest slice looked up missing dependencies", "round", round,
+		"notes", len(missing), "notes_found", found, "reply_pages", replyPages,
+		"profiles", len(readiness.MissingParticipants), "profiles_recorded", profiles)
+	return found > 0 || replyPages > 0 || profiles
+}
+
+// lookUpGuestSliceProfiles fetches the participants' profiles in batches and
+// records each lookup, so a participant without a profile counts as checked.
+// It reports whether every batch was answered and recorded.
+func (s *Server) lookUpGuestSliceProfiles(ctx context.Context, pubkeys []string) bool {
+	relays := s.filterCrawlerRelays(s.mergeCrawlRelayTiers(s.cfg.MetadataRelays))
+	for batch := range slices.Chunk(pubkeys, guestSliceMetadataBatch) {
+		if ctx.Err() != nil {
+			return false
+		}
+		result := s.refreshCached(ctx, "guest_slice_metadata", authorsCacheKey(batch), 0, relays, nostrx.Query{
+			Authors: batch,
+			Kinds:   []int{nostrx.KindProfileMetadata},
+			Limit:   max(80, len(batch)*2),
+		})
+		if result < 0 {
+			return false
+		}
+		for _, pubkey := range batch {
+			if err := s.store.MarkHydrationAttempt(ctx, "profile", pubkey, true, 2*time.Minute); err != nil {
+				slog.Warn("guest slice could not record a profile lookup", "pubkey", short(pubkey), "err", err)
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// guestSliceMissingSample names a few missing dependencies for the log.
+func guestSliceMissingSample(readiness store.GuestSliceReadiness) string {
+	parts := make([]string, 0, 6)
+	for _, group := range []struct {
+		kind string
+		ids  []string
+	}{
+		{"event", readiness.MissingEvents},
+		{"root", readiness.MissingRoots},
+		{"parent", readiness.MissingParents},
+		{"replies", readiness.MissingReplyPages},
+		{"profile", readiness.MissingParticipants},
+	} {
+		for _, id := range group.ids {
+			if len(parts) == cap(parts) {
+				return strings.Join(parts, ",")
+			}
+			parts = append(parts, group.kind+":"+short(id))
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
+// finishGuestSlicePublish refreshes in-memory state after a generation
+// publishes. Cached thread documents depend on the trust list and guest feed
+// pages are keyed by their cohort, so the origin caches are flushed only when
+// the published trust list changed.
+func (s *Server) finishGuestSlicePublish(ctx context.Context, seed string, trustChanged bool) {
+	_, _ = s.store.DeleteNonDirectSeedContacts(ctx, seed, defaultLoggedOutPinnedPubkeys())
+	s.invalidateResolvedViewerAuthors(seed)
+	if trustChanged {
+		s.guestFeedCache.reset()
+		s.anonymousHTMLCache.reset()
+	}
+	// Decode the new generation here rather than on the next guest request.
+	s.currentGuestSliceView(ctx)
 }
 
 func (s *Server) refreshPinnedGuestAuthors(ctx context.Context, viewer string, authors []string, now time.Time) int {

@@ -216,3 +216,42 @@ func TestGuestProfileDoesNotScheduleRelayWork(t *testing.T) {
 		t.Fatalf("guest profile scheduled %d relay requests", got)
 	}
 }
+
+func TestGuestProfileCountsAreSharedButViewerCountsStayFresh(t *testing.T) {
+	srv, st := testServer(t)
+	ctx := context.Background()
+	author := strings.Repeat("9", 64)
+	saveNote := func(seq int) {
+		t.Helper()
+		if err := st.SaveEvent(ctx, nostrx.Event{
+			ID:        testEventID(fmt.Sprintf("profile-count-%d", seq), author),
+			PubKey:    author,
+			CreatedAt: int64(100 + seq),
+			Kind:      nostrx.KindTextNote,
+			Content:   fmt.Sprintf("cached note %d", seq),
+			Sig:       strings.Repeat("2", 128),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	posts := func(signedIn bool) int {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/u/"+author, nil)
+		if signedIn {
+			markTestRequestLoggedIn(req)
+		}
+		return srv.userPageData(ctx, req, author, "stats").CachedPostCount
+	}
+
+	saveNote(1)
+	if got := posts(false); got != 1 {
+		t.Fatalf("guest post count = %d, want 1", got)
+	}
+	saveNote(2)
+	if got := posts(false); got != 1 {
+		t.Fatalf("guest post count = %d, want the shared count 1 until it expires", got)
+	}
+	if got := posts(true); got != 2 {
+		t.Fatalf("signed-in post count = %d, want a fresh 2", got)
+	}
+}

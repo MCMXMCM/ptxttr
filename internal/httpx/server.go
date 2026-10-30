@@ -50,6 +50,7 @@ type Server struct {
 	tagPageCache             *ttlCache[TagPageData]
 	guestFeedCache           *ttlCache[FeedPageData]
 	anonymousHTMLCache       *ttlCache[anonymousHTMLDocument]
+	guestProfileCountsCache  *ttlCache[store.ProfileTimelineCounts]
 	threadTelemetry          *threadTelemetryHub
 	readsTrendingCache       *ttlCache[[]TrendingNote]
 	relayTrendingCache       *ttlCache[relayTrendingSnapshot]
@@ -87,10 +88,16 @@ type Server struct {
 	hotFeedCrawlCursor atomic.Uint64
 	viewerGraphCursor  atomic.Uint64
 	viewerNoteCursor   atomic.Uint64
+	// guestSliceCache holds the decoded ready guest slice generation; see
+	// currentGuestSliceView. guestSliceCacheMu serializes rebuilds.
+	guestSliceCache   atomic.Pointer[guestSliceView]
+	guestSliceCacheMu sync.Mutex
 	// debugAnonymousAuthors keeps notes inserted through /debug/seed-note
 	// reachable under the same anonymous-scope policy exercised by e2e tests.
-	// The endpoint is only registered when Debug is enabled.
+	// The endpoint is only registered when Debug is enabled. The epoch moves
+	// with each addition so cached guest memberships pick the author up.
 	debugAnonymousAuthors sync.Map
+	debugAnonymousEpoch   atomic.Uint64
 }
 
 func New(cfg config.Config, st *store.Store, nostrClient *nostrx.Client) (*Server, error) {
@@ -118,6 +125,7 @@ func New(cfg config.Config, st *store.Store, nostrClient *nostrx.Client) (*Serve
 		tagPageCache:             newTagPageCache(),
 		guestFeedCache:           newGuestFeedPageCache(),
 		anonymousHTMLCache:       newAnonymousHTMLCache(),
+		guestProfileCountsCache:  newTTLCache[store.ProfileTimelineCounts](guestProfileCountsCacheTTL, guestProfileCountsCacheMaxLen, nil),
 		threadTelemetry:          newThreadTelemetryHub(),
 		readsTrendingCache:       newReadsTrendingCache(),
 		relayTrendingCache:       newRelayTrendingCache(),

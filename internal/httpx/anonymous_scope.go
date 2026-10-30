@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"ptxt-nstr/internal/nostrx"
-	"ptxt-nstr/internal/store"
 )
 
 func anonymousRequestFromHTTP(r *http.Request) bool {
@@ -31,15 +30,8 @@ func (s *Server) cachedDefaultLoggedOutAuthorMembership(ctx context.Context, dep
 		return newAuthorMembership(nil)
 	}
 	if s.cfg.GuestSliceV2Enabled {
-		if state, ok, stateErr := s.store.GetGuestSliceState(ctx, store.GuestSliceDefaultKey); stateErr == nil && ok && state.Status == store.GuestSliceStatusReady {
-			authors := state.Cohort
-			if depth >= defaultLoggedOutThreadWOTDepth {
-				authors = state.Trust
-			}
-			authors = append(append([]string(nil), authors...), seed)
-			authors = appendDefaultLoggedOutPinnedPubkeys(authors)
-			authors = s.appendDebugAnonymousAuthors(authors)
-			return newAuthorMembership(uniqueNonEmptyStable(authors))
+		if view := s.currentGuestSliceView(ctx); view != nil {
+			return view.membership(depth)
 		}
 	}
 	authors, _, ok := s.cachedResolvedAuthors(ctx, seed, webOfTrustOptions{Enabled: true, Depth: depth})
@@ -92,6 +84,11 @@ func (s *Server) appendDebugAnonymousAuthors(authors []string) []string {
 		return true
 	})
 	return authors
+}
+
+func (s *Server) addDebugAnonymousAuthor(pubkey string) {
+	s.debugAnonymousAuthors.Store(pubkey, struct{}{})
+	s.debugAnonymousEpoch.Add(1)
 }
 
 func (s *Server) debugAnonymousAuthorAllowed(pubkey string) bool {

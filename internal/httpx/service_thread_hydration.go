@@ -2,6 +2,7 @@ package httpx
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"ptxt-nstr/internal/nostrx"
@@ -138,6 +139,21 @@ func (s *Server) recordNoteRepliesHydration(ctx context.Context, eventID string,
 	}
 }
 
+// eventsTaggingEvent keeps the events that reply to or quote id. Full-text
+// search relays can answer a hex id with notes that only share words with it.
+func eventsTaggingEvent(events []nostrx.Event, id string) []nostrx.Event {
+	var out []nostrx.Event
+	for _, event := range events {
+		for _, tag := range event.Tags {
+			if len(tag) >= 2 && (tag[0] == "e" || tag[0] == "q") && strings.EqualFold(tag[1], id) {
+				out = append(out, event)
+				break
+			}
+		}
+	}
+	return out
+}
+
 func (s *Server) refreshRepliesNIP50(ctx context.Context, eventID string) int {
 	indexer := s.nip50Relays()
 	if len(indexer) == 0 || eventID == "" {
@@ -149,6 +165,7 @@ func (s *Server) refreshRepliesNIP50(ctx context.Context, eventID string) int {
 		Search: eventID,
 		Limit:  200,
 	})
+	events = eventsTaggingEvent(events, eventID)
 	if err != nil || len(events) == 0 {
 		return -1
 	}

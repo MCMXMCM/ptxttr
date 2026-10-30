@@ -13,15 +13,21 @@ func (s *Server) runTrendingSweeper() {
 	s.runSweeper(interval, 10*time.Second, s.recomputeTrending)
 }
 
+// trendingMinRecompute is how old a trending cache row must be before it is
+// recomputed (PTXT_TRENDING_MIN_RECOMPUTE).
+func (s *Server) trendingMinRecompute() time.Duration {
+	if s.cfg.TrendingMinRecompute <= 0 {
+		return 10 * time.Minute
+	}
+	return s.cfg.TrendingMinRecompute
+}
+
 func (s *Server) recomputeTrending(ctx context.Context) {
 	s.tryRunMaintenanceWork(maintenanceLaneTrending, func() {
 		s.runWithRelayWriteBudget(ctx, "trending.recompute", func() {
 			defer s.observe("trending.recompute", time.Now())
 			now := time.Now()
-			minRecompute := s.cfg.TrendingMinRecompute
-			if minRecompute <= 0 || minRecompute > 10*time.Minute {
-				minRecompute = 10 * time.Minute
-			}
+			minRecompute := s.trendingMinRecompute()
 			frames := []string{trending24h, trending1w}
 			for _, timeframe := range frames {
 				_, computedAt, cacheErr := s.store.ReadTrendingCache(ctx, timeframe, "")

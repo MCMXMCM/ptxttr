@@ -221,7 +221,7 @@ func (s *Server) handleDebugSeedNote(w http.ResponseWriter, r *http.Request) {
 	// Tests can deliberately leave the author outside the guest WoT to verify
 	// that an explicitly opened cached thread still renders its root context.
 	if r.URL.Query().Get("anonymous_scope") != "outside" {
-		s.debugAnonymousAuthors.Store(pubkey, struct{}{})
+		s.addDebugAnonymousAuthor(pubkey)
 	}
 	// Debug seed endpoints are used repeatedly by browser tests against one
 	// long-lived server. Never let an earlier anonymous document snapshot hide
@@ -291,7 +291,7 @@ func (s *Server) handleDebugSeedThreadWoT(w http.ResponseWriter, r *http.Request
 			return
 		}
 	}
-	s.debugAnonymousAuthors.Store(viewerPub, struct{}{})
+	s.addDebugAnonymousAuthor(viewerPub)
 	s.anonymousHTMLCache.reset()
 	writeJSON(w, map[string]any{
 		"root_id":           rootID,

@@ -44,11 +44,11 @@ func (s *Server) currentGuestGeneration(ctx context.Context) int64 {
 	if s == nil || s.store == nil {
 		return 0
 	}
-	state, found, err := s.store.GetGuestSliceState(ctx, store.GuestSliceDefaultKey)
-	if err != nil || !found || state.Status != store.GuestSliceStatusReady {
+	generation, status, found, err := s.store.GetGuestSliceGeneration(ctx, store.GuestSliceDefaultKey)
+	if err != nil || !found || status != store.GuestSliceStatusReady {
 		return 0
 	}
-	return state.Generation
+	return generation
 }
 
 func (s *Server) guestRouteHeaders(next http.Handler) http.Handler {
@@ -122,11 +122,11 @@ func (s *Server) handleGuestFeedStatus(w http.ResponseWriter, r *http.Request) {
 	since, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("since")), 10, 64)
 	sinceID := nostrx.CanonicalHex64(r.URL.Query().Get("since_id"))
 	status := guestFeedStatus{NewCount: s.guestFeedNewCount(r.Context(), since, sinceID)}
-	if state, ok, err := s.store.GetGuestSliceState(r.Context(), store.GuestSliceDefaultKey); err == nil && ok && state.Status == store.GuestSliceStatusReady {
-		status.Generation = state.Generation
-		status.ComputedAt = state.ComputedAt
-		status.TopCreatedAt = state.TopCreatedAt
-		status.TopID = state.TopID
+	if view := s.currentGuestSliceView(r.Context()); view != nil {
+		status.Generation = view.state.Generation
+		status.ComputedAt = view.state.ComputedAt
+		status.TopCreatedAt = view.state.TopCreatedAt
+		status.TopID = view.state.TopID
 	} else if snap, ok, err := s.store.GetDefaultSeedGuestFeedSnapshot(r.Context()); err == nil && ok && snap != nil && len(snap.Feed) > 0 {
 		status.ComputedAt = snap.ComputedAtUnix
 		status.TopCreatedAt = snap.Feed[0].CreatedAt

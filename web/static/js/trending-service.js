@@ -4,6 +4,7 @@ import { feedPaginationCursorFromDatasets } from "./feed-pagination.js";
 import { expandWebOfTrust } from "./wot-service.js";
 import { fetchMuteList, nip50TrendingSearch } from "./relay-reads.js";
 import { KIND_LONG_FORM, KIND_NOTE } from "./nostr-kinds.js";
+import { TRENDING_SEARCH_RELAYS } from "./relay-config.js";
 import { normalizePubkey } from "./relay-utils.js";
 import {
   getEffectiveLoggedOutWebOfTrustSeed,
@@ -100,7 +101,9 @@ export async function fetchRelayTrendingEvents({
   viewerPubkey = "",
 } = {}) {
   const since = trendingWindowStart(sort);
-  if (since == null) return [];
+  // Without a hot-rank relay there is nothing to ask, so skip the mute-list
+  // read too and let callers use locally cached events right away.
+  if (since == null || !TRENDING_SEARCH_RELAYS.length) return [];
 
   const allowedAuthors = authors ? new Set(authors.map(normalizePubkey).filter(Boolean)) : null;
   const mutedSet = await resolveMutedPubkeys(viewerPubkey);

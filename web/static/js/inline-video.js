@@ -1,10 +1,15 @@
+const HAVE_METADATA = 1;
+const HAVE_CURRENT_DATA = 2;
+
 /**
  * Mobile Safari needs explicit inline playback flags on <video> for reliable
  * in-page controls. Keep idle feed videos on metadata-only loading: eagerly
  * buffering every video in a feed competes with the one the user is actually
  * playing and can starve its audio buffer even while video frames stay ahead.
- * Do not link users to the raw URL for Blossom-style hosts: wrong Content-Type
- * makes Safari offer a useless .bin download.
+ * Some browsers stop at metadata with a blank controls surface, so a tiny seek
+ * asks them to paint the first frame. Do not link users to the raw URL for
+ * Blossom-style hosts: wrong Content-Type makes Safari offer a useless .bin
+ * download.
  */
 export function prepareInlineVideo(video) {
   if (!(video instanceof HTMLVideoElement)) return;
@@ -16,6 +21,8 @@ export function prepareInlineVideo(video) {
   video.setAttribute("preload", video.preload);
   if (video.dataset.ptxtInlineVideoPrepared === "1") return;
   video.dataset.ptxtInlineVideoPrepared = "1";
+  if (video.readyState >= HAVE_METADATA) showFirstFrame(video);
+  else video.addEventListener("loadedmetadata", () => showFirstFrame(video), { once: true });
   video.addEventListener("play", () => {
     video.preload = "auto";
     video.setAttribute("preload", "auto");
@@ -38,4 +45,14 @@ export function prepareInlineVideo(video) {
     },
     { once: true },
   );
+}
+
+function showFirstFrame(video) {
+  // Leave videos that already have a frame or that the viewer has started.
+  if (video.readyState >= HAVE_CURRENT_DATA || !video.paused || video.currentTime > 0) return;
+  try {
+    video.currentTime = 0.001;
+  } catch {
+    // A source that cannot seek shows its first frame once played.
+  }
 }

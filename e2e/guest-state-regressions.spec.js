@@ -211,7 +211,15 @@ test.describe("guest state regressions", () => {
     await expect(page.locator(`#note-${OUTSIDE_PROFILE_NOTE_ID}`)).toContainText("e2e seeded note");
     await expect(page.locator('[data-retro-loader-type="profile-posts"]')).toHaveCount(0);
     if (guestV2) {
-      expect(documentRequests).toBe(1);
+      // Chromium can answer the click from the guest speculation-rules
+      // prefetch, which Playwright does not report as a request.
+      const prefetched = await page.evaluate(() => {
+        const navigation = /** @type {(PerformanceEntry & { deliveryType?: string }) | undefined} */ (
+          performance.getEntriesByType("navigation")[0]
+        );
+        return navigation?.deliveryType === "navigational-prefetch";
+      });
+      expect(documentRequests).toBe(prefetched ? 0 : 1);
       expect(profileFetchRequests).toBe(0);
     } else {
       expect(documentRequests).toBe(0);

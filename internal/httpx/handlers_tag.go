@@ -42,6 +42,7 @@ func (s *Server) handleTag(w http.ResponseWriter, r *http.Request) {
 		data.BasePageData = s.basePageData(r, fmt.Sprintf("#%s", tag), "tag", "feed-shell")
 		data.ScopeAllURL = s.tagScopeURL(r, req, searchScopeAll)
 		data.ScopeNetworkURL = s.tagScopeURL(r, req, searchScopeNetwork)
+		setAnonymousRouteCache(w, r)
 	} else {
 		data = s.newTagPageData(r, req, tag)
 	}

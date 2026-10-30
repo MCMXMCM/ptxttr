@@ -142,6 +142,44 @@ func TestDesktopAppShellDisablesSharedCacheHeaders(t *testing.T) {
 	}
 }
 
+func TestDesktopAnonymousRoutesKeepSharedCacheHeadersOff(t *testing.T) {
+	srv, st := testServer(t)
+	srv.cfg.DesktopMode = true
+	ctx := context.Background()
+	root := signedMutationEvent(t, nostrx.KindTextNote, "desktop root", nil)
+	reply := signedMutationEvent(t, nostrx.KindTextNote, "desktop reply", [][]string{
+		{"e", root.ID, "", "root"},
+		{"p", root.PubKey},
+	})
+	read := signedMutationEvent(t, nostrx.KindLongForm, "a desktop read", [][]string{
+		{"d", "desktop-read"},
+		{"title", "A desktop read"},
+	})
+	for _, ev := range []nostrx.Event{root, reply, read} {
+		if err := st.SaveEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, route := range []struct {
+		target string
+		handle http.HandlerFunc
+	}{
+		{"/thread/" + root.ID + "?selected=" + reply.ID, srv.handleThread},
+		{"/thread/" + root.ID + "?fragment=summary&selected=" + reply.ID, srv.handleThread},
+		{"/reads", srv.handleReads},
+		{"/reads/" + read.ID, srv.handleRead},
+	} {
+		rec := httptest.NewRecorder()
+		route.handle(rec, httptest.NewRequest(http.MethodGet, route.target, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d", route.target, rec.Code)
+		}
+		if got := rec.Header().Get("Cache-Control"); strings.Contains(got, "public") {
+			t.Fatalf("%s desktop Cache-Control = %q, want no shared cache", route.target, got)
+		}
+	}
+}
+
 func TestHandleDesktopReplaceableUsesSQLiteAsTheRendererSource(t *testing.T) {
 	srv, st := testServer(t)
 	srv.cfg.DesktopMode = true

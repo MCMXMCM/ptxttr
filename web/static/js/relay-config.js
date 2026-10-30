@@ -9,21 +9,20 @@ export const DEFAULT_RELAYS = Object.freeze([
 
 export const METADATA_RELAYS = DEFAULT_RELAYS;
 
+/** NIP-50 text search relays; relay.primal.net rejects search filters. */
 export const INDEXER_NIP50_RELAYS = Object.freeze([
-  "wss://relay.nostr.band",
   "wss://search.nos.today",
-  "wss://relay.primal.net",
+  "wss://relay.ditto.pub",
 ]);
 
-/** NIP-50 hot-rank relays (mirrors iOS FeedService.trendingSearchRelays). */
+/**
+ * NIP-50 hot-rank relays (mirrors iOS FeedService.trendingSearchRelays).
+ * relay.nostr.band no longer accepts connections; relay.ditto.pub is the
+ * tested relay that honors "sort:hot".
+ */
 export const TRENDING_SEARCH_RELAYS = Object.freeze([
-  "wss://relay.nostr.band",
+  "wss://relay.ditto.pub",
 ]);
-
-/** Reaction hydration relays (iOS excludes search.nos.today). */
-export const REACTION_SEARCH_RELAYS = Object.freeze(
-  TRENDING_SEARCH_RELAYS.filter((url) => url !== "wss://search.nos.today"),
-);
 
 export const DIRECT_RELAYS_KEY = "ptxt_direct_relays";
 

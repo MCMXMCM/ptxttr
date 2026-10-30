@@ -294,6 +294,14 @@ func (s *Store) migrate(ctx context.Context) error {
 			trust_json TEXT NOT NULL DEFAULT '[]',
 			updated_at INTEGER NOT NULL DEFAULT 0
 		)`,
+		// The published trust list lives in its own row so a generation that
+		// keeps the same list does not rewrite megabytes of JSON.
+		`CREATE TABLE IF NOT EXISTS guest_slice_trust (
+			slice_key TEXT PRIMARY KEY,
+			fingerprint TEXT NOT NULL,
+			trust_json TEXT NOT NULL DEFAULT '[]',
+			updated_at INTEGER NOT NULL DEFAULT 0
+		)`,
 		`CREATE TABLE IF NOT EXISTS event_pins (
 			event_id TEXT NOT NULL,
 			generation INTEGER NOT NULL,

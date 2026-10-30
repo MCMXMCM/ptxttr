@@ -30,6 +30,7 @@ import { setAvatarImageSource } from "./avatar-cache.js";
 import { initRetroLoaders } from "./retro-loader.js";
 import { initDesktopStorage } from "./desktop-storage.js";
 import { desktopModeEnabled } from "./viewer-defaults.js";
+import { guestFeedSortDocumentHref } from "./viewer-pref-url.js";
 
 let initialized = false;
 let mobileMenuEscapeBound = false;
@@ -449,7 +450,14 @@ function bindTrendingTimeframe(root) {
  * request header (not a URL query param), we re-navigate to the same URL
  * with cursors cleared so client hydration refetches with the new header.
  */
-function bindNavigatingSelect(root, { selector, boundFlag, defaultValue, persist, beforeRefresh = null }) {
+function bindNavigatingSelect(root, {
+  selector,
+  boundFlag,
+  defaultValue,
+  persist,
+  beforeRefresh = null,
+  refresh = refreshCurrentRouteForPrefChange,
+}) {
   const select = root.querySelector(selector);
   if (!select || select[boundFlag]) return;
   select[boundFlag] = true;
@@ -457,7 +465,7 @@ function bindNavigatingSelect(root, { selector, boundFlag, defaultValue, persist
     const value = select.value || defaultValue;
     persist(value);
     if (typeof beforeRefresh === "function") beforeRefresh(value);
-    refreshCurrentRouteForPrefChange();
+    refresh(value);
   });
 }
 
@@ -472,6 +480,15 @@ function bindFeedSortSelect(root) {
 			percent: 10,
 			statusMessage: "reordering feed...",
 		}));
+    },
+    refresh: (value) => {
+      // Guest-v2 deliberately omits the full document router. A real request
+      // lets the server return the already-generated snapshot for this sort.
+      if (document.body?.dataset?.guestV2 && !normalizedPubkey()) {
+        window.location.assign(guestFeedSortDocumentHref(window.location.href, value));
+        return;
+      }
+      refreshCurrentRouteForPrefChange();
     },
   });
 }

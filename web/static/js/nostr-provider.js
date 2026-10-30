@@ -1,4 +1,5 @@
 import { NPool, NRelay1 } from "../lib/nostrify.js";
+import { getEventHash, verifyEvent } from "../lib/nostr-tools.js";
 import { latestReplaceable } from "./event-store.js";
 import { DEFAULT_RELAYS, METADATA_RELAYS, normalizeRelayList } from "./relay-config.js";
 import { effectiveReadRelays, effectiveWriteRelays } from "./relay-state.js";
@@ -6,8 +7,39 @@ import { KIND_RELAY_LIST } from "./nostr-kinds.js";
 import { normalizePubkey, relayHintsFromKind10002 } from "./relay-utils.js";
 
 const DEFAULT_EOSE_TIMEOUT_MS = 1200;
+const VERIFIED_EVENT_LIMIT = 4096;
 
 let sharedPool = null;
+
+/**
+ * Signature check for relay events that remembers signatures it already
+ * verified. Several relays usually return the same events, and each schnorr
+ * check costs about a millisecond on the main thread. A repeat only needs its
+ * id recomputed: an event that hashes to a verified id and carries the same
+ * signature is that verified event. At most `limit` ids are kept.
+ */
+export function createRelayEventVerifier({ verify = verifyEvent, hash = getEventHash, limit = VERIFIED_EVENT_LIMIT } = {}) {
+  const verifiedSigs = new Map();
+  return (event) => {
+    const id = typeof event?.id === "string" ? event.id : "";
+    const sig = typeof event?.sig === "string" ? event.sig : "";
+    if (id && sig && verifiedSigs.get(id) === sig) {
+      try {
+        return hash(event) === id;
+      } catch {
+        return false;
+      }
+    }
+    if (!verify(event)) return false;
+    if (id && sig) {
+      verifiedSigs.set(id, sig);
+      if (verifiedSigs.size > limit) verifiedSigs.delete(verifiedSigs.keys().next().value);
+    }
+    return true;
+  };
+}
+
+export const verifyRelayEvent = createRelayEventVerifier();
 
 async function relayHintsForAuthor(pubkey) {
   const pk = normalizePubkey(pubkey);
@@ -68,7 +100,7 @@ export function getNostrPool() {
   if (!sharedPool) {
     sharedPool = new NPool({
       open(url) {
-        return new NRelay1(url, { idleTimeout: false });
+        return new NRelay1(url, { idleTimeout: false, verifyEvent: verifyRelayEvent });
       },
       reqRouter(filters) {
         return routeFiltersToRelayMap(filters);

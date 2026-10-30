@@ -284,7 +284,7 @@ func TestHandleThreadDocAnonymousPageUsesBoundedStorePreview(t *testing.T) {
 	}
 }
 
-func TestHandleThreadDocDoesNotSharedCacheSelectedVariant(t *testing.T) {
+func TestHandleThreadDocSharesAnonymousSelectedVariant(t *testing.T) {
 	srv, st := testServer(t)
 	ctx := context.Background()
 
@@ -299,16 +299,38 @@ func TestHandleThreadDocDoesNotSharedCacheSelectedVariant(t *testing.T) {
 		}
 	}
 	allowAnonymousAuthors(t, st, root.PubKey, reply.PubKey)
+	target := "/thread/" + root.ID + "?selected=" + reply.ID
 
-	req := httptest.NewRequest(http.MethodGet, "/thread/"+root.ID+"?selected="+reply.ID, nil)
 	rr := httptest.NewRecorder()
-	srv.handleThread(rr, req)
-
+	srv.handleThread(rr, httptest.NewRequest(http.MethodGet, target, nil))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=\n%s", rr.Code, truncateForLog(rr.Body.String(), 600))
 	}
-	if cc := rr.Header().Get("Cache-Control"); cc != "private, no-store" {
-		t.Fatalf("Cache-Control = %q, want private no-store for selected variant", cc)
+	if cc := rr.Header().Get("Cache-Control"); cc != cacheControlThreadPage || rr.Header().Get("ETag") == "" {
+		t.Fatalf("anonymous selected variant Cache-Control = %q ETag = %q, want shared thread cache", cc, rr.Header().Get("ETag"))
+	}
+	body := rr.Body.String()
+	for _, want := range []string{
+		`class="note is-focused thread-focus-selected" id="note-` + reply.ID + `"`,
+		`id="note-` + root.ID + `"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("anonymous selected variant missing %q:\n%s", want, truncateForLog(body, 1200))
+		}
+	}
+	again := httptest.NewRecorder()
+	srv.handleThread(again, httptest.NewRequest(http.MethodGet, target, nil))
+	counters := srv.metrics.Snapshot()["counters"].(map[string]int64)
+	if counters["thread.anonymous_html_cache_hit"] != 1 || again.Body.String() != body {
+		t.Fatalf("repeat selected request did not reuse the anonymous document, counters=%v", counters)
+	}
+
+	signedIn := httptest.NewRequest(http.MethodGet, target, nil)
+	markTestRequestLoggedIn(signedIn)
+	signedInRR := httptest.NewRecorder()
+	srv.handleThread(signedInRR, signedIn)
+	if cc := signedInRR.Header().Get("Cache-Control"); cc != "private, no-store" {
+		t.Fatalf("signed-in selected variant Cache-Control = %q, want private no-store", cc)
 	}
 }
 

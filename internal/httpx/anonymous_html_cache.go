@@ -45,7 +45,13 @@ func anonymousHTMLCacheKey(r *http.Request) string {
 	}
 	// SSR contains width-dependent wrapping and ASCII chrome. Keep the origin
 	// document cache partitioned even when the visible URL is identical.
-	return key + "|ascii_w=" + strconv.Itoa(requestASCIIWidthWithQuery(r))
+	key += "|ascii_w=" + strconv.Itoa(requestASCIIWidthWithQuery(r))
+	// Link-preview bots get differently shaped documents (Telegram Instant
+	// View, no app shell), which must never be served to browsers.
+	if style := detectPreviewStyle(r); style != styleNormal {
+		key += "|preview=" + strconv.Itoa(int(style))
+	}
+	return key
 }
 
 func normalizedCacheQuery(values url.Values) url.Values {

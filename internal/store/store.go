@@ -336,18 +336,23 @@ func (s *Store) startBackgroundWorkers() {
 	// shrink the file. VACUUM rewrites the whole DB and is expensive, so we
 	// run it daily and only when retention is active (otherwise there is no
 	// recurring source of free pages to recover).
-	s.runTicker(24*time.Hour, func() {
-		maxBytes, _ := s.DiskByteRetentionPolicy()
-		if s.retentionMax <= 0 && s.diskPrunePercent <= 0 && maxBytes <= 0 {
-			return
-		}
-		timeout := vacuumTimeout()
-		ctx, cancel := context.WithTimeout(s.bgCtx, timeout)
-		defer cancel()
-		if err := s.VacuumFull(ctx); err != nil {
-			slog.Warn("periodic vacuum failed", "err", err)
-		}
-	})
+	s.runTicker(24*time.Hour, s.periodicFullVacuum)
+}
+
+func (s *Store) periodicFullVacuum() {
+	maxBytes, _ := s.DiskByteRetentionPolicy()
+	if s.retentionMax <= 0 && s.diskPrunePercent <= 0 && maxBytes <= 0 {
+		return
+	}
+	if !FullVacuumEnabled() {
+		return
+	}
+	timeout := vacuumTimeout()
+	ctx, cancel := context.WithTimeout(s.bgCtx, timeout)
+	defer cancel()
+	if err := s.VacuumFull(ctx); err != nil {
+		slog.Warn("periodic vacuum failed", "err", err)
+	}
 }
 
 func (s *Store) maybeVacuumUnderPressure() {
@@ -403,6 +408,10 @@ func (s *Store) maybeVacuumUnderPressure() {
 }
 
 func (s *Store) runVacuumWithTimeout(reason string) {
+	if !FullVacuumEnabled() {
+		slog.Info("pressure vacuum skipped; full vacuum disabled", "reason", reason)
+		return
+	}
 	timeout := vacuumTimeout()
 	ctx, cancel := context.WithTimeout(s.bgCtx, timeout)
 	defer cancel()

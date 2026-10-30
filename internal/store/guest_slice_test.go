@@ -100,6 +100,49 @@ func TestPublishGuestSliceRejectsMissingIntermediateAncestor(t *testing.T) {
 	}
 }
 
+func TestPublishGuestSliceAcceptsRecentlyCheckedParticipants(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, ctx)
+	member := strings.Repeat("5", 64)
+	stranger := strings.Repeat("6", 64)
+	note := guestTestEvent("a", stranger, nostrx.KindTextNote, 100, nil)
+	mustSaveEvent(t, ctx, st, note)
+	if err := st.MarkHydrationAttempt(ctx, "noteReplies", note.ID, true, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	publish := func() (GuestSliceReadiness, error) {
+		return st.PublishGuestSlice(ctx, GuestSliceState{
+			Generation: 1, SeedPubKey: member, Cohort: []string{member}, Trust: []string{member},
+		}, []GuestSliceMember{{PubKey: member, Role: GuestSliceRoleCohort, MetadataCheckedAt: 100, MetadataFound: true}},
+			&DefaultSeedGuestFeedSnapshot{Feed: []nostrx.Event{note}}, time.Hour)
+	}
+	lookedUp := func(ago time.Duration) {
+		t.Helper()
+		if err := st.MarkHydrationAttempt(ctx, "profile", stranger, true, 2*time.Minute); err != nil {
+			t.Fatal(err)
+		}
+		at := time.Now().Add(-ago).Unix()
+		if _, err := st.db.ExecContext(ctx, `UPDATE hydration_state SET last_attempt_at = ?, next_retry_at = ?
+			WHERE entity_type = 'profile' AND entity_id = ?`, at, at+120, stranger); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if readiness, err := publish(); !errors.Is(err, ErrGuestSliceNotReady) || !slices.Contains(readiness.MissingParticipants, stranger) {
+		t.Fatalf("never looked up: readiness=%#v err=%v, want the participant missing", readiness, err)
+	}
+	lookedUp(2 * time.Hour)
+	if readiness, err := publish(); !errors.Is(err, ErrGuestSliceNotReady) || !slices.Contains(readiness.MissingParticipants, stranger) {
+		t.Fatalf("looked up two hours ago: readiness=%#v err=%v, want the participant missing", readiness, err)
+	}
+	// The scheduler runs every few minutes, so a lookup that found nothing
+	// must outlive its two-minute retry time.
+	lookedUp(10 * time.Minute)
+	if readiness, err := publish(); err != nil || !readiness.Ready {
+		t.Fatalf("looked up ten minutes ago: readiness=%#v err=%v, want ready", readiness, err)
+	}
+}
+
 func TestPublishedGuestDependenciesRemainPinnedUntilExpiry(t *testing.T) {
 	ctx := context.Background()
 	st := openTestStore(t, ctx)
@@ -208,5 +251,106 @@ func TestGuestSliceSortSnapshotsPublishAtomically(t *testing.T) {
 	}
 	if rec, ok, err := st.GetFeedSnapshot(ctx, key); err != nil || !ok || len(rec.Feed) != 1 || rec.Feed[0].ID != note.ID {
 		t.Fatalf("published sort snapshot rec=%#v ok=%v err=%v", rec, ok, err)
+	}
+}
+
+func TestGetGuestSliceGenerationReadsPublishedMarker(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, ctx)
+	if generation, status, ok, err := st.GetGuestSliceGeneration(ctx, GuestSliceDefaultKey); err != nil || ok || generation != 0 || status != "" {
+		t.Fatalf("empty store generation=%d status=%q ok=%v err=%v", generation, status, ok, err)
+	}
+	author := strings.Repeat("6", 64)
+	note := guestTestEvent("a", author, nostrx.KindTextNote, 100, nil)
+	mustSaveEvent(t, ctx, st, note)
+	mustSaveEvent(t, ctx, st, guestTestEvent("b", author, nostrx.KindProfileMetadata, 101, nil))
+	if err := st.MarkHydrationAttempt(ctx, "noteReplies", note.ID, true, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PublishGuestSlice(ctx, GuestSliceState{
+		Generation: 11, SeedPubKey: author, Cohort: []string{author}, Trust: []string{author},
+	}, []GuestSliceMember{{PubKey: author, Role: GuestSliceRoleCohort, MetadataCheckedAt: 100, MetadataFound: true}},
+		&DefaultSeedGuestFeedSnapshot{Feed: []nostrx.Event{note}}, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	generation, status, ok, err := st.GetGuestSliceGeneration(ctx, GuestSliceDefaultKey)
+	if err != nil || !ok || generation != 11 || status != GuestSliceStatusReady {
+		t.Fatalf("published generation=%d status=%q ok=%v err=%v", generation, status, ok, err)
+	}
+}
+
+func TestPublishGuestSliceWritesTrustOnlyWhenItChanges(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, ctx)
+	author := strings.Repeat("4", 64)
+	other := strings.Repeat("3", 64)
+	note := guestTestEvent("a", author, nostrx.KindTextNote, 100, nil)
+	mustSaveEvent(t, ctx, st, note)
+	mustSaveEvent(t, ctx, st, guestTestEvent("b", author, nostrx.KindProfileMetadata, 101, nil))
+	if err := st.MarkHydrationAttempt(ctx, "noteReplies", note.ID, true, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	publish := func(generation int64, trust []string) {
+		t.Helper()
+		if _, err := st.PublishGuestSlice(ctx, GuestSliceState{
+			Generation: generation, SeedPubKey: author, Cohort: []string{author}, Trust: trust,
+		}, []GuestSliceMember{{PubKey: author, Role: GuestSliceRoleCohort, MetadataCheckedAt: 100, MetadataFound: true}},
+			&DefaultSeedGuestFeedSnapshot{Feed: []nostrx.Event{note}}, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+	trustUpdatedAt := func() int64 {
+		t.Helper()
+		var updatedAt int64
+		if err := st.db.QueryRowContext(ctx, `SELECT updated_at FROM guest_slice_trust WHERE slice_key = ?`, GuestSliceDefaultKey).Scan(&updatedAt); err != nil {
+			t.Fatal(err)
+		}
+		return updatedAt
+	}
+	expectTrust := func(generation int64, want []string) {
+		t.Helper()
+		state, ok, err := st.GetGuestSliceState(ctx, GuestSliceDefaultKey)
+		if err != nil || !ok || state.Generation != generation || !slices.Equal(state.Trust, want) ||
+			state.TrustFingerprint != GuestSliceTrustFingerprint(want) {
+			t.Fatalf("state = %#v ok=%v err=%v, want generation %d trust %v", state, ok, err, generation, want)
+		}
+		var stateTrust string
+		if err := st.db.QueryRowContext(ctx, `SELECT trust_json FROM guest_slice_state WHERE slice_key = ?`, GuestSliceDefaultKey).Scan(&stateTrust); err != nil || stateTrust != "[]" {
+			t.Fatalf("guest_slice_state.trust_json = %q err=%v, want []", stateTrust, err)
+		}
+	}
+
+	publish(1, []string{author})
+	expectTrust(1, []string{author})
+	if _, err := st.db.ExecContext(ctx, `UPDATE guest_slice_trust SET updated_at = 1`); err != nil {
+		t.Fatal(err)
+	}
+	publish(2, []string{author})
+	expectTrust(2, []string{author})
+	if got := trustUpdatedAt(); got != 1 {
+		t.Fatalf("unchanged trust was rewritten (updated_at=%d)", got)
+	}
+	publish(3, []string{author, other})
+	expectTrust(3, []string{author, other})
+	if got := trustUpdatedAt(); got == 1 {
+		t.Fatal("changed trust was not written")
+	}
+}
+
+func TestGetGuestSliceStateReadsTrustFromLegacyRow(t *testing.T) {
+	ctx := context.Background()
+	st := openTestStore(t, ctx)
+	legacy := strings.Repeat("2", 64)
+	if _, err := st.db.ExecContext(ctx, `INSERT INTO guest_slice_state(slice_key, generation, status, trust_json)
+		VALUES (?, 5, ?, ?)`, GuestSliceDefaultKey, GuestSliceStatusReady, `["`+legacy+`"]`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.db.ExecContext(ctx, `INSERT INTO guest_slice_trust(slice_key, fingerprint, trust_json)
+		VALUES (?, 'older', '["stale"]')`, GuestSliceDefaultKey); err != nil {
+		t.Fatal(err)
+	}
+	state, ok, err := st.GetGuestSliceState(ctx, GuestSliceDefaultKey)
+	if err != nil || !ok || !slices.Equal(state.Trust, []string{legacy}) || state.TrustFingerprint != "" {
+		t.Fatalf("legacy state = %#v ok=%v err=%v, want the row's own trust list", state, ok, err)
 	}
 }

@@ -32,11 +32,9 @@ func (s *Server) nip50Relays() []string {
 	if max <= 0 {
 		max = 4
 	}
-	relays := s.cfg.IndexerNIP50Relays
-	if len(relays) == 0 {
-		relays = s.cfg.IndexerRelays
-	}
-	return nostrx.NormalizeRelayList(relays, max)
+	// No fallback to the general indexer relays: they reject or ignore NIP-50
+	// search, so an empty tier skips the fallback instead of failing on it.
+	return nostrx.NormalizeRelayList(s.cfg.IndexerNIP50Relays, max)
 }
 
 func (s *Server) trendingSearchRelays() []string {
@@ -47,11 +45,9 @@ func (s *Server) trendingSearchRelays() []string {
 	if max <= 0 {
 		max = 4
 	}
-	relays := s.cfg.TrendingSearchRelays
-	if len(relays) == 0 {
-		relays = s.cfg.IndexerRelays
-	}
-	return nostrx.NormalizeRelayList(relays, max)
+	// Like nip50Relays, an empty tier means no relay trending rather than
+	// sending "sort:hot" searches to relays that reject them.
+	return nostrx.NormalizeRelayList(s.cfg.TrendingSearchRelays, max)
 }
 
 func mergeRelayTiers(primary, secondary []string, max int) []string {

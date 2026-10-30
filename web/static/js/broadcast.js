@@ -1,6 +1,3 @@
-import { planPublishTargets, publishSignedEvent } from "./publish.js";
-import { pendingPublishStatus, showPublishStatusSheet } from "./publish-status.js";
-
 const inFlightBroadcasts = new Set();
 let broadcastDelegatesBound = false;
 
@@ -37,6 +34,12 @@ async function publishBroadcast(container) {
   inFlightBroadcasts.add(noteId);
   setButtonsDisabled(noteId, true);
   try {
+    // Broadcast buttons render on anonymous pages; keep the relay publishing
+    // stack out of ascii.js until someone actually uses one.
+    const [{ planPublishTargets, publishSignedEvent }, { pendingPublishStatus, showPublishStatusSheet }] = await Promise.all([
+      import("./publish.js"),
+      import("./publish-status.js"),
+    ]);
     const plannedRelays = await planPublishTargets(event).catch(() => []);
     const pendingState = pendingPublishStatus({
       phaseTitle: "Broadcasting to relays",

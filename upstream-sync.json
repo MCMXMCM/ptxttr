@@ -1,6 +1,6 @@
 {
   "sourceRepository": "../ptxt-nstr",
-  "sourceRevision": "bd59d0a1772cebfe5ebcd161e19256fe5ac3a622",
+  "sourceRevision": "9684247b81b571aa7d21a743b2e0909f7c444da2",
   "targetBaseline": "13d49cf98b7f14233a388805508565f36dd118b8",
   "syncAllowlist": [
     "cmd/server/**",
