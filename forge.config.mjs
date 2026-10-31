@@ -39,6 +39,7 @@ export default {
       osxSign: {
         identity: process.env.APPLE_SIGNING_IDENTITY,
         optionsForFile: () => ({ entitlements: path.join(root, "desktop", "entitlements.plist") }),
+        continueOnError: false,
       },
     } : {}),
     ...(hasNotaryCredentials ? {
